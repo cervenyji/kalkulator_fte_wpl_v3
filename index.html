@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kalkulátor FTE → WPL</title>
+<style>
+  :root{
+    --bg:#f4f6f9; --panel:#ffffff; --border:#dde2e8; --text:#1c2530; --muted:#6b7684;
+    --accent:#2770f0; --accent-dark:#1b57c4; --ok:#0bb43f; --warn:#c98a06; --err:#d03636;
+    --table-head:#eef2f9;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--text); font-size:14px;
+  }
+  header{
+    background:var(--accent); color:#fff; padding:14px 24px;
+    display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;
+  }
+  header h1{margin:0; font-size:18px; font-weight:600;}
+  header .sub{font-size:12px; opacity:.85;}
+  #dbStatus{
+    background:rgba(255,255,255,.15); border-radius:8px; padding:8px 12px;
+    font-size:12.5px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  }
+  #dbStatus .dot{width:9px; height:9px; border-radius:50%; background:#ccc; display:inline-block;}
+  #dbStatus .dot.ok{background:#7CFF9E;}
+  #dbStatus .dot.warn{background:#FFD873;}
+  #dbStatus .dot.err{background:#FF9C9C;}
+  header button{
+    background:#fff; color:var(--accent-dark); border:none; border-radius:6px;
+    padding:6px 10px; font-size:12.5px; cursor:pointer; font-weight:600;
+  }
+  header button:hover{background:#eaf1ff;}
+  nav{
+    display:flex; gap:4px; background:var(--panel); border-bottom:1px solid var(--border);
+    padding:0 20px;
+  }
+  nav button{
+    background:none; border:none; padding:12px 16px; font-size:13.5px; cursor:pointer;
+    color:var(--muted); border-bottom:3px solid transparent; font-weight:600;
+  }
+  nav button.active{color:var(--accent-dark); border-bottom-color:var(--accent);}
+  main{padding:20px; max-width:1180px; margin:0 auto;}
+  section.tab{display:none;}
+  section.tab.active{display:block;}
+  .panel{
+    background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    padding:18px 20px; margin-bottom:18px;
+  }
+  .panel h2{margin:0 0 12px; font-size:15px;}
+  .panel h3{margin:18px 0 8px; font-size:13.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.03em;}
+  .muted{color:var(--muted);}
+  .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
+  .btn{
+    background:var(--accent); color:#fff; border:none; border-radius:7px; padding:9px 14px;
+    font-size:13.5px; cursor:pointer; font-weight:600;
+  }
+  .btn:hover{background:var(--accent-dark);}
+  .btn.secondary{background:#eef2f9; color:var(--text);}
+  .btn.secondary:hover{background:#e2e8f2;}
+  .btn.small{padding:5px 9px; font-size:12px; border-radius:6px;}
+  .btn:disabled{opacity:.45; cursor:not-allowed;}
+  #dropzone{
+    border:2px dashed var(--border); border-radius:10px; padding:34px 20px; text-align:center;
+    color:var(--muted); background:#fafcff; transition:.15s;
+  }
+  #dropzone.drag{border-color:var(--accent); background:#eaf1ff; color:var(--accent-dark);}
+  table{width:100%; border-collapse:collapse; font-size:13px;}
+  table th, table td{border:1px solid var(--border); padding:6px 8px; text-align:left; vertical-align:top;}
+  table th{background:var(--table-head); font-weight:600; white-space:nowrap;}
+  table tr.total-row td{background:#eafcef; font-weight:700;}
+  table input{width:100%; border:1px solid transparent; background:transparent; font-size:13px; padding:2px 3px; border-radius:4px;}
+  table input:hover, table input:focus{border-color:var(--border); background:#fff;}
+  #absenceTbody td:nth-child(1) input{min-width:110px;}
+  #dotaceTbody td:nth-child(1) input{min-width:90px;}
+  #dotaceTbody td:nth-child(2) input{min-width:320px;}
+  #dotaceTbody td:nth-child(n+3) input{min-width:70px;}
+  .table-wrap{overflow-x:auto;}
+  .msg{padding:10px 12px; border-radius:8px; font-size:13px; margin-bottom:12px;}
+  .msg.ok{background:#e8f9ee; color:#0a7a33;}
+  .msg.err{background:#fdeaea; color:#a41f1f;}
+  .msg.warn{background:#fff6e0; color:#8a5c00;}
+  .badge{display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; font-weight:700;}
+  .badge.ok{background:#e8f9ee; color:#0a7a33;}
+  .badge.warn{background:#fff6e0; color:#8a5c00;}
+  .history-item{
+    border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:8px; cursor:pointer;
+    display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;
+  }
+  .history-item:hover{border-color:var(--accent); background:#fafcff;}
+  .history-item .key{font-size:11.5px; color:var(--muted); font-family:monospace;}
+  .filterbox{margin-bottom:10px;}
+  .filterbox input{padding:7px 10px; border:1px solid var(--border); border-radius:6px; width:280px;}
+  #toast-area{position:fixed; bottom:16px; right:16px; display:flex; flex-direction:column; gap:8px; z-index:999;}
+  .toast{padding:10px 14px; border-radius:8px; font-size:13px; color:#fff; box-shadow:0 4px 14px rgba(0,0,0,.15); max-width:340px;}
+  .toast.ok{background:#0bb43f;} .toast.err{background:#d03636;} .toast.warn{background:#c98a06;}
+  a.dl{color:var(--accent-dark); font-weight:600;}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
+  @media (max-width:720px){.grid2{grid-template-columns:1fr;}}
+  textarea{width:100%; border:1px solid var(--border); border-radius:6px; padding:8px; font-family:inherit; font-size:13px;}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Kalkulátor FTE → WPL</h1>
+    <div class="sub">Přetáhněte checklist (Excel) a spočítejte potřebný počet WPL po zónách</div>
+  </div>
+  <div id="dbStatus"><span class="dot"></span><span id="dbStatusText">Databáze nepřipojena</span>
+    <button id="btnOpenDb">Otevřít databázi…</button>
+    <button id="btnNewDb">Vytvořit novou databázi</button>
+    <button id="btnSaveDbNow" style="display:none;">Uložit databázi</button>
+  </div>
+</header>
+
+<nav>
+  <button class="tabbtn active" data-tab="new">Nový výpočet</button>
+  <button class="tabbtn" data-tab="history">Historie kalkulací</button>
+  <button class="tabbtn" data-tab="ref">Referenční data</button>
+</nav>
+
+<main>
+
+<section class="tab active" id="tab-new">
+  <div class="panel" id="dbHelpPanel">
+    <h2>1) Databáze</h2>
+    <p class="muted">Aplikace ukládá všechny nahrané checklisty a spočítané kalkulace do SQLite databáze
+    (soubor <code>fte_wpl_calculator.db</code>) ve stejné složce jako tento HTML soubor, aby byla historie
+    zpětně dohledatelná. Při prvním spuštění klikněte na <strong>„Otevřít databázi…“</strong> a vyberte
+    přiložený soubor <code>fte_wpl_calculator.db</code>, nebo si založte novou.</p>
+    <div id="dbFsaNote" class="msg warn" style="display:none;">
+      Tento prohlížeč nepodporuje přímý zápis do souboru na disku (funguje jen v Chrome / Edge).
+      Databázi je nutné po každé změně stáhnout a ručně uložit do stejné složky pomocí tlačítka
+      „Uložit databázi“ vpravo nahoře.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>2) Nahrát checklist</h2>
+    <div id="dropzone">
+      <div>📄 Přetáhněte sem vyplněný Excel checklist (list „VSTUPY“) — nebo</div>
+      <div style="margin-top:10px;"><button class="btn secondary" id="btnPickExcel">vybrat soubor…</button></div>
+      <input type="file" id="excelInput" accept=".xlsx,.xlsm,.xls" style="display:none;">
+    </div>
+    <div id="excelMsgs" style="margin-top:12px;"></div>
+    <div id="excelPreview"></div>
+  </div>
+
+  <div class="panel" id="resultsPanel" style="display:none;">
+    <h2>3) Výsledek kalkulace</h2>
+    <div id="resultsArea"></div>
+  </div>
+</section>
+
+<section class="tab" id="tab-history">
+  <div class="panel">
+    <h2>Historie kalkulací</h2>
+    <p class="muted">Kliknutím na kalkulaci zobrazíte vstupní data i výsledné WPL, ze kterých vznikla.</p>
+    <div id="historyList"></div>
+  </div>
+  <div class="panel" id="historyDetailPanel" style="display:none;">
+    <h2>Detail kalkulace</h2>
+    <div id="historyDetail"></div>
+  </div>
+</section>
+
+<section class="tab" id="tab-ref">
+  <div class="panel">
+    <h2>Absence po segmentech</h2>
+    <p class="muted">Nepřítomnost a homeoffice v % — používá se pro přepočet efektivně odpracovaných hodin.</p>
+    <div id="absenceTable"></div>
+    <div class="row" style="margin-top:10px;">
+      <button class="btn secondary small" id="btnAddAbsenceRow">+ Přidat segment</button>
+      <button class="btn small" id="btnSaveAbsence">Uložit tabulku absencí</button>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Časové dotace pozic</h2>
+    <p class="muted">Procentuální rozdělení pracovní doby pozice mezi service / meeting / backoffice zónu a kancelář.</p>
+    <div class="filterbox"><input type="text" id="dotaceFilter" placeholder="Filtrovat dle segmentu nebo pozice…"></div>
+    <div id="dotaceTable"></div>
+    <div class="row" style="margin-top:10px;">
+      <button class="btn secondary small" id="btnAddDotaceRow">+ Přidat pozici</button>
+      <button class="btn small" id="btnSaveDotace">Uložit tabulku dotací</button>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<div id="toast-area"></div>
+
+<script src="vendor/sql-wasm-binary.js"></script>
+<script src="vendor/sql-wasm.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="vendor/jspdf.umd.min.js"></script>
+<script src="vendor/dejavu-fonts.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
