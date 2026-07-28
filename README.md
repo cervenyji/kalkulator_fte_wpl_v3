@@ -32,8 +32,13 @@ Celou složku je potřeba udržet spolu — `index.html` odkazuje na soubory ve
    zároveň se uloží do databáze (záložka „Historie kalkulací“), takže je
    kdykoliv zpětně dohledatelné, z jakých vstupních dat kalkulace vznikla.
 5. Volitelně klikněte na „Exportovat PDF s přehledem WPL“ pro stažení PDF
-   shrnutí — obsahuje i doporučený formát pobočky, počet fasttracků a počet
-   židlí v čekací zóně (stejná logika jako v původní appce).
+   shrnutí — obsahuje přehled všech pozic z checklistu, referenční data (verzi)
+   a nepřítomnost po segmentech, se kterými se počítalo, souhrnnou tabulku a
+   doporučený formát pobočky, počet fasttracků a počet židlí v čekací zóně
+   (stejná logika jako v původní appce).
+6. V sekci „4) Sestavení layoutu“ přiřaďte konkrétní nábytek do každé zóny
+   s vypočítaným požadavkem WPL a uložte layout — poté lze vyexportovat PDF
+   se sestavou nábytku po zónách a segmentech.
 
 Databáze se po každé změně (nahrání checklistu, spočítání kalkulace, úprava
 referenčních dat) automaticky ukládá zpět do stejného souboru
@@ -75,19 +80,18 @@ kalkulace i v historii kalkulací tak najdete rozbalovací odkaz „Referenční
 data použitá při této kalkulaci“, který ukáže přesné hodnoty absence a
 časových dotací platné v okamžiku výpočtu — i zpětně, po dalších úpravách.
 
-## Analýza segmentů
+## Sestavení layoutu
 
-Pokud nahraný checklist obsahuje list **„ANALÝZA SEGMENTŮ“** (celkový přehled
-FTE a WPL po místnostech/zónách v rámci segmentů), aplikace jej při načtení
-checklistu uloží a zobrazí:
+Pro každý segment a zónu, kde kalkulace vyžaduje WPL > 0, aplikace nabídne
+nábytek definovaný v tabulce `furniture_to_zone` (shodná data jako v původní
+appce) a umožní zadat počet kusů. Živě se zobrazuje, kolik WPL je již
+přiřazeno vůči požadavku. Tlačítkem „Uložit layout“ se přiřazení uloží k dané
+kalkulaci (tabulka `layouts`) a lze ho poté exportovat do PDF se sestavou
+nábytku po zónách a segmentech — stejné rozdělení jako v původní appce
+(`export_layout_to_pdf`). Layout je vidět i v historii kalkulací.
 
-- v sekci „Analýza segmentů“ pod výsledkem nové kalkulace,
-- v detailu každé historické kalkulace (záložka „Historie kalkulací“).
-
-Tabulka se zobrazuje přesně tak, jak je vypočítána v Excelu (včetně sloučených
-buněk), a lze ji exportovat do samostatného PDF tlačítkem „Exportovat PDF
-analýzy segmentů“. Pokud checklist tento list neobsahuje, zobrazí se
-informační poznámka a kalkulace proběhne normálně bez něj.
+Pokud pro nějaký segment/zónu není v databázi definovaný žádný nábytek,
+zobrazí se u dané zóny informační poznámka místo formuláře.
 
 ## Formát vstupního Excelu
 

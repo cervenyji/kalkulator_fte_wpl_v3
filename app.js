@@ -56,11 +56,24 @@ CREATE TABLE IF NOT EXISTS ref_data_versions (
   absence_json TEXT,
   dotace_json TEXT
 );
-CREATE TABLE IF NOT EXISTS analyza_segmentu (
+CREATE TABLE IF NOT EXISTS furniture_to_zone (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  load_key TEXT,
-  created_at TEXT,
-  grid_json TEXT
+  segment TEXT,
+  furniture TEXT,
+  zone TEXT,
+  wpl_counter REAL
+);
+CREATE TABLE IF NOT EXISTS layouts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  layout_key TEXT,
+  calculation_key TEXT,
+  segment TEXT,
+  zone TEXT,
+  furniture TEXT,
+  wpl_assigned REAL,
+  calculated_wpl REAL,
+  piece_count REAL,
+  created_at TEXT
 );
 `;
 
@@ -68,6 +81,12 @@ CREATE TABLE IF NOT EXISTS analyza_segmentu (
 function migrateSchema(dbi) {
   dbi.run(SCHEMA_SQL);
   try { dbi.run("ALTER TABLE calculations ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
+  const furnitureCount = dbAll("SELECT COUNT(*) AS n FROM furniture_to_zone", [], dbi)[0].n;
+  if (furnitureCount === 0) {
+    const ins = dbi.prepare("INSERT INTO furniture_to_zone (segment, furniture, zone, wpl_counter) VALUES (?, ?, ?, ?)");
+    SEED_FURNITURE.forEach((r) => { ins.run(r); });
+    ins.free();
+  }
 }
 
 // Výchozí referenční data — shodná s inicializace_db.py, použije se jen při
@@ -203,6 +222,95 @@ const SEED_CASOVE_DOTACE = [
   ["CESTOVNÍ", "firemní bankéř - master", null, 20, 80, null],
 ];
 
+// Nábytek dostupný pro přiřazení do layoutu, po segmentech a zónách — shodné
+// s furniture_to_zone z inicializace_db.py (bez odkazů na buňky Excelu, export
+// zpět do checklistu tato aplikace nedělá).
+const SEED_FURNITURE = [
+  ["OSTATNÍ", "Kancelářské místo", "backoffice_zone", 1],
+  ["OSTATNÍ", "Kancelář", "backoffice_zone", 1],
+  ["OSTATNÍ", "Flex box", "backoffice_zone", 1],
+  ["OSTATNÍ", "Fast track backoffice", "backoffice_zone", 0],
+  ["OSTATNÍ", "Jednací místnost", "meeting_zone", 1],
+
+  ["CESTOVNÍ", "Kancelářské místo", "backoffice_zone", 1],
+  ["CESTOVNÍ", "Flex box", "backoffice_zone", 1],
+  ["CESTOVNÍ", "Fast track backoffice", "backoffice_zone", 0],
+  ["CESTOVNÍ", "Kancelář", "office_room", 1],
+  ["CESTOVNÍ", "Jednací místnost", "meeting_zone", 1],
+
+  ["CESTOVNÍ POZICE", "Kancelářské místo", "backoffice_zone", 1],
+  ["CESTOVNÍ POZICE", "Kancelář", "backoffice_zone", 1],
+  ["CESTOVNÍ POZICE", "Flex box", "backoffice_zone", 1],
+  ["CESTOVNÍ POZICE", "Fast track backoffice", "backoffice_zone", 0],
+
+  ["EPB", "Kancelářské místo", "backoffice_zone", 1],
+  ["EPB", "Flex box", "backoffice_zone", 1],
+  ["EPB", "Fast track backoffice", "backoffice_zone", 0],
+  ["EPB", "Jednací místnost", "meeting_zone", 1],
+  ["EPB", "Kancelář", "office_room", 1],
+  ["EPB", "Recepce", "service_zone", 1],
+  ["EPB", "Čekací zóna (lounge)", "service_zone", 0],
+
+  ["EPC", "Kancelářské místo", "backoffice_zone", 1],
+  ["EPC", "Fast track backoffice", "backoffice_zone", 0],
+  ["EPC", "Flex box", "backoffice_zone", 1],
+  ["EPC", "Jednací místnost", "meeting_zone", 1],
+  ["EPC", "Kancelář", "office_room", 1],
+  ["EPC", "Recepce", "service_zone", 1],
+  ["EPC", "Čekací zóna (lounge)", "service_zone", 0],
+
+  ["HC", "Kancelářské místo", "backoffice_zone", 1],
+  ["HC", "Flex box", "backoffice_zone", 1],
+  ["HC", "Fast track backoffice", "backoffice_zone", 0],
+  ["HC", "Kancelář", "office_room", 1],
+
+  ["PROVOZ", "Kancelářské místo", "backoffice_zone", 1],
+  ["PROVOZ", "Flex box", "backoffice_zone", 1],
+  ["PROVOZ", "Fast track backoffice", "backoffice_zone", 0],
+  ["PROVOZ", "Kancelář", "office_room", 1],
+
+  ["RKC", "Kancelářské místo", "backoffice_zone", 1],
+  ["RKC", "Flex box", "backoffice_zone", 1],
+  ["RKC", "Fast track backoffice", "backoffice_zone", 0],
+  ["RKC", "Jednací místnost", "meeting_zone", 1],
+  ["RKC", "Kancelář", "office_room", 1],
+  ["RKC", "Recepce", "service_zone", 1],
+
+  ["SBC", "Kancelářské místo", "backoffice_zone", 1],
+  ["SBC", "Flex box", "backoffice_zone", 1],
+  ["SBC", "Fast track backoffice", "backoffice_zone", 0],
+  ["SBC", "Kancelář", "office_room", 1],
+
+  ["MMMA", "Flex box", "meeting_zone", 1],
+  ["MMMA", "Jednací místnost", "meeting_zone", 1],
+  ["MMMA", "Semidescreete room", "meeting_zone", 1],
+  ["MMMA", "Záliv", "meeting_zone", 1],
+  ["MMMA", "Lenka", "meeting_zone", 1],
+  ["MMMA", "Kancelář", "office_room", 1],
+  ["MMMA", "Theke - nízká", "service_zone", 1],
+  ["MMMA", "Theke - vysoká", "service_zone", 1],
+  ["MMMA", "Lenka vítací", "service_zone", 1],
+  ["MMMA", "Fast track (stolek a židle)", "service_zone", 0],
+  ["MMMA", "Čekací zóna (židle)", "service_zone", 0],
+  ["MMMA", "Čekací zóna (obývák)", "service_zone", 0],
+  ["MMMA", "Lenka", "service_zone", 1],
+  ["MMMA", "Martička", "service_zone", 1],
+  ["MMMA", "Martička s TT", "service_zone", 1],
+  ["MMMA", "Pokladní ostrov typu 1/2C (1:1,TT+TT,1WPL)", "service_zone", 1],
+  ["MMMA", "Pokladní ostrov typu 1/2C (1:1,ARP+TT,1WPL)", "service_zone", 1],
+  ["MMMA", "Pokladní ostrov typu 1/2C (1:1,ARP+TT+TT,1WPL)", "service_zone", 1],
+  ["MMMA", "Pokladní ostrov typu C (1:1,TT+TT,1WPL)", "service_zone", 1],
+  ["MMMA", "Pokladní ostrov typu C (1:1,ARP+TT+TT,1WPL)", "service_zone", 1],
+  ["MMMA", "Pokladní ostrov typu C (1:1,ARP+TT+TT,2WPL)", "service_zone", 2],
+  ["MMMA", "Pokladna s bezpečnostní nástavbou", "service_zone", 1],
+  ["MMMA", "Kancelářské místo", "backoffice_zone", 1],
+  ["MMMA", "Fast track backoffice", "backoffice_zone", 0],
+  ["MMMA", "Interní zasedací místnost - malá", "backoffice_zone", 0],
+  ["MMMA", "Interní zasedací místnost - velká", "backoffice_zone", 1],
+  ["MMMA", "Relax zóna", "backoffice_zone", 0],
+  ["MMMA", "Flex box", "backoffice_zone", 1],
+];
+
 /* ---------------------------- Stav aplikace ---------------------------- */
 
 let SQL = null;
@@ -283,6 +391,9 @@ function createNewDatabase() {
     (segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room) VALUES (?, ?, ?, ?, ?, ?)`);
   SEED_CASOVE_DOTACE.forEach((r) => { insDotace.run(r); });
   insDotace.free();
+  const insFurniture = db.prepare("INSERT INTO furniture_to_zone (segment, furniture, zone, wpl_counter) VALUES (?, ?, ?, ?)");
+  SEED_FURNITURE.forEach((r) => { insFurniture.run(r); });
+  insFurniture.free();
   ensureRefVersionUpToDate("Založení nové databáze");
 }
 
@@ -559,7 +670,7 @@ async function handleExcelFile(file) {
   msgsEl.innerHTML = "";
   document.getElementById("excelPreview").innerHTML = "";
   document.getElementById("resultsPanel").style.display = "none";
-  document.getElementById("analyzaSegmentuPanel").style.display = "none";
+  document.getElementById("layoutPanel").style.display = "none";
   if (!requireDb()) return;
   try {
     const buf = await file.arrayBuffer();
@@ -580,12 +691,6 @@ async function handleExcelFile(file) {
         r.segment, r.pozice, r.fte, r.wpl_load, createdAt]);
     });
     ins.free();
-
-    const analyzaGrid = extractAnalyzaSegmentuGrid(wb);
-    if (analyzaGrid) {
-      db.run("INSERT INTO analyza_segmentu (load_key, created_at, grid_json) VALUES (?, ?, ?)",
-        [load_key, createdAt, JSON.stringify(analyzaGrid)]);
-    }
 
     await persistDatabase();
 
@@ -722,7 +827,7 @@ function runCalculation() {
 
   persistDatabase();
 
-  const inputRows = rows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte }));
+  const inputRows = rows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte, wpl_load: r.wpl_load }));
   renderResults({ calculation_key, load_key, createdAt, rows: resultRows, celkem: celkemRow, warnings, inputRows,
     refVersionId, pobocka_id: pendingLoad.pobocka_id, pobocka_nazev: pendingLoad.pobocka_nazev, oteviraci_doba });
   toast("Kalkulace byla spočítána a uložena do historie.", "ok");
@@ -759,7 +864,10 @@ function renderResults(result) {
     </div>`;
   document.getElementById("btnExportPdf").addEventListener("click", () => exportCalculationPdf(result));
 
-  renderAnalyzaSegmentuSection("analyzaSegmentuArea", result.load_key, result, "analyzaSegmentuPanel");
+  document.getElementById("layoutPanel").style.display = "block";
+  renderLayoutSection("layoutArea", result.rows, {
+    calculation_key: result.calculation_key, pobocka_id: result.pobocka_id, pobocka_nazev: result.pobocka_nazev,
+  });
 }
 
 // Vrátí sbalitelné shrnutí referenčních dat, se kterými byla kalkulace spočítána.
@@ -842,12 +950,20 @@ function computeDerivedPdfStats(result) {
   };
 }
 
+// Vrátí [nepritomnost, homeoffice] pro daný segment ze snapshotu verze referenčních
+// dat (formát [[segment, nepritomnost, homeoffice], ...]) — [0, 0], pokud chybí.
+function absenceFromSnapshot(absenceSnapshot, segment) {
+  const row = (absenceSnapshot || []).find((r) => r[0] === segment);
+  return row ? [row[1] || 0, row[2] || 0] : [0, 0];
+}
+
 function exportCalculationPdf(result) {
   const note = document.getElementById("pdfNote") ? document.getElementById("pdfNote").value.trim() : "";
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF();
   const marginX = 14;
   let y = 18;
+  const pageBottom = 280;
 
   pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(16);
   pdf.text("Kalkulace FTE → WPL", marginX, y); y += 9;
@@ -862,7 +978,42 @@ function exportCalculationPdf(result) {
     `Datum vytvoření: ${new Date(result.createdAt).toLocaleString("cs-CZ")}`,
   ];
   infoLines.forEach((line) => { pdf.text(line, marginX, y); y += 6; });
+
+  const version = result.refVersionId ? getRefVersionById(result.refVersionId) : null;
+  const presentSegments = [...new Set((result.inputRows || []).map((r) => r.segment))];
+  if (version) {
+    pdf.text(`Referenční data: verze #${version.id} — ${version.note} (${new Date(version.created_at).toLocaleString("cs-CZ")})`, marginX, y);
+    y += 6;
+    const absenceParts = presentSegments.map((seg) => {
+      const [nepritomnost, homeoffice] = absenceFromSnapshot(version.absence, seg);
+      return `${seg} ${(nepritomnost + homeoffice).toFixed(1)} %`;
+    });
+    const absenceLines = pdf.splitTextToSize(`Celková nepřítomnost dle segmentů: ${absenceParts.join(", ")}`, 182);
+    absenceLines.forEach((line) => { pdf.text(line, marginX, y); y += 6; });
+  } else {
+    pdf.text("Referenční data: verze neznámá (kalkulace vytvořena před zavedením verzování).", marginX, y);
+    y += 6;
+  }
   y += 4;
+
+  if ((result.inputRows || []).length) {
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
+    pdf.text("Přehled pozic z checklistu", marginX, y); y += 7;
+    pdf.setFontSize(9);
+    let lastSegment = null;
+    result.inputRows.forEach((r) => {
+      if (y > pageBottom) { pdf.addPage(); y = 18; }
+      if (r.segment !== lastSegment) {
+        pdf.setFont("DejaVuSans", "bold");
+        pdf.text(`Segment: ${r.segment}`, marginX, y); y += 5.5;
+        lastSegment = r.segment;
+      }
+      const wplDisplay = r.wpl_load ?? result.oteviraci_doba;
+      pdf.setFont("DejaVuSans", "normal");
+      pdf.text(`- ${r.pozice}, FTE: ${fmt1(r.fte)}, WPL: ${fmt1(wplDisplay)}`, marginX + 4, y); y += 5.5;
+    });
+    y += 4;
+  }
 
   pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
   pdf.text("Souhrnná tabulka (WPL po zónách)", marginX, y); y += 7;
@@ -870,7 +1021,6 @@ function exportCalculationPdf(result) {
   const headers = ["Segment", "FTE", "ServiceZ", "MeetingZ", "BackofficeZ", "OfficeRoom"];
   const colW = [46, 20, 26, 26, 30, 26];
   const rowH = 7;
-  const pageBottom = 280;
 
   // Poznámka: setFillColor/setTextColor se volají znovu před KAŽDOU buňkou,
   // ne jednou před smyčkou — jsPDF si barvu vyplně a barvu textu ukládá do
@@ -949,177 +1099,206 @@ function exportCalculationPdf(result) {
   pdf.save(`export_${result.calculation_key}.pdf`);
 }
 
-/* --------------------------- Analýza segmentů ------------------------------ */
+/* --------------------------- Sestavení layoutu ----------------------------- */
 
-const ANALYZA_SEGMENTU_SHEET = "ANALÝZA SEGMENTŮ";
+const ZONE_LABELS = {
+  service_zone: "Service zone",
+  meeting_zone: "Meeting zone",
+  backoffice_zone: "Backoffice zone",
+  office_room: "Office room",
+};
 
-// Přečte list „ANALÝZA SEGMENTŮ“ z nahraného checklistu jako obecnou mřížku
-// buněk (hodnoty + sloučené buňky), beze znalosti konkrétních vzorců na listu
-// CHL, ze kterých je tento list v Excelu odvozen — zobrazíme přesně to, co je
-// v checklistu vypočítáno.
-function extractAnalyzaSegmentuGrid(workbook) {
-  if (!workbook.SheetNames.includes(ANALYZA_SEGMENTU_SHEET)) return null;
-  const ws = workbook.Sheets[ANALYZA_SEGMENTU_SHEET];
-  if (!ws["!ref"]) return null;
-  const range = XLSX.utils.decode_range(ws["!ref"]);
-  const nRows = range.e.r - range.s.r + 1;
-  const nCols = range.e.c - range.s.c + 1;
-  const cells = [];
-  for (let r = 0; r < nRows; r++) {
-    const row = [];
-    for (let c = 0; c < nCols; c++) {
-      const addr = XLSX.utils.encode_cell({ r: range.s.r + r, c: range.s.c + c });
-      const cell = ws[addr];
-      row.push(cell && cell.v !== undefined ? cell.v : null);
-    }
-    cells.push(row);
-  }
-  const merges = (ws["!merges"] || []).map((m) => ({
-    r0: m.s.r - range.s.r, c0: m.s.c - range.s.c,
-    r1: m.e.r - range.s.r, c1: m.e.c - range.s.c,
-  }));
-  return { cells, merges, nRows, nCols };
+function getFurnitureOptions(segment, zone) {
+  return dbAll("SELECT furniture, wpl_counter FROM furniture_to_zone WHERE segment = ? AND zone = ? ORDER BY id", [segment, zone]);
 }
 
-function getAnalyzaSegmentuGrid(loadKey) {
-  const row = dbAll("SELECT grid_json FROM analyza_segmentu WHERE load_key = ? ORDER BY id DESC LIMIT 1", [loadKey])[0];
-  return row ? JSON.parse(row.grid_json) : null;
+function getExistingLayout(calculationKey) {
+  return dbAll(`SELECT layout_key, segment, zone, furniture, wpl_assigned, calculated_wpl, piece_count
+    FROM layouts WHERE calculation_key = ? ORDER BY id`, [calculationKey]);
 }
 
-function fmtCellText(v) {
-  if (v === null || v === undefined) return "";
-  if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(1);
-  return String(v);
-}
-
-function renderGridTable(grid) {
-  const { cells, nRows, nCols } = grid;
-  const { covered, anchors } = computeMergeMaps(grid);
-  let html = '<div class="table-wrap"><table class="grid-table"><tbody>';
-  for (let r = 0; r < nRows; r++) {
-    html += "<tr>";
-    for (let c = 0; c < nCols; c++) {
-      if (covered[r][c]) continue;
-      const span = anchors[`${r},${c}`];
-      const attrs = span ? ` rowspan="${span.rowspan}" colspan="${span.colspan}"` : "";
-      html += `<td${attrs}>${esc(fmtCellText(cells[r][c]))}</td>`;
-    }
-    html += "</tr>";
-  }
-  html += "</tbody></table></div>";
-  return html;
-}
-
-function renderAnalyzaSegmentuSection(containerId, loadKey, meta, panelId) {
+// segmentRows = výsledkové řádky kalkulace (bez řádku "Celkem"), meta = {calculation_key, pobocka_id, pobocka_nazev}
+function renderLayoutSection(containerId, segmentRows, meta) {
   const container = document.getElementById(containerId);
   if (!container) return;
-  if (panelId) document.getElementById(panelId).style.display = "block";
-  const grid = getAnalyzaSegmentuGrid(loadKey);
-  if (!grid) {
-    container.innerHTML = `<p class="muted">Nahraný checklist neobsahoval list „${ANALYZA_SEGMENTU_SHEET}“, analýza segmentů není k dispozici.</p>`;
+  const existing = getExistingLayout(meta.calculation_key);
+  if (existing.length) {
+    renderLayoutReadonly(container, existing, meta);
+  } else {
+    renderLayoutForm(container, segmentRows, meta);
+  }
+}
+
+function renderLayoutForm(container, segmentRows, meta) {
+  let groupsHtml = "";
+  let anyGroup = false;
+  segmentRows.forEach((seg) => {
+    ZONES.forEach((zone) => {
+      const required = seg[zone] || 0;
+      if (required <= 0) return;
+      anyGroup = true;
+      const options = getFurnitureOptions(seg.segment, zone);
+      if (!options.length) {
+        groupsHtml += `
+          <div class="layout-group">
+            <h4>${esc(seg.segment)} — ${ZONE_LABELS[zone]} <span class="muted">(potřeba WPL: ${fmt1(required)})</span></h4>
+            <p class="muted">Pro tento segment a zónu nejsou v databázi definované žádné nábytkové prvky
+            (tabulka „furniture_to_zone“) — WPL nelze rozpočítat na konkrétní kusy nábytku.</p>
+          </div>`;
+        return;
+      }
+      const rowsHtml = options.map((o) => `<tr>
+        <td>${esc(o.furniture)}</td>
+        <td>${o.wpl_counter > 0 ? fmt1(o.wpl_counter) : '<span class="muted">nepřispívá k WPL</span>'}</td>
+        <td><input type="number" min="0" step="1" value="0" class="layout-qty"
+          data-furniture="${esc(o.furniture)}" data-wpl-counter="${o.wpl_counter}"></td>
+      </tr>`).join("");
+      groupsHtml += `
+        <div class="layout-group" data-segment="${esc(seg.segment)}" data-zone="${zone}" data-required="${required}">
+          <h4>${esc(seg.segment)} — ${ZONE_LABELS[zone]} <span class="muted">(potřeba WPL: ${fmt1(required)})</span></h4>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Nábytek</th><th>WPL / kus</th><th>Počet kusů</th></tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table></div>
+          <p class="muted layout-summary">Přiřazeno WPL: <strong>0.0</strong> / ${fmt1(required)}</p>
+        </div>`;
+    });
+  });
+  if (!anyGroup) {
+    container.innerHTML = `<p class="muted">Pro tuto kalkulaci nejsou definované nábytkové prvky nebo není potřeba žádné WPL — sestavení layoutu se neprovádí.</p>`;
     return;
   }
-  const btnId = `btnExportAnalyza_${containerId}`;
-  container.innerHTML = `${renderGridTable(grid)}
-    <div class="row" style="margin-top:12px;">
-      <button class="btn secondary" id="${btnId}">Exportovat PDF analýzy segmentů</button>
+  container.innerHTML = `${groupsHtml}
+    <div class="row" style="margin-top:14px;">
+      <button class="btn" id="btnSaveLayout">Uložit layout</button>
     </div>`;
-  document.getElementById(btnId).addEventListener("click", () => exportAnalyzaSegmentuPdf(grid, meta));
+  wireLayoutFormListeners(container);
+  document.getElementById("btnSaveLayout").addEventListener("click", () => saveLayoutAssignment(container, meta));
 }
 
-// Sestaví pomocné mapy pro kreslení sloučených buněk: které buňky jsou "pokryté"
-// jinou buňkou (a mají se při kreslení přeskočit) a jaký rowspan/colspan má buňka,
-// která je kotvou (levým horním rohem) sloučené oblasti.
-function computeMergeMaps(grid) {
-  const covered = Array.from({ length: grid.nRows }, () => new Array(grid.nCols).fill(false));
-  const anchors = {};
-  grid.merges.forEach((m) => {
-    anchors[`${m.r0},${m.c0}`] = { rowspan: m.r1 - m.r0 + 1, colspan: m.c1 - m.c0 + 1 };
-    for (let r = m.r0; r <= m.r1; r++) {
-      for (let c = m.c0; c <= m.c1; c++) {
-        if (r === m.r0 && c === m.c0) continue;
-        covered[r][c] = true;
-      }
-    }
+function wireLayoutFormListeners(container) {
+  container.querySelectorAll(".layout-group").forEach((group) => {
+    const update = () => {
+      let assigned = 0;
+      group.querySelectorAll(".layout-qty").forEach((input) => {
+        const pieces = parseInt(input.value, 10) || 0;
+        const wplCounter = parseFloat(input.dataset.wplCounter) || 0;
+        assigned += pieces * wplCounter;
+      });
+      const required = parseFloat(group.dataset.required);
+      const summaryEl = group.querySelector(".layout-summary");
+      summaryEl.querySelector("strong").textContent = assigned.toFixed(1);
+      summaryEl.classList.toggle("over", assigned > required);
+    };
+    group.querySelectorAll(".layout-qty").forEach((input) => input.addEventListener("input", update));
   });
-  return { covered, anchors };
 }
 
-function exportAnalyzaSegmentuPdf(grid, meta) {
+function saveLayoutAssignment(container, meta) {
+  const layoutKey = `layout_${meta.pobocka_id}-${meta.pobocka_nazev}-${nowStamp()}`;
+  const createdAt = nowIso();
+  const rows = [];
+  container.querySelectorAll(".layout-group").forEach((group) => {
+    const segment = group.dataset.segment;
+    const zone = group.dataset.zone;
+    const required = parseFloat(group.dataset.required);
+    group.querySelectorAll(".layout-qty").forEach((input) => {
+      const pieces = parseInt(input.value, 10) || 0;
+      if (pieces <= 0) return;
+      const wplCounter = parseFloat(input.dataset.wplCounter) || 0;
+      rows.push({ segment, zone, furniture: input.dataset.furniture,
+        piece_count: pieces, wpl_assigned: pieces * wplCounter, calculated_wpl: required });
+    });
+  });
+  if (!rows.length) { toast("Nebyl přiřazen žádný nábytek — zadejte alespoň jeden počet kusů.", "err"); return; }
+
+  const ins = db.prepare(`INSERT INTO layouts
+    (layout_key, calculation_key, segment, zone, furniture, wpl_assigned, calculated_wpl, piece_count, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  rows.forEach((r) => {
+    ins.run([layoutKey, meta.calculation_key, r.segment, r.zone, r.furniture, r.wpl_assigned, r.calculated_wpl, r.piece_count, createdAt]);
+  });
+  ins.free();
+  persistDatabase();
+  toast("Layout byl uložen.", "ok");
+  renderLayoutReadonly(container, getExistingLayout(meta.calculation_key), meta);
+}
+
+function renderLayoutReadonly(container, rows, meta) {
+  const bySegZone = {};
+  const order = [];
+  rows.forEach((r) => {
+    const key = `${r.segment}||${r.zone}`;
+    if (!bySegZone[key]) { bySegZone[key] = { segment: r.segment, zone: r.zone, calculated_wpl: r.calculated_wpl, items: [] }; order.push(key); }
+    bySegZone[key].items.push(r);
+  });
+  const groupsHtml = order.map((key) => {
+    const g = bySegZone[key];
+    const itemsHtml = g.items.map((it) => `<li>${esc(it.furniture)} — ${fmt1(it.piece_count)} ks
+      ${it.wpl_assigned > 0 ? `(WPL: ${fmt1(it.wpl_assigned)})` : '<span class="muted">(nepočítá se jako WPL)</span>'}</li>`).join("");
+    return `<div class="layout-group">
+      <h4>${esc(g.segment)} — ${ZONE_LABELS[g.zone] || g.zone} <span class="muted">(potřeba WPL: ${fmt1(g.calculated_wpl)})</span></h4>
+      <ul>${itemsHtml}</ul>
+    </div>`;
+  }).join("");
+  container.innerHTML = `${groupsHtml}
+    <div class="row" style="margin-top:12px;">
+      <button class="btn secondary" id="btnExportLayoutPdf">Exportovat PDF layoutu</button>
+    </div>`;
+  document.getElementById("btnExportLayoutPdf").addEventListener("click", () => exportLayoutPdf(rows, meta));
+}
+
+function exportLayoutPdf(rows, meta) {
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF();
-  const marginX = 10;
-  const pageWidth = pdf.internal.pageSize.getWidth();
+  const marginX = 14;
   const pageBottom = 280;
   let y = 18;
 
   pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(16);
-  pdf.text("Analýza segmentů", marginX, y); y += 9;
+  pdf.text("Sestavení layoutu", marginX, y); y += 9;
 
   pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(10);
-  [`Název pobočky: ${meta.pobocka_nazev || ""}`, `ID pobočky: ${meta.pobocka_id || ""}`, `Load key: ${meta.load_key || ""}`]
+  [`Název pobočky: ${meta.pobocka_nazev || ""}`, `ID pobočky: ${meta.pobocka_id || ""}`,
+    `Calculation key: ${meta.calculation_key || ""}`, `Datum vytvoření: ${new Date().toLocaleString("cs-CZ")}`]
     .forEach((line) => { pdf.text(line, marginX, y); y += 6; });
   y += 4;
 
-  const { nRows, nCols, cells } = grid;
-  const { covered, anchors } = computeMergeMaps(grid);
-  const usableWidth = pageWidth - 2 * marginX;
-  const colW = usableWidth / nCols;
-  const baseRowH = 7;
-  const lineHeight = 3.4;
+  const byZone = {};
+  rows.forEach((r) => { (byZone[r.zone] = byZone[r.zone] || []).push(r); });
 
-  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.5);
+  ZONES.forEach((zone) => {
+    const zoneRows = byZone[zone];
+    if (!zoneRows || !zoneRows.length) return;
+    const totalPieces = zoneRows.reduce((s, r) => s + r.piece_count, 0);
+    const totalWpl = zoneRows.reduce((s, r) => s + r.wpl_assigned, 0);
+    if (y > pageBottom - 14) { pdf.addPage(); y = 18; }
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
+    pdf.text(`${ZONE_LABELS[zone]} — celkem: ${totalPieces} ks, WPL: ${fmt1(totalWpl)}`, marginX, y); y += 8;
 
-  // Řádky s dlouhým textem (např. víceslovné názvy zón v hlavičce) potřebují
-  // více než jeden řádek textu — výška řádku se proto počítá dopředu podle
-  // toho, kolik řádků textu potřebuje nejnáročnější nesloučená buňka v daném
-  // řádku, aby se text nezobrazil oříznutý.
-  const rowHeights = new Array(nRows).fill(baseRowH);
-  for (let r = 0; r < nRows; r++) {
-    let c = 0;
-    while (c < nCols) {
-      if (covered[r][c]) { c += 1; continue; }
-      const span = anchors[`${r},${c}`] || { rowspan: 1, colspan: 1 };
-      if (span.rowspan === 1) {
-        const text = fmtCellText(cells[r][c]);
-        if (text) {
-          const lines = pdf.splitTextToSize(text, colW * span.colspan - 3);
-          const needed = lines.length * lineHeight + 3;
-          if (needed > rowHeights[r]) rowHeights[r] = needed;
-        }
-      }
-      c += span.colspan;
-    }
-  }
-  const rowSpanHeight = (r0, span) => {
-    let h = 0;
-    for (let r = r0; r < r0 + span; r++) h += rowHeights[r];
-    return h;
-  };
+    const bySegment = {};
+    const segOrder = [];
+    zoneRows.forEach((r) => {
+      if (!bySegment[r.segment]) { bySegment[r.segment] = []; segOrder.push(r.segment); }
+      bySegment[r.segment].push(r);
+    });
+    segOrder.forEach((segment) => {
+      if (y > pageBottom - 10) { pdf.addPage(); y = 18; }
+      pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
+      pdf.text(segment, marginX + 3, y); y += 6;
+      pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(9);
+      bySegment[segment].forEach((it) => {
+        if (y > pageBottom) { pdf.addPage(); y = 18; }
+        const line = `- ${it.furniture} (${it.piece_count} ks)` +
+          (it.wpl_assigned > 0 ? ` — WPL: ${fmt1(it.wpl_assigned)}` : " — nepočítá se jako WPL");
+        pdf.text(line, marginX + 6, y); y += 5.5;
+      });
+      y += 2;
+    });
+    y += 3;
+  });
 
-  for (let r = 0; r < nRows; r++) {
-    if (y + rowHeights[r] > pageBottom) { pdf.addPage(); y = 18; }
-    let x = marginX;
-    let c = 0;
-    while (c < nCols) {
-      if (covered[r][c]) { x += colW; c += 1; continue; }
-      const span = anchors[`${r},${c}`] || { rowspan: 1, colspan: 1 };
-      const w = colW * span.colspan;
-      const h = rowSpanHeight(r, span.rowspan);
-      pdf.rect(x, y, w, h, "D");
-      const text = fmtCellText(cells[r][c]);
-      if (text) {
-        const lines = pdf.splitTextToSize(text, w - 3);
-        let ty = y + 4.2;
-        lines.forEach((line) => { if (ty < y + h) { pdf.text(line, x + 1.5, ty); ty += lineHeight; } });
-      }
-      x += w;
-      c += span.colspan;
-    }
-    y += rowHeights[r];
-  }
-
-  pdf.save(`analyza_segmentu_${meta.load_key || "export"}.pdf`);
+  pdf.save(`layout_${meta.calculation_key || "export"}.pdf`);
 }
 
 /* ------------------------------ Historie ---------------------------------- */
@@ -1176,22 +1355,22 @@ function showHistoryDetail(calculationKey, loadKey) {
     <div class="row" style="margin-top:12px;">
       <button class="btn secondary" id="btnExportPdfHistory">Exportovat PDF s přehledem WPL</button>
     </div>
-    <h3 style="margin-top:22px;">Analýza segmentů</h3>
-    <div id="historyAnalyzaSegmentuArea"></div>`;
+    <h3 style="margin-top:22px;">Sestavení layoutu</h3>
+    <div id="historyLayoutArea"></div>`;
 
+  const rowsNoTotal = resultRows.filter((r) => r.segment !== "Celkem");
   document.getElementById("btnExportPdfHistory").addEventListener("click", () => {
-    const rowsNoTotal = resultRows.filter((r) => r.segment !== "Celkem");
     exportCalculationPdf({
       calculation_key: calculationKey, load_key: loadKey,
       createdAt, rows: rowsNoTotal, celkem: found || {},
-      inputRows: inputRows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte })),
+      inputRows: inputRows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte, wpl_load: r.wpl_load })),
       warnings: [], pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev,
-      oteviraci_doba: branch?.oteviraci_doba,
+      oteviraci_doba: branch?.oteviraci_doba, refVersionId,
     });
   });
 
-  renderAnalyzaSegmentuSection("historyAnalyzaSegmentuArea", loadKey,
-    { pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev, load_key: loadKey });
+  renderLayoutSection("historyLayoutArea", rowsNoTotal,
+    { calculation_key: calculationKey, pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev });
 
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }

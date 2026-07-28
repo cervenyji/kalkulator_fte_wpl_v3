@@ -101,10 +101,15 @@
   .grid2{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
   @media (max-width:720px){.grid2{grid-template-columns:1fr;}}
   textarea{width:100%; border:1px solid var(--border); border-radius:6px; padding:8px; font-family:inherit; font-size:13px;}
-  .grid-table td{text-align:center;}
-  .grid-table td:first-child{text-align:left; font-weight:600;}
   details summary{font-size:13px;}
   details h3{margin-top:16px;}
+  .layout-group{border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:14px;}
+  .layout-group h4{margin:0 0 8px;}
+  .layout-group ul{margin:0; padding-left:18px;}
+  .layout-group li{margin-bottom:3px;}
+  .layout-qty{width:70px;}
+  .layout-summary strong{color:var(--accent-dark);}
+  .layout-summary.over strong{color:var(--warn);}
 </style>
 </head>
 <body>
@@ -159,11 +164,11 @@
     <div id="resultsArea"></div>
   </div>
 
-  <div class="panel" id="analyzaSegmentuPanel" style="display:none;">
-    <h2>Analýza segmentů</h2>
-    <p class="muted">Celkový pohled na FTE a WPL po místnostech/zónách v rámci segmentů — načteno z listu
-    „ANALÝZA SEGMENTŮ“ nahraného checklistu.</p>
-    <div id="analyzaSegmentuArea"></div>
+  <div class="panel" id="layoutPanel" style="display:none;">
+    <h2>4) Sestavení layoutu</h2>
+    <p class="muted">Pro každou zónu se spočítaným požadavkem WPL vyberte, kolika kusy jakého nábytku bude
+    obsazena, a uložte layout. Po uložení lze vyexportovat PDF se sestavou nábytku po zónách a segmentech.</p>
+    <div id="layoutArea"></div>
   </div>
 </section>
 

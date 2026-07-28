@@ -84,11 +84,27 @@ def main():
     """)
 
     cur.execute("""
-    CREATE TABLE analyza_segmentu (
+    CREATE TABLE furniture_to_zone (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        load_key TEXT,
-        created_at TEXT,
-        grid_json TEXT
+        segment TEXT,
+        furniture TEXT,
+        zone TEXT,
+        wpl_counter REAL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE layouts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        layout_key TEXT,
+        calculation_key TEXT,
+        segment TEXT,
+        zone TEXT,
+        furniture TEXT,
+        wpl_assigned REAL,
+        calculated_wpl REAL,
+        piece_count REAL,
+        created_at TEXT
     )
     """)
 
@@ -243,6 +259,97 @@ def main():
         INSERT INTO casove_dotace (segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room)
         VALUES (?, ?, ?, ?, ?, ?)
     """, casove_dotace_data)
+
+    furniture_data = [
+        # (segment, furniture, zone, wpl_counter)
+        ("OSTATNÍ", "Kancelářské místo", "backoffice_zone", 1),
+        ("OSTATNÍ", "Kancelář", "backoffice_zone", 1),
+        ("OSTATNÍ", "Flex box", "backoffice_zone", 1),
+        ("OSTATNÍ", "Fast track backoffice", "backoffice_zone", 0),
+        ("OSTATNÍ", "Jednací místnost", "meeting_zone", 1),
+
+        ("CESTOVNÍ", "Kancelářské místo", "backoffice_zone", 1),
+        ("CESTOVNÍ", "Flex box", "backoffice_zone", 1),
+        ("CESTOVNÍ", "Fast track backoffice", "backoffice_zone", 0),
+        ("CESTOVNÍ", "Kancelář", "office_room", 1),
+        ("CESTOVNÍ", "Jednací místnost", "meeting_zone", 1),
+
+        ("CESTOVNÍ POZICE", "Kancelářské místo", "backoffice_zone", 1),
+        ("CESTOVNÍ POZICE", "Kancelář", "backoffice_zone", 1),
+        ("CESTOVNÍ POZICE", "Flex box", "backoffice_zone", 1),
+        ("CESTOVNÍ POZICE", "Fast track backoffice", "backoffice_zone", 0),
+
+        ("EPB", "Kancelářské místo", "backoffice_zone", 1),
+        ("EPB", "Flex box", "backoffice_zone", 1),
+        ("EPB", "Fast track backoffice", "backoffice_zone", 0),
+        ("EPB", "Jednací místnost", "meeting_zone", 1),
+        ("EPB", "Kancelář", "office_room", 1),
+        ("EPB", "Recepce", "service_zone", 1),
+        ("EPB", "Čekací zóna (lounge)", "service_zone", 0),
+
+        ("EPC", "Kancelářské místo", "backoffice_zone", 1),
+        ("EPC", "Fast track backoffice", "backoffice_zone", 0),
+        ("EPC", "Flex box", "backoffice_zone", 1),
+        ("EPC", "Jednací místnost", "meeting_zone", 1),
+        ("EPC", "Kancelář", "office_room", 1),
+        ("EPC", "Recepce", "service_zone", 1),
+        ("EPC", "Čekací zóna (lounge)", "service_zone", 0),
+
+        ("HC", "Kancelářské místo", "backoffice_zone", 1),
+        ("HC", "Flex box", "backoffice_zone", 1),
+        ("HC", "Fast track backoffice", "backoffice_zone", 0),
+        ("HC", "Kancelář", "office_room", 1),
+
+        ("PROVOZ", "Kancelářské místo", "backoffice_zone", 1),
+        ("PROVOZ", "Flex box", "backoffice_zone", 1),
+        ("PROVOZ", "Fast track backoffice", "backoffice_zone", 0),
+        ("PROVOZ", "Kancelář", "office_room", 1),
+
+        ("RKC", "Kancelářské místo", "backoffice_zone", 1),
+        ("RKC", "Flex box", "backoffice_zone", 1),
+        ("RKC", "Fast track backoffice", "backoffice_zone", 0),
+        ("RKC", "Jednací místnost", "meeting_zone", 1),
+        ("RKC", "Kancelář", "office_room", 1),
+        ("RKC", "Recepce", "service_zone", 1),
+
+        ("SBC", "Kancelářské místo", "backoffice_zone", 1),
+        ("SBC", "Flex box", "backoffice_zone", 1),
+        ("SBC", "Fast track backoffice", "backoffice_zone", 0),
+        ("SBC", "Kancelář", "office_room", 1),
+
+        ("MMMA", "Flex box", "meeting_zone", 1),
+        ("MMMA", "Jednací místnost", "meeting_zone", 1),
+        ("MMMA", "Semidescreete room", "meeting_zone", 1),
+        ("MMMA", "Záliv", "meeting_zone", 1),
+        ("MMMA", "Lenka", "meeting_zone", 1),
+        ("MMMA", "Kancelář", "office_room", 1),
+        ("MMMA", "Theke - nízká", "service_zone", 1),
+        ("MMMA", "Theke - vysoká", "service_zone", 1),
+        ("MMMA", "Lenka vítací", "service_zone", 1),
+        ("MMMA", "Fast track (stolek a židle)", "service_zone", 0),
+        ("MMMA", "Čekací zóna (židle)", "service_zone", 0),
+        ("MMMA", "Čekací zóna (obývák)", "service_zone", 0),
+        ("MMMA", "Lenka", "service_zone", 1),
+        ("MMMA", "Martička", "service_zone", 1),
+        ("MMMA", "Martička s TT", "service_zone", 1),
+        ("MMMA", "Pokladní ostrov typu 1/2C (1:1,TT+TT,1WPL)", "service_zone", 1),
+        ("MMMA", "Pokladní ostrov typu 1/2C (1:1,ARP+TT,1WPL)", "service_zone", 1),
+        ("MMMA", "Pokladní ostrov typu 1/2C (1:1,ARP+TT+TT,1WPL)", "service_zone", 1),
+        ("MMMA", "Pokladní ostrov typu C (1:1,TT+TT,1WPL)", "service_zone", 1),
+        ("MMMA", "Pokladní ostrov typu C (1:1,ARP+TT+TT,1WPL)", "service_zone", 1),
+        ("MMMA", "Pokladní ostrov typu C (1:1,ARP+TT+TT,2WPL)", "service_zone", 2),
+        ("MMMA", "Pokladna s bezpečnostní nástavbou", "service_zone", 1),
+        ("MMMA", "Kancelářské místo", "backoffice_zone", 1),
+        ("MMMA", "Fast track backoffice", "backoffice_zone", 0),
+        ("MMMA", "Interní zasedací místnost - malá", "backoffice_zone", 0),
+        ("MMMA", "Interní zasedací místnost - velká", "backoffice_zone", 1),
+        ("MMMA", "Relax zóna", "backoffice_zone", 0),
+        ("MMMA", "Flex box", "backoffice_zone", 1),
+    ]
+    cur.executemany("""
+        INSERT INTO furniture_to_zone (segment, furniture, zone, wpl_counter)
+        VALUES (?, ?, ?, ?)
+    """, furniture_data)
 
     conn.commit()
     conn.close()
