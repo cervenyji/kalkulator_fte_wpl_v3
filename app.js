@@ -46,9 +46,29 @@ CREATE TABLE IF NOT EXISTS calculations (
   meeting_zone REAL,
   backoffice_zone REAL,
   office_room REAL,
-  created_at TEXT
+  created_at TEXT,
+  ref_version_id INTEGER
+);
+CREATE TABLE IF NOT EXISTS ref_data_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT,
+  note TEXT,
+  absence_json TEXT,
+  dotace_json TEXT
+);
+CREATE TABLE IF NOT EXISTS analyza_segmentu (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  load_key TEXT,
+  created_at TEXT,
+  grid_json TEXT
 );
 `;
+
+// Doplní chybějící tabulky/sloupce v databázích vytvořených starší verzí aplikace.
+function migrateSchema(dbi) {
+  dbi.run(SCHEMA_SQL);
+  try { dbi.run("ALTER TABLE calculations ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
+}
 
 // Výchozí referenční data — shodná s inicializace_db.py, použije se jen při
 // založení nové (prázdné) databáze.
@@ -263,18 +283,14 @@ function createNewDatabase() {
     (segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room) VALUES (?, ?, ?, ?, ?, ?)`);
   SEED_CASOVE_DOTACE.forEach((r) => { insDotace.run(r); });
   insDotace.free();
+  ensureRefVersionUpToDate("Založení nové databáze");
 }
 
 function loadDatabaseFromBytes(bytes) {
   const candidate = new SQL.Database(new Uint8Array(bytes));
-  // sanity-check: musí obsahovat základní tabulky, jinak jde o cizí soubor
-  const names = dbAll("SELECT name FROM sqlite_master WHERE type='table'", [], candidate).map((r) => r.name);
-  const required = ["absence", "casove_dotace", "excel_loads", "calculations"];
-  const missing = required.filter((t) => !names.includes(t));
-  if (missing.length) {
-    candidate.run(SCHEMA_SQL); // doplní chybějící tabulky, zbytek dat zachová
-  }
+  migrateSchema(candidate); // doplní chybějící tabulky/sloupce ze starších verzí aplikace, zbytek dat zachová
   db = candidate;
+  ensureRefVersionUpToDate("Stav při připojení databáze");
 }
 
 function exportDatabaseBytes() {
@@ -543,6 +559,7 @@ async function handleExcelFile(file) {
   msgsEl.innerHTML = "";
   document.getElementById("excelPreview").innerHTML = "";
   document.getElementById("resultsPanel").style.display = "none";
+  document.getElementById("analyzaSegmentuPanel").style.display = "none";
   if (!requireDb()) return;
   try {
     const buf = await file.arrayBuffer();
@@ -563,6 +580,13 @@ async function handleExcelFile(file) {
         r.segment, r.pozice, r.fte, r.wpl_load, createdAt]);
     });
     ins.free();
+
+    const analyzaGrid = extractAnalyzaSegmentuGrid(wb);
+    if (analyzaGrid) {
+      db.run("INSERT INTO analyza_segmentu (load_key, created_at, grid_json) VALUES (?, ?, ?)",
+        [load_key, createdAt, JSON.stringify(analyzaGrid)]);
+    }
+
     await persistDatabase();
 
     pendingLoad = { load_key, pobocka_id: parsed.pobocka_id, pobocka_nazev: parsed.pobocka_nazev,
@@ -658,13 +682,14 @@ function runCalculation() {
 
   const calculation_key = `calculation_${pendingLoad.pobocka_id}-${pendingLoad.pobocka_nazev}-${nowStamp()}`;
   const createdAt = nowIso();
+  const refVersionId = ensureRefVersionUpToDate();
   const positionListStr = (list) => Object.entries(list).map(([poz, ft]) =>
     `${poz} (${Number.isInteger(ft) ? ft : ft.toFixed(1)})`).join(", ");
 
   const insCalc = db.prepare(`INSERT INTO calculations
     (load_key, calculation_key, segment, total_positions, position_list,
-     service_zone, meeting_zone, backoffice_zone, office_room, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+     service_zone, meeting_zone, backoffice_zone, office_room, created_at, ref_version_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
   const resultRows = [];
   segments.forEach((seg) => {
@@ -680,7 +705,7 @@ function runCalculation() {
     };
     resultRows.push(row);
     insCalc.run([load_key, calculation_key, row.segment, row.total_positions, row.position_list,
-      row.service_zone, row.meeting_zone, row.backoffice_zone, row.office_room, createdAt]);
+      row.service_zone, row.meeting_zone, row.backoffice_zone, row.office_room, createdAt, refVersionId]);
   });
   const celkemRow = {
     segment: "Celkem",
@@ -692,13 +717,14 @@ function runCalculation() {
     office_room: round1(celkem.office_room),
   };
   insCalc.run([load_key, calculation_key, celkemRow.segment, celkemRow.total_positions, celkemRow.position_list,
-    celkemRow.service_zone, celkemRow.meeting_zone, celkemRow.backoffice_zone, celkemRow.office_room, createdAt]);
+    celkemRow.service_zone, celkemRow.meeting_zone, celkemRow.backoffice_zone, celkemRow.office_room, createdAt, refVersionId]);
   insCalc.free();
 
   persistDatabase();
 
-  renderResults({ calculation_key, load_key, createdAt, rows: resultRows, celkem: celkemRow, warnings,
-    pobocka_id: pendingLoad.pobocka_id, pobocka_nazev: pendingLoad.pobocka_nazev, oteviraci_doba });
+  const inputRows = rows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte }));
+  renderResults({ calculation_key, load_key, createdAt, rows: resultRows, celkem: celkemRow, warnings, inputRows,
+    refVersionId, pobocka_id: pendingLoad.pobocka_id, pobocka_nazev: pendingLoad.pobocka_nazev, oteviraci_doba });
   toast("Kalkulace byla spočítána a uložena do historie.", "ok");
   renderHistoryList();
 }
@@ -723,6 +749,7 @@ function renderResults(result) {
         <tbody>${rowsHtml}</tbody>
       </table>
     </div>
+    ${refVersionDetailsHtml(result.refVersionId)}
     <div class="row" style="margin-top:14px;">
       <button class="btn secondary" id="btnExportPdf">Exportovat PDF s přehledem WPL</button>
     </div>
@@ -731,6 +758,25 @@ function renderResults(result) {
       <textarea id="pdfNote" rows="2"></textarea>
     </div>`;
   document.getElementById("btnExportPdf").addEventListener("click", () => exportCalculationPdf(result));
+
+  renderAnalyzaSegmentuSection("analyzaSegmentuArea", result.load_key, result, "analyzaSegmentuPanel");
+}
+
+// Vrátí sbalitelné shrnutí referenčních dat, se kterými byla kalkulace spočítána.
+function refVersionDetailsHtml(refVersionId) {
+  if (!refVersionId) return "";
+  const version = getRefVersionById(refVersionId);
+  if (!version) return "";
+  return `<details style="margin-top:12px;">
+    <summary style="cursor:pointer; color:var(--muted);">Referenční data použitá při této kalkulaci: verze #${version.id}
+      — ${esc(version.note)} (${new Date(version.created_at).toLocaleString("cs-CZ")})</summary>
+    <div style="margin-top:8px;">
+      <h3>Absence po segmentech</h3>
+      ${renderReadonlyAbsenceTable(version.absence)}
+      <h3>Časové dotace pozic</h3>
+      ${renderReadonlyDotaceTable(version.dotace)}
+    </div>
+  </details>`;
 }
 
 function resultRowHtml(r, isTotal = false) {
@@ -746,6 +792,55 @@ function resultRowHtml(r, isTotal = false) {
 }
 
 /* --------------------------------- PDF ------------------------------------ */
+
+// Pozice počítané do "obchodních FTE" pro stanovení formátu pobočky — přesný
+// přepis obchodni_pozice z původního calculator.py (export_calculation_to_pdf).
+// Zachováno včetně původní nedokonalosti: porovnává se s pozicí převedenou na
+// malá písmena, takže položky s velkými písmeny uprostřed (např. "VCB",
+// "Erste Premier") se nikdy neshodnou — to platilo i v původní aplikaci.
+const OBCHODNI_POZICE = new Set([
+  "firemní bankéř - medior", "firemní bankéř - master", "firemní bankéř - senior",
+  "podpora firemních bankéřů", "spec. pro firemní pojištění - senior",
+  "remote firemní bankéř - medior", "remote premier bankéř - medior",
+  "hypoteční specialista VCB - medior", "hypoteční specialista VCB - senior",
+  "bankéř klientské péče - junior", "bankéř klientské péče - medior",
+  "investiční specialista - medior", "osobní bankéř - junior", "osobní bankéř - medior",
+  "osobní bankéř - senior", "osobní bankéř - master", "pojišťovací specialista - medior",
+  "hypoteční specialista - medior", "hypoteční specialista - senior", "pobočkový specialista - hypo",
+  "manaž. segm. Erste Premier - team leader s portfoliem", "premier bankéř - medior",
+  "premier bankéř - master", "premier bankéř - senior", "privátní bankéř - medior",
+  "privátní bankéř - senior", "privátní bankéř - wealth management",
+]);
+const MEETING_ZONE_SUM_SEGMENTS = ["MMMA", "SBC", "HC"];
+
+function computeDerivedPdfStats(result) {
+  let meetingZoneSum = 0;
+  result.rows.forEach((r) => {
+    if (MEETING_ZONE_SUM_SEGMENTS.includes(r.segment)) meetingZoneSum += r.meeting_zone || 0;
+  });
+
+  let obchodniFteSum = 0;
+  (result.inputRows || []).forEach((r) => {
+    const segmentLower = String(r.segment).trim().toLowerCase();
+    const pozLower = String(r.pozice).trim().toLowerCase();
+    if (segmentLower !== "cestovní" && OBCHODNI_POZICE.has(pozLower)) obchodniFteSum += r.fte || 0;
+  });
+
+  let formatTyp;
+  if (obchodniFteSum >= 25) formatTyp = "flagship";
+  else if (obchodniFteSum >= 10) formatTyp = "medium";
+  else if (obchodniFteSum >= 5) formatTyp = "medium economy";
+  else formatTyp = "small";
+
+  const combinedTotal = (result.celkem.service_zone || 0) + (result.celkem.meeting_zone || 0);
+  return {
+    meetingZoneSum,
+    obchodniFteSumDisplay: round1(obchodniFteSum).toFixed(1),
+    formatTyp,
+    recommendedFasttracks: Math.ceil(combinedTotal * 0.15),
+    recommendedChairs: Math.ceil(combinedTotal * 0.50),
+  };
+}
 
 function exportCalculationPdf(result) {
   const note = document.getElementById("pdfNote") ? document.getElementById("pdfNote").value.trim() : "";
@@ -817,11 +912,21 @@ function exportCalculationPdf(result) {
     fmt1(result.celkem.meeting_zone), fmt1(result.celkem.backoffice_zone), fmt1(result.celkem.office_room)], true);
 
   y += 8;
-  const sumWpl = result.celkem.service_zone + result.celkem.meeting_zone +
-                 result.celkem.backoffice_zone + result.celkem.office_room;
-  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
-  pdf.text(`Celkový počet WPL (ServiceZ + MeetingZ + BackofficeZ + OfficeRoom): ${sumWpl.toFixed(1)}`, marginX, y);
-  y += 10;
+  const celkemSum = (result.celkem.service_zone || 0) + (result.celkem.meeting_zone || 0) +
+                     (result.celkem.backoffice_zone || 0) + (result.celkem.office_room || 0);
+  const stats = computeDerivedPdfStats(result);
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(9);
+  pdf.text(`Celkový součet (ServiceZ + MeetingZ + BackofficeZ + OfficeRoom) z řádku 'Celkem': ${celkemSum.toFixed(2)}`, marginX, y);
+  y += 9;
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(9);
+  const statLines = [
+    `Součet meeting_zone pro segmenty MMMA, SBC, HC: ${stats.meetingZoneSum.toFixed(2)}`,
+    `Stanovený formát dle počtu (${stats.obchodniFteSumDisplay}) obchodních FTE: ${stats.formatTyp}`,
+    `Doporučený počet fasttracků na hale: ${stats.recommendedFasttracks}`,
+    `Doporučený počet židlí v čekací zóně: ${stats.recommendedChairs}`,
+  ];
+  statLines.forEach((line) => { pdf.text(line, marginX, y); y += 6; });
+  y += 4;
 
   if (result.warnings.length) {
     pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
@@ -842,6 +947,179 @@ function exportCalculationPdf(result) {
   }
 
   pdf.save(`export_${result.calculation_key}.pdf`);
+}
+
+/* --------------------------- Analýza segmentů ------------------------------ */
+
+const ANALYZA_SEGMENTU_SHEET = "ANALÝZA SEGMENTŮ";
+
+// Přečte list „ANALÝZA SEGMENTŮ“ z nahraného checklistu jako obecnou mřížku
+// buněk (hodnoty + sloučené buňky), beze znalosti konkrétních vzorců na listu
+// CHL, ze kterých je tento list v Excelu odvozen — zobrazíme přesně to, co je
+// v checklistu vypočítáno.
+function extractAnalyzaSegmentuGrid(workbook) {
+  if (!workbook.SheetNames.includes(ANALYZA_SEGMENTU_SHEET)) return null;
+  const ws = workbook.Sheets[ANALYZA_SEGMENTU_SHEET];
+  if (!ws["!ref"]) return null;
+  const range = XLSX.utils.decode_range(ws["!ref"]);
+  const nRows = range.e.r - range.s.r + 1;
+  const nCols = range.e.c - range.s.c + 1;
+  const cells = [];
+  for (let r = 0; r < nRows; r++) {
+    const row = [];
+    for (let c = 0; c < nCols; c++) {
+      const addr = XLSX.utils.encode_cell({ r: range.s.r + r, c: range.s.c + c });
+      const cell = ws[addr];
+      row.push(cell && cell.v !== undefined ? cell.v : null);
+    }
+    cells.push(row);
+  }
+  const merges = (ws["!merges"] || []).map((m) => ({
+    r0: m.s.r - range.s.r, c0: m.s.c - range.s.c,
+    r1: m.e.r - range.s.r, c1: m.e.c - range.s.c,
+  }));
+  return { cells, merges, nRows, nCols };
+}
+
+function getAnalyzaSegmentuGrid(loadKey) {
+  const row = dbAll("SELECT grid_json FROM analyza_segmentu WHERE load_key = ? ORDER BY id DESC LIMIT 1", [loadKey])[0];
+  return row ? JSON.parse(row.grid_json) : null;
+}
+
+function fmtCellText(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(1);
+  return String(v);
+}
+
+function renderGridTable(grid) {
+  const { cells, nRows, nCols } = grid;
+  const { covered, anchors } = computeMergeMaps(grid);
+  let html = '<div class="table-wrap"><table class="grid-table"><tbody>';
+  for (let r = 0; r < nRows; r++) {
+    html += "<tr>";
+    for (let c = 0; c < nCols; c++) {
+      if (covered[r][c]) continue;
+      const span = anchors[`${r},${c}`];
+      const attrs = span ? ` rowspan="${span.rowspan}" colspan="${span.colspan}"` : "";
+      html += `<td${attrs}>${esc(fmtCellText(cells[r][c]))}</td>`;
+    }
+    html += "</tr>";
+  }
+  html += "</tbody></table></div>";
+  return html;
+}
+
+function renderAnalyzaSegmentuSection(containerId, loadKey, meta, panelId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  if (panelId) document.getElementById(panelId).style.display = "block";
+  const grid = getAnalyzaSegmentuGrid(loadKey);
+  if (!grid) {
+    container.innerHTML = `<p class="muted">Nahraný checklist neobsahoval list „${ANALYZA_SEGMENTU_SHEET}“, analýza segmentů není k dispozici.</p>`;
+    return;
+  }
+  const btnId = `btnExportAnalyza_${containerId}`;
+  container.innerHTML = `${renderGridTable(grid)}
+    <div class="row" style="margin-top:12px;">
+      <button class="btn secondary" id="${btnId}">Exportovat PDF analýzy segmentů</button>
+    </div>`;
+  document.getElementById(btnId).addEventListener("click", () => exportAnalyzaSegmentuPdf(grid, meta));
+}
+
+// Sestaví pomocné mapy pro kreslení sloučených buněk: které buňky jsou "pokryté"
+// jinou buňkou (a mají se při kreslení přeskočit) a jaký rowspan/colspan má buňka,
+// která je kotvou (levým horním rohem) sloučené oblasti.
+function computeMergeMaps(grid) {
+  const covered = Array.from({ length: grid.nRows }, () => new Array(grid.nCols).fill(false));
+  const anchors = {};
+  grid.merges.forEach((m) => {
+    anchors[`${m.r0},${m.c0}`] = { rowspan: m.r1 - m.r0 + 1, colspan: m.c1 - m.c0 + 1 };
+    for (let r = m.r0; r <= m.r1; r++) {
+      for (let c = m.c0; c <= m.c1; c++) {
+        if (r === m.r0 && c === m.c0) continue;
+        covered[r][c] = true;
+      }
+    }
+  });
+  return { covered, anchors };
+}
+
+function exportAnalyzaSegmentuPdf(grid, meta) {
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF();
+  const marginX = 10;
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageBottom = 280;
+  let y = 18;
+
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(16);
+  pdf.text("Analýza segmentů", marginX, y); y += 9;
+
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(10);
+  [`Název pobočky: ${meta.pobocka_nazev || ""}`, `ID pobočky: ${meta.pobocka_id || ""}`, `Load key: ${meta.load_key || ""}`]
+    .forEach((line) => { pdf.text(line, marginX, y); y += 6; });
+  y += 4;
+
+  const { nRows, nCols, cells } = grid;
+  const { covered, anchors } = computeMergeMaps(grid);
+  const usableWidth = pageWidth - 2 * marginX;
+  const colW = usableWidth / nCols;
+  const baseRowH = 7;
+  const lineHeight = 3.4;
+
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.5);
+
+  // Řádky s dlouhým textem (např. víceslovné názvy zón v hlavičce) potřebují
+  // více než jeden řádek textu — výška řádku se proto počítá dopředu podle
+  // toho, kolik řádků textu potřebuje nejnáročnější nesloučená buňka v daném
+  // řádku, aby se text nezobrazil oříznutý.
+  const rowHeights = new Array(nRows).fill(baseRowH);
+  for (let r = 0; r < nRows; r++) {
+    let c = 0;
+    while (c < nCols) {
+      if (covered[r][c]) { c += 1; continue; }
+      const span = anchors[`${r},${c}`] || { rowspan: 1, colspan: 1 };
+      if (span.rowspan === 1) {
+        const text = fmtCellText(cells[r][c]);
+        if (text) {
+          const lines = pdf.splitTextToSize(text, colW * span.colspan - 3);
+          const needed = lines.length * lineHeight + 3;
+          if (needed > rowHeights[r]) rowHeights[r] = needed;
+        }
+      }
+      c += span.colspan;
+    }
+  }
+  const rowSpanHeight = (r0, span) => {
+    let h = 0;
+    for (let r = r0; r < r0 + span; r++) h += rowHeights[r];
+    return h;
+  };
+
+  for (let r = 0; r < nRows; r++) {
+    if (y + rowHeights[r] > pageBottom) { pdf.addPage(); y = 18; }
+    let x = marginX;
+    let c = 0;
+    while (c < nCols) {
+      if (covered[r][c]) { x += colW; c += 1; continue; }
+      const span = anchors[`${r},${c}`] || { rowspan: 1, colspan: 1 };
+      const w = colW * span.colspan;
+      const h = rowSpanHeight(r, span.rowspan);
+      pdf.rect(x, y, w, h, "D");
+      const text = fmtCellText(cells[r][c]);
+      if (text) {
+        const lines = pdf.splitTextToSize(text, w - 3);
+        let ty = y + 4.2;
+        lines.forEach((line) => { if (ty < y + h) { pdf.text(line, x + 1.5, ty); ty += lineHeight; } });
+      }
+      x += w;
+      c += span.colspan;
+    }
+    y += rowHeights[r];
+  }
+
+  pdf.save(`analyza_segmentu_${meta.load_key || "export"}.pdf`);
 }
 
 /* ------------------------------ Historie ---------------------------------- */
@@ -873,7 +1151,7 @@ function showHistoryDetail(calculationKey, loadKey) {
   panel.style.display = "block";
   const inputRows = dbAll("SELECT segment, pozice, fte, wpl_load, created_at FROM excel_loads WHERE load_key = ? ORDER BY id", [loadKey]);
   const resultRows = dbAll(`SELECT segment, total_positions, position_list, service_zone, meeting_zone,
-    backoffice_zone, office_room FROM calculations WHERE calculation_key = ?
+    backoffice_zone, office_room, created_at, ref_version_id FROM calculations WHERE calculation_key = ?
     ORDER BY (segment = 'Celkem'), id`, [calculationKey]);
   const branch = dbAll("SELECT pobocka_id, pobocka_nazev, oteviraci_doba FROM excel_loads WHERE load_key = ? LIMIT 1", [loadKey])[0];
 
@@ -881,6 +1159,8 @@ function showHistoryDetail(calculationKey, loadKey) {
     <td>${fmt1(r.fte)}</td><td>${fmt1(r.wpl_load)}</td></tr>`).join("");
   const resultHtml = resultRows.map((r) => resultRowHtml(r, r.segment === "Celkem")).join("");
   const found = resultRows.find((r) => r.segment === "Celkem");
+  const refVersionId = resultRows[0] ? resultRows[0].ref_version_id : null;
+  const createdAt = resultRows[0] ? resultRows[0].created_at : nowIso();
 
   document.getElementById("historyDetail").innerHTML = `
     <p class="muted">${branch ? `${esc(branch.pobocka_nazev)} (ID ${esc(branch.pobocka_id)}) · otevírací doba ${esc(branch.oteviraci_doba)} h/týden` : ""}</p>
@@ -892,19 +1172,114 @@ function showHistoryDetail(calculationKey, loadKey) {
     <div class="table-wrap"><table><thead><tr><th>Segment</th><th>FTE celkem</th><th>Pozice (FTE)</th>
       <th>Service zone</th><th>Meeting zone</th><th>Backoffice zone</th><th>Office room</th></tr></thead>
       <tbody>${resultHtml}</tbody></table></div>
+    ${refVersionDetailsHtml(refVersionId)}
     <div class="row" style="margin-top:12px;">
       <button class="btn secondary" id="btnExportPdfHistory">Exportovat PDF s přehledem WPL</button>
-    </div>`;
+    </div>
+    <h3 style="margin-top:22px;">Analýza segmentů</h3>
+    <div id="historyAnalyzaSegmentuArea"></div>`;
 
   document.getElementById("btnExportPdfHistory").addEventListener("click", () => {
     const rowsNoTotal = resultRows.filter((r) => r.segment !== "Celkem");
     exportCalculationPdf({
       calculation_key: calculationKey, load_key: loadKey,
-      createdAt: nowIso(), rows: rowsNoTotal, celkem: found || {},
+      createdAt, rows: rowsNoTotal, celkem: found || {},
+      inputRows: inputRows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte })),
       warnings: [], pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev,
       oteviraci_doba: branch?.oteviraci_doba,
     });
   });
+
+  renderAnalyzaSegmentuSection("historyAnalyzaSegmentuArea", loadKey,
+    { pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev, load_key: loadKey });
+
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+/* ------------------------ Verzování referenčních dat ----------------------- */
+
+function snapshotRefData() {
+  const absence = dbAll("SELECT segment, nepritomnost, homeoffice FROM absence ORDER BY segment")
+    .map((r) => [r.segment, r.nepritomnost, r.homeoffice]);
+  const dotace = dbAll(`SELECT segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room
+    FROM casove_dotace ORDER BY segment, pozice`)
+    .map((r) => [r.segment, r.pozice, r.service_zone, r.meeting_zone, r.backoffice_zone, r.office_room]);
+  return { absence, dotace };
+}
+
+// Zajistí, že poslední uložená verze referenčních dat odpovídá aktuálnímu stavu
+// tabulek absence/casove_dotace — pokud se liší (nebo žádná verze ještě neexistuje),
+// vytvoří novou. Vrací id verze, která je (nebo právě byla) aktuální — použije se
+// při uložení kalkulace, aby bylo možné zpětně dohledat, s jakými referenčními
+// daty byla spočítána.
+function ensureRefVersionUpToDate(noteIfNew) {
+  const snap = snapshotRefData();
+  const absenceJson = JSON.stringify(snap.absence);
+  const dotaceJson = JSON.stringify(snap.dotace);
+  const latest = dbAll("SELECT id, absence_json, dotace_json FROM ref_data_versions ORDER BY id DESC LIMIT 1")[0];
+  if (latest && latest.absence_json === absenceJson && latest.dotace_json === dotaceJson) {
+    return latest.id;
+  }
+  db.run("INSERT INTO ref_data_versions (created_at, note, absence_json, dotace_json) VALUES (?, ?, ?, ?)",
+    [nowIso(), noteIfNew || "Změna referenčních dat", absenceJson, dotaceJson]);
+  return dbAll("SELECT last_insert_rowid() AS id")[0].id;
+}
+
+function listRefVersions() {
+  return dbAll("SELECT id, created_at, note FROM ref_data_versions ORDER BY id DESC");
+}
+
+function getRefVersionById(id) {
+  const row = dbAll("SELECT id, created_at, note, absence_json, dotace_json FROM ref_data_versions WHERE id = ?", [id])[0];
+  if (!row) return null;
+  return {
+    id: row.id, created_at: row.created_at, note: row.note,
+    absence: JSON.parse(row.absence_json), dotace: JSON.parse(row.dotace_json),
+  };
+}
+
+function renderReadonlyAbsenceTable(rows) {
+  const body = rows.map(([segment, nepritomnost, homeoffice]) => `<tr>
+    <td>${esc(segment)}</td><td>${fmt1(nepritomnost)}</td><td>${fmt1(homeoffice)}</td>
+  </tr>`).join("");
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>Segment</th><th>Nepřítomnost (%)</th><th>Homeoffice (%)</th></tr></thead>
+    <tbody>${body}</tbody></table></div>`;
+}
+
+function renderReadonlyDotaceTable(rows) {
+  const body = rows.map(([segment, pozice, s, m, b, o]) => `<tr>
+    <td>${esc(segment)}</td><td>${esc(pozice)}</td><td>${fmt1(s)}</td><td>${fmt1(m)}</td><td>${fmt1(b)}</td><td>${fmt1(o)}</td>
+  </tr>`).join("");
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>Segment</th><th>Pozice</th><th>ServiceZ %</th><th>MeetingZ %</th><th>BackofficeZ %</th><th>OfficeRoom %</th></tr></thead>
+    <tbody>${body}</tbody></table></div>`;
+}
+
+function renderRefVersionsList() {
+  const el = document.getElementById("refVersionsList");
+  if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
+  const versions = listRefVersions();
+  if (!versions.length) { el.innerHTML = `<p class="muted">Zatím žádné uložené verze.</p>`; return; }
+  el.innerHTML = versions.map((v) => `<div class="history-item" data-ver="${v.id}">
+      <div><strong>Verze #${v.id}</strong> — ${esc(v.note)}<br><span class="muted">${new Date(v.created_at).toLocaleString("cs-CZ")}</span></div>
+    </div>`).join("");
+  el.querySelectorAll(".history-item").forEach((item) => {
+    item.addEventListener("click", () => showRefVersionDetail(Number(item.dataset.ver)));
+  });
+}
+
+function showRefVersionDetail(id) {
+  const version = getRefVersionById(id);
+  const panel = document.getElementById("refVersionDetail");
+  if (!version) { panel.style.display = "none"; return; }
+  panel.style.display = "block";
+  panel.innerHTML = `
+    <h3>Verze #${version.id} — ${esc(version.note)} (${new Date(version.created_at).toLocaleString("cs-CZ")})</h3>
+    <h3>Absence po segmentech</h3>
+    ${renderReadonlyAbsenceTable(version.absence)}
+    <h3>Časové dotace pozic</h3>
+    ${renderReadonlyDotaceTable(version.dotace)}`;
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
@@ -952,9 +1327,11 @@ function saveAbsenceTable() {
   const ins = db.prepare("INSERT INTO absence (segment, nepritomnost, homeoffice) VALUES (?, ?, ?)");
   data.forEach((r) => ins.run(r));
   ins.free();
+  ensureRefVersionUpToDate("Úprava: absence po segmentech");
   persistDatabase(true);
   renderAbsenceTable();
-  toast("Tabulka absencí byla uložena.", "ok");
+  renderRefVersionsList();
+  toast("Tabulka absencí byla uložena a zaznamenána nová verze referenčních dat.", "ok");
 }
 
 let dotaceFilterText = "";
@@ -1015,11 +1392,13 @@ function saveDotaceTable() {
     (segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room) VALUES (?, ?, ?, ?, ?, ?)`);
   data.forEach((r) => ins.run(r));
   ins.free();
+  ensureRefVersionUpToDate("Úprava: časové dotace pozic");
   persistDatabase(true);
   dotaceFilterText = "";
   document.getElementById("dotaceFilter").value = "";
   renderDotaceTable();
-  toast("Tabulka časových dotací byla uložena.", "ok");
+  renderRefVersionsList();
+  toast("Tabulka časových dotací byla uložena a zaznamenána nová verze referenčních dat.", "ok");
 }
 
 /* --------------------------------- Tabs ------------------------------------ */
@@ -1028,6 +1407,8 @@ function refreshAllTabsAfterDbChange() {
   renderHistoryList();
   renderAbsenceTable();
   renderDotaceTable();
+  renderRefVersionsList();
+  document.getElementById("refVersionDetail").style.display = "none";
   document.getElementById("historyDetailPanel").style.display = "none";
 }
 

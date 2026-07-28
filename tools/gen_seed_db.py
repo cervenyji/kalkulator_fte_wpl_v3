@@ -68,7 +68,27 @@ def main():
         meeting_zone REAL,
         backoffice_zone REAL,
         office_room REAL,
-        created_at TEXT
+        created_at TEXT,
+        ref_version_id INTEGER
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE ref_data_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT,
+        note TEXT,
+        absence_json TEXT,
+        dotace_json TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE analyza_segmentu (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        load_key TEXT,
+        created_at TEXT,
+        grid_json TEXT
     )
     """)
 

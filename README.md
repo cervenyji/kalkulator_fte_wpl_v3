@@ -32,7 +32,8 @@ Celou složku je potřeba udržet spolu — `index.html` odkazuje na soubory ve
    zároveň se uloží do databáze (záložka „Historie kalkulací“), takže je
    kdykoliv zpětně dohledatelné, z jakých vstupních dat kalkulace vznikla.
 5. Volitelně klikněte na „Exportovat PDF s přehledem WPL“ pro stažení PDF
-   shrnutí.
+   shrnutí — obsahuje i doporučený formát pobočky, počet fasttracků a počet
+   židlí v čekací zóně (stejná logika jako v původní appce).
 
 Databáze se po každé změně (nahrání checklistu, spočítání kalkulace, úprava
 referenčních dat) automaticky ukládá zpět do stejného souboru
@@ -60,6 +61,33 @@ V záložce „Referenční data“ lze přímo v prohlížeči upravovat:
   meeting / backoffice zónu a kancelář (v %).
 
 Úpravy se uloží tlačítkem „Uložit tabulku…“ přímo do databáze.
+
+### Historie referenčních dat (verzování)
+
+Každé uložení výše vytvoří novou **verzi** referenčních dat (pokud se skutečně
+něco změnilo — uložení beze změny žádnou duplicitní verzi nevytvoří). Verze se
+ukládají do tabulky `ref_data_versions` a jsou k prohlédnutí v sekci „Historie
+referenčních dat“ dole na záložce „Referenční data“.
+
+Každá spočítaná kalkulace si zaznamená, se kterou verzí referenčních dat byla
+spočítána (sloupec `ref_version_id` v tabulce `calculations`). U výsledku
+kalkulace i v historii kalkulací tak najdete rozbalovací odkaz „Referenční
+data použitá při této kalkulaci“, který ukáže přesné hodnoty absence a
+časových dotací platné v okamžiku výpočtu — i zpětně, po dalších úpravách.
+
+## Analýza segmentů
+
+Pokud nahraný checklist obsahuje list **„ANALÝZA SEGMENTŮ“** (celkový přehled
+FTE a WPL po místnostech/zónách v rámci segmentů), aplikace jej při načtení
+checklistu uloží a zobrazí:
+
+- v sekci „Analýza segmentů“ pod výsledkem nové kalkulace,
+- v detailu každé historické kalkulace (záložka „Historie kalkulací“).
+
+Tabulka se zobrazuje přesně tak, jak je vypočítána v Excelu (včetně sloučených
+buněk), a lze ji exportovat do samostatného PDF tlačítkem „Exportovat PDF
+analýzy segmentů“. Pokud checklist tento list neobsahuje, zobrazí se
+informační poznámka a kalkulace proběhne normálně bez něj.
 
 ## Formát vstupního Excelu
 

@@ -101,6 +101,10 @@
   .grid2{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
   @media (max-width:720px){.grid2{grid-template-columns:1fr;}}
   textarea{width:100%; border:1px solid var(--border); border-radius:6px; padding:8px; font-family:inherit; font-size:13px;}
+  .grid-table td{text-align:center;}
+  .grid-table td:first-child{text-align:left; font-weight:600;}
+  details summary{font-size:13px;}
+  details h3{margin-top:16px;}
 </style>
 </head>
 <body>
@@ -154,6 +158,13 @@
     <h2>3) Výsledek kalkulace</h2>
     <div id="resultsArea"></div>
   </div>
+
+  <div class="panel" id="analyzaSegmentuPanel" style="display:none;">
+    <h2>Analýza segmentů</h2>
+    <p class="muted">Celkový pohled na FTE a WPL po místnostech/zónách v rámci segmentů — načteno z listu
+    „ANALÝZA SEGMENTŮ“ nahraného checklistu.</p>
+    <div id="analyzaSegmentuArea"></div>
+  </div>
 </section>
 
 <section class="tab" id="tab-history">
@@ -187,6 +198,13 @@
       <button class="btn secondary small" id="btnAddDotaceRow">+ Přidat pozici</button>
       <button class="btn small" id="btnSaveDotace">Uložit tabulku dotací</button>
     </div>
+  </div>
+  <div class="panel">
+    <h2>Historie referenčních dat</h2>
+    <p class="muted">Každé uložení výše vytvoří novou verzi. Každá kalkulace si pamatuje, se kterou verzí
+    referenčních dat byla spočítána — zpětně tak dohledáte přesné nastavení.</p>
+    <div id="refVersionsList"></div>
+    <div id="refVersionDetail" style="display:none; margin-top:14px;"></div>
   </div>
 </section>
 
