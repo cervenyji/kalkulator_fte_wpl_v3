@@ -72,8 +72,10 @@
   table th, table td{border:1px solid var(--border); padding:6px 8px; text-align:left; vertical-align:top;}
   table th{background:var(--table-head); font-weight:600; white-space:nowrap;}
   table tr.total-row td{background:#eafcef; font-weight:700;}
-  table input{width:100%; border:1px solid transparent; background:transparent; font-size:13px; padding:2px 3px; border-radius:4px;}
-  table input:hover, table input:focus{border-color:var(--border); background:#fff;}
+  table input, table select{width:100%; border:1px solid transparent; background:transparent; font-size:13px; padding:2px 3px; border-radius:4px;}
+  table input:hover, table input:focus, table select:hover, table select:focus{border-color:var(--border); background:#fff;}
+  #manualRowsTbody td:nth-child(1) select{min-width:110px;}
+  #manualRowsTbody td:nth-child(2) select{min-width:280px;}
   #absenceTbody td:nth-child(1) input{min-width:110px;}
   #dotaceTbody td:nth-child(1) input{min-width:90px;}
   #dotaceTbody td:nth-child(2) input{min-width:320px;}
@@ -110,6 +112,11 @@
   .layout-qty{width:70px;}
   .layout-summary strong{color:var(--accent-dark);}
   .layout-summary.over strong{color:var(--warn);}
+  .btn.secondary.active{background:var(--accent); color:#fff;}
+  #modeManual label{display:block; font-size:12.5px; margin-bottom:3px;}
+  #modeManual input[type="text"], #modeManual input[type="number"]{
+    width:100%; padding:7px 9px; border:1px solid var(--border); border-radius:6px; font-size:13px;
+  }
 </style>
 </head>
 <body>
@@ -149,12 +156,58 @@
   </div>
 
   <div class="panel">
-    <h2>2) Nahrát checklist</h2>
-    <div id="dropzone">
-      <div>📄 Přetáhněte sem vyplněný Excel checklist (list „VSTUPY“) — nebo</div>
-      <div style="margin-top:10px;"><button class="btn secondary" id="btnPickExcel">vybrat soubor…</button></div>
-      <input type="file" id="excelInput" accept=".xlsx,.xlsm,.xls" style="display:none;">
+    <h2>2) Nahrát checklist nebo vytvořit kalkulaci manuálně</h2>
+    <div class="row" style="margin-bottom:14px;">
+      <button class="btn secondary small active" id="btnModeExcel">Nahrát Excel checklist</button>
+      <button class="btn secondary small" id="btnModeManual">Vytvořit manuálně</button>
     </div>
+
+    <div id="modeExcel">
+      <div id="dropzone">
+        <div>📄 Přetáhněte sem vyplněný Excel checklist (list „VSTUPY“) — nebo</div>
+        <div style="margin-top:10px;"><button class="btn secondary" id="btnPickExcel">vybrat soubor…</button></div>
+        <input type="file" id="excelInput" accept=".xlsx,.xlsm,.xls" style="display:none;">
+      </div>
+    </div>
+
+    <div id="modeManual" style="display:none;">
+      <div class="grid2">
+        <div>
+          <label class="muted" for="manualPobockaName">Pobočka</label>
+          <input type="text" id="manualPobockaName" list="pobockyDatalist" placeholder="Zadejte nebo vyberte název pobočky…">
+          <datalist id="pobockyDatalist"></datalist>
+        </div>
+        <div>
+          <label class="muted" for="manualPobockaId">ID pobočky</label>
+          <input type="text" id="manualPobockaId" placeholder="doplní se automaticky, nebo zadejte ručně">
+        </div>
+      </div>
+      <p class="muted" id="manualRegionInfo" style="margin-top:4px;"></p>
+
+      <div class="grid2" style="margin-top:10px;">
+        <div>
+          <label class="muted" for="manualOtevDoba">Otevírací doba pobočky (h/týden)</label>
+          <input type="number" id="manualOtevDoba" value="40" step="0.5" min="0">
+        </div>
+        <div>
+          <label class="muted" for="manualVytezeniWpl">Doba vytížení WPL (h/týden)</label>
+          <input type="number" id="manualVytezeniWpl" value="40" step="0.5" min="0">
+        </div>
+      </div>
+
+      <h3 style="margin-top:16px;">Pozice</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Vytížení WPL (jen CESTOVNÍ)</th><th></th></tr></thead>
+        <tbody id="manualRowsTbody"></tbody>
+      </table></div>
+      <div class="row" style="margin-top:10px;">
+        <button class="btn secondary small" id="btnAddManualRow">+ Přidat pozici</button>
+      </div>
+      <div class="row" style="margin-top:14px;">
+        <button class="btn" id="btnCommitManual">Vytvořit a spočítat</button>
+      </div>
+    </div>
+
     <div id="excelMsgs" style="margin-top:12px;"></div>
     <div id="excelPreview"></div>
   </div>

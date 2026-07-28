@@ -27,7 +27,8 @@ Celou složku je potřeba udržet spolu — `index.html` odkazuje na soubory ve
    přiložený soubor `fte_wpl_calculator.db`. Tím se připojí databáze se
    všemi referenčními tabulkami (absence, časové dotace pozic).
 3. Přetáhněte vyplněný Excel checklist do plochy „Nahrát checklist“ (nebo
-   klikněte na „vybrat soubor…“).
+   klikněte na „vybrat soubor…“) — nebo klikněte na „Vytvořit manuálně“ a
+   sestavte kalkulaci přímo v aplikaci (viz níže).
 4. Klikněte na „Spočítat kalkulaci WPL“ — výsledek se zobrazí v tabulce a
    zároveň se uloží do databáze (záložka „Historie kalkulací“), takže je
    kdykoliv zpětně dohledatelné, z jakých vstupních dat kalkulace vznikla.
@@ -56,6 +57,26 @@ Tyto prohlížeče neumí zapisovat přímo do souboru na disku (chybí tzv. Fil
 System Access API). Aplikace v nich funguje také, ale databázi je nutné po
 každé změně stáhnout tlačítkem „Uložit databázi“ a přesunout stažený soubor
 zpět do této složky (přepsat starý `fte_wpl_calculator.db`).
+
+## Vytvoření kalkulace bez Excelu (manuálně)
+
+V kroku „2)“ lze místo nahrání Excelu kliknout na „Vytvořit manuálně“:
+
+1. Do pole „Pobočka“ začněte psát název — nabídne se ze seznamu poboček
+   (tabulka `pobocky`, 317 poboček) a po výběru se automaticky doplní ID a
+   region. Pokud pobočka v seznamu není, zadejte ID ručně.
+2. Vyplňte otevírací dobu pobočky a dobu vytížení WPL (výchozí 40 h/týden).
+3. Tlačítkem „+ Přidat pozici“ přidejte řádky s Segmentem, Pozicí (nabídka se
+   omezí na pozice definované pro vybraný segment v tabulce `casove_dotace`)
+   a počtem FTE. U segmentu **CESTOVNÍ** se navíc odemkne pole „Vytížení WPL“
+   pro zadání individuálního vytížení té pozice (tzv. model cestovních —
+   stejné jako sloupec D u Excelu).
+4. Tlačítkem „Vytvořit a spočítat“ se vytvoří checklist a odtud pokračuje
+   úplně stejný postup jako po nahrání Excelu — náhled pozic, spočítání
+   kalkulace, PDF export, sestavení layoutu i uložení do historie.
+
+Seznam poboček je uložen v databázi, takže jej lze v budoucnu upravit přímo
+v SQLite (tabulka `pobocky`, sloupce `id_pobocky`, `nazev`, `region`).
 
 ## Referenční data
 

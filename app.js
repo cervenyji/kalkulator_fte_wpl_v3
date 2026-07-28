@@ -75,6 +75,11 @@ CREATE TABLE IF NOT EXISTS layouts (
   piece_count REAL,
   created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS pobocky (
+  id_pobocky TEXT PRIMARY KEY,
+  nazev TEXT,
+  region TEXT
+);
 `;
 
 // Doplní chybějící tabulky/sloupce v databázích vytvořených starší verzí aplikace.
@@ -85,6 +90,12 @@ function migrateSchema(dbi) {
   if (furnitureCount === 0) {
     const ins = dbi.prepare("INSERT INTO furniture_to_zone (segment, furniture, zone, wpl_counter) VALUES (?, ?, ?, ?)");
     SEED_FURNITURE.forEach((r) => { ins.run(r); });
+    ins.free();
+  }
+  const pobockyCount = dbAll("SELECT COUNT(*) AS n FROM pobocky", [], dbi)[0].n;
+  if (pobockyCount === 0) {
+    const ins = dbi.prepare("INSERT INTO pobocky (id_pobocky, nazev, region) VALUES (?, ?, ?)");
+    SEED_POBOCKY.forEach((r) => { ins.run(r); });
     ins.free();
   }
 }
@@ -311,6 +322,328 @@ const SEED_FURNITURE = [
   ["MMMA", "Flex box", "backoffice_zone", 1],
 ];
 
+// Seznam poboček (ID pobočky, název, region) pro manuální vytvoření kalkulace
+// bez nahrání Excelu — uživatel vybere pobočku podle názvu a ID se doplní.
+const SEED_POBOCKY = [
+  ["505", "Praha 6 - Vítězné nám.", "Praha"],
+  ["134", "Kladno", "Severozápadní Čechy"],
+  ["338", "Ostrava - Nová Karolina Park", "Severní Morava"],
+  ["282", "Pardubice, tř. Míru", "Východní Čechy"],
+  ["486", "Praha 5 - Štefánikova", "Praha"],
+  ["391", "Nový Jičín", "Severní Morava"],
+  ["469", "Praha 4 (Budějovická)", "Praha"],
+  ["540", "Plzeň - Františkánská", "Jihozápadní Čechy"],
+  ["413", "Opava", "Severní Morava"],
+  ["123", "Ústí nad Labem", "Severozápadní Čechy"],
+  ["182", "Liberec", "Severozápadní Čechy"],
+  ["397", "Olomouc", "Severní Morava"],
+  ["148", "Mladá Boleslav", "Severozápadní Čechy"],
+  ["384", "Havířov - Město", "Severní Morava"],
+  ["372", "Frýdek-Místek", "Severní Morava"],
+  ["578", "České Budějovice", "Jihozápadní Čechy"],
+  ["74", "Hodonín", "Jižní Morava"],
+  ["1", "Brno (Jánská)", "Jižní Morava"],
+  ["128", "Beroun", "Severozápadní Čechy"],
+  ["93", "Kroměříž", "Jižní Morava"],
+  ["84", "Jihlava", "Jižní Morava"],
+  ["118", "Znojmo", "Jižní Morava"],
+  ["51", "Břeclav", "Jižní Morava"],
+  ["368", "Prostějov", "Severní Morava"],
+  ["144", "Kralupy nad Vltavou", "Severozápadní Čechy"],
+  ["435", "Šumperk", "Severní Morava"],
+  ["562", "Benešov", "Jihozápadní Čechy"],
+  ["218", "Hradec Králové - ČSA", "Východní Čechy"],
+  ["459", "Praha 2 (Jugoslávská)", "Praha"],
+  ["511", "Praha 8 (Sokolovská)", "Praha"],
+  ["228", "Kolín", "Východní Čechy"],
+  ["174", "Chomutov", "Severozápadní Čechy"],
+  ["151", "TRIO Ml. Boleslav", "Severozápadní Čechy"],
+  ["569", "Příbram", "Jihozápadní Čechy"],
+  ["383", "Karviná", "Severní Morava"],
+  ["629", "Tábor", "Jihozápadní Čechy"],
+  ["60", "Zlín", "Jižní Morava"],
+  ["107", "Uherské Hradiště", "Jižní Morava"],
+  ["600", "Jindřichův Hradec", "Jihozápadní Čechy"],
+  ["246", "Havlíčkův Brod", "Východní Čechy"],
+  ["199", "Most", "Severozápadní Čechy"],
+  ["272", "Náchod", "Východní Čechy"],
+  ["656", "Rokycany", "Jihozápadní Čechy"],
+  ["429", "Přerov", "Severní Morava"],
+  ["477", "Praha - OC Chodov", "Praha"],
+  ["636", "Domažlice", "Jihozápadní Čechy"],
+  ["178", "Jablonec nad Nisou", "Severozápadní Čechy"],
+  ["100", "Třebíč", "Jižní Morava"],
+  ["108", "Uherský Brod", "Jižní Morava"],
+  ["192", "Litoměřice", "Severozápadní Čechy"],
+  ["253", "Chrudim", "Východní Čechy"],
+  ["266", "Jičín", "Východní Čechy"],
+  ["646", "Karlovy Vary", "Jihozápadní Čechy"],
+  ["114", "Vyškov", "Jižní Morava"],
+  ["204", "Teplice", "Severozápadní Čechy"],
+  ["354", "Kopřivnice", "Severní Morava"],
+  ["653", "Klatovy", "Jihozápadní Čechy"],
+  ["331", "Žďár nad Sázavou", "Východní Čechy"],
+  ["3", "Kounicova", "Jižní Morava"],
+  ["291", "Rychnov nad Kněžnou", "Východní Čechy"],
+  ["160", "Česká Lípa", "Severozápadní Čechy"],
+  ["392", "Valašské Meziříčí", "Severní Morava"],
+  ["541", "Plzeň - OC Plaza", "Jihozápadní Čechy"],
+  ["167", "Děčín", "Severozápadní Čechy"],
+  ["307", "Trutnov", "Východní Čechy"],
+  ["156", "Rakovník", "Severozápadní Čechy"],
+  ["38", "Pelhřimov", "Jižní Morava"],
+  ["523", "Vršovické nám.", "Praha"],
+  ["146", "Mělník", "Severozápadní Čechy"],
+  ["497", "Praha 8 - Ládví", "Praha"],
+  ["136", "Slaný", "Severozápadní Čechy"],
+  ["129", "Hořovice", "Severozápadní Čechy"],
+  ["366", "Vsetín", "Severní Morava"],
+  ["512", "Verneřická", "Praha"],
+  ["348", "Ostrava - Poruba (U Soudu)", "Severní Morava"],
+  ["191", "Roudnice nad Labem", "Severozápadní Čechy"],
+  ["377", "Třinec - Lyžbice", "Severní Morava"],
+  ["519", "OC Letňany", "Praha"],
+  ["101", "Moravské Budějovice", "Jižní Morava"],
+  ["612", "Písek", "Jihozápadní Čechy"],
+  ["474", "Novodvorská", "Praha"],
+  ["465", "Vinohradská 112", "Praha"],
+  ["660", "Sokolov", "Jihozápadní Čechy"],
+  ["386", "Orlová", "Severní Morava"],
+  ["524", "Starostrašnická", "Praha"],
+  ["493", "Strossmayerovo náměstí", "Praha"],
+  ["29", "Vaňkovka", "Jižní Morava"],
+  ["473", "Háje", "Praha"],
+  ["471", "Sofijské náměstí", "Praha"],
+  ["243", "Nymburk", "Východní Čechy"],
+  ["546", "Plzeň - Lochotín", "Jihozápadní Čechy"],
+  ["521", "Praha 9 - Centrum Černý Most", "Praha"],
+  ["393", "Rožnov pod Radhoštěm", "Severní Morava"],
+  ["75", "Kyjov", "Jižní Morava"],
+  ["414", "Hlučín", "Severní Morava"],
+  ["430", "Hranice", "Severní Morava"],
+  ["362", "OA Kotva Ostrava-Zábřeh", "Severní Morava"],
+  ["236", "Čáslav", "Východní Čechy"],
+  ["135", "Kročehlavy", "Severozápadní Čechy"],
+  ["198", "Louny", "Severozápadní Čechy"],
+  ["349", "Ostrava - Dubina", "Severní Morava"],
+  ["344", "Ostrava - Hrabůvka", "Severní Morava"],
+  ["436", "Jeseník", "Severní Morava"],
+  ["235", "Kutná Hora", "Východní Čechy"],
+  ["642", "Cheb", "Jihozápadní Čechy"],
+  ["52", "Hustopeče u Brna", "Jižní Morava"],
+  ["43", "Blansko", "Jižní Morava"],
+  ["387", "Český Těšín", "Severní Morava"],
+  ["451", "Praha 1 - Národní", "Praha"],
+  ["571", "Dobříš", "Jihozápadní Čechy"],
+  ["360", "Shopping Park Ostrava", "Severní Morava"],
+  ["355", "Bohumín", "Severní Morava"],
+  ["563", "Vlašim", "Jihozápadní Čechy"],
+  ["142", "Brandýs nad Labem", "Severozápadní Čechy"],
+  ["535", "Říčany", "Praha"],
+  ["145", "Neratovice", "Severozápadní Čechy"],
+  ["528", "Topolová", "Praha"],
+  ["241", "Poděbrady", "Východní Čechy"],
+  ["66", "Valašské Klobouky", "Jižní Morava"],
+  ["419", "Krnov", "Severní Morava"],
+  ["11", "Královo Pole", "Jižní Morava"],
+  ["403", "Uničov", "Severní Morava"],
+  ["374", "Jablunkov", "Severní Morava"],
+  ["498", "Praha 8 - OC Krakov", "Praha"],
+  ["446", "Václavské náměstí", "Praha"],
+  ["624", "Strakonice", "Jihozápadní Čechy"],
+  ["22", "OC Campus Square Brno", "Jižní Morava"],
+  ["219", "Střelecká", "Východní Čechy"],
+  ["211", "OC Olympia Teplice-Srbice", "Severozápadní Čechy"],
+  ["299", "Svitavy", "Východní Čechy"],
+  ["667", "Stříbro", "Jihozápadní Čechy"],
+  ["64", "Otrokovice - Atrium", "Jižní Morava"],
+  ["150", "Mnichovo Hradiště", "Severozápadní Čechy"],
+  ["508", "Praha 6 - Petřiny", "Praha"],
+  ["27", "Vinohrady", "Jižní Morava"],
+  ["437", "Mohelnice", "Severní Morava"],
+  ["438", "Zábřeh", "Severní Morava"],
+  ["490", "Luka", "Praha"],
+  ["632", "Soběslav", "Jihozápadní Čechy"],
+  ["321", "Ústí nad Orlicí", "Východní Čechy"],
+  ["287", "OC Globus Pardubice", "Východní Čechy"],
+  ["8", "Křídlovická", "Jižní Morava"],
+  ["185", "OC Nisa Liberec", "Severozápadní Čechy"],
+  ["335", "Velké Meziříčí", "Východní Čechy"],
+  ["376", "Frýdlant nad Ostravicí", "Severní Morava"],
+  ["5", "Brno - Masarykova", "Jižní Morava"],
+  ["175", "Kadaň", "Severozápadní Čechy"],
+  ["520", "Újezd nad Lesy", "Praha"],
+  ["14", "OC Olympia Brno", "Jižní Morava"],
+  ["516", "OC Čakovice", "Praha"],
+  ["553", "OC Olympia Plzeň", "Jihozápadní Čechy"],
+  ["488", "Radotín", "Praha"],
+  ["416", "Bruntál", "Severní Morava"],
+  ["595", "Český Krumlov", "Jihozápadní Čechy"],
+  ["168", "Rumburk", "Severozápadní Čechy"],
+  ["315", "Vrchlabí", "Východní Čechy"],
+  ["265", "Hořice", "Východní Čechy"],
+  ["292", "Dobruška", "Východní Čechy"],
+  ["618", "Prachatice", "Jihozápadní Čechy"],
+  ["472", "GEMINI", "Praha"],
+  ["555", "Nýřany", "Jihozápadní Čechy"],
+  ["449", "Dlouhá", "Praha"],
+  ["212", "Turnov", "Severozápadní Čechy"],
+  ["67", "Vizovice", "Jižní Morava"],
+  ["36", "Humpolec", "Jižní Morava"],
+  ["242", "Lysá nad Labem", "Východní Čechy"],
+  ["402", "Šternberk", "Severní Morava"],
+  ["325", "Vysoké Mýto", "Východní Čechy"],
+  ["531", "Horní Měcholupy", "Praha"],
+  ["53", "Mikulov na Moravě", "Jižní Morava"],
+  ["353", "Frenštát pod Radhoštěm", "Severní Morava"],
+  ["76", "Veselí nad Moravou", "Jižní Morava"],
+  ["518", "Vysočany", "Praha"],
+  ["188", "OC Forum Liberec", "Severozápadní Čechy"],
+  ["637", "Holýšov", "Jihozápadní Čechy"],
+  ["550", "Blovice", "Jihozápadní Čechy"],
+  ["20", "Tišnov", "Jižní Morava"],
+  ["157", "Nové Strašecí", "Severozápadní Čechy"],
+  ["21", "Židlochovice", "Jižní Morava"],
+  ["601", "Dačice", "Jihozápadní Čechy"],
+  ["552", "Přeštice", "Jihozápadní Čechy"],
+  ["666", "Tachov", "Jihozápadní Čechy"],
+  ["159", "Žatec", "Severozápadní Čechy"],
+  ["564", "Votice", "Jihozápadní Čechy"],
+  ["602", "Třeboň", "Jihozápadní Čechy"],
+  ["450", "Na Příkopě", "Praha"],
+  ["454", "Nuselská", "Praha"],
+  ["158", "Podbořany", "Severozápadní Čechy"],
+  ["510", "Řepy", "Praha"],
+  ["544", "Plzeň - Slovany", "Jihozápadní Čechy"],
+  ["255", "Hlinsko v Čechách", "Východní Čechy"],
+  ["149", "Benátky nad Jizerou", "Severozápadní Čechy"],
+  ["45", "Letovice", "Jižní Morava"],
+  ["301", "Litomyšl", "Východní Čechy"],
+  ["332", "Bystřice nad Pernštejnem", "Východní Čechy"],
+  ["95", "Bystřice pod Hostýnem", "Jižní Morava"],
+  ["119", "Moravský Krumlov", "Jižní Morava"],
+  ["303", "Polička", "Východní Čechy"],
+  ["203", "Litvínov", "Severozápadní Čechy"],
+  ["230", "Český Brod", "Východní Čechy"],
+  ["193", "Lovosice", "Severozápadní Čechy"],
+  ["492", "Praha 5 - OC Zličín", "Praha"],
+  ["92", "OC City Park Jihlava", "Jižní Morava"],
+  ["324", "Lanškroun", "Východní Čechy"],
+  ["579", "Trhové Sviny", "Jihozápadní Čechy"],
+  ["17", "Ivančice", "Jižní Morava"],
+  ["339", "Bílovec", "Severní Morava"],
+  ["222", "Nový Bydžov", "Východní Čechy"],
+  ["545", "Sušice", "Jihozápadní Čechy"],
+  ["44", "Boskovice", "Jižní Morava"],
+  ["234", "Pečky", "Východní Čechy"],
+  ["248", "Ledeč nad Sázavou", "Východní Čechy"],
+  ["590", "Č. Budějovice - OC Globus", "Jihozápadní Čechy"],
+  ["91", "OC Třebíč", "Jižní Morava"],
+  ["672", "Olomouc - OC Šantovka", "Severní Morava"],
+  ["86", "Třešť", "Jižní Morava"],
+  ["120", "Hrušovany nad Jevišovkou", "Jižní Morava"],
+  ["277", "Jaroměř", "Východní Čechy"],
+  ["162", "Nový Bor", "Severozápadní Čechy"],
+  ["184", "Frýdlant v Čechách", "Severozápadní Čechy"],
+  ["294", "Týniště nad Orlicí", "Východní Čechy"],
+  ["323", "Česká Třebová", "Východní Čechy"],
+  ["286", "Přelouč", "Východní Čechy"],
+  ["534", "Kostelec nad Černými lesy", "Východní Čechy"],
+  ["554", "Kralovice", "Jihozápadní Čechy"],
+  ["596", "Kaplice", "Jihozápadní Čechy"],
+  ["24", "Pohořelice", "Jižní Morava"],
+  ["293", "Kostelec nad Orlicí", "Východní Čechy"],
+  ["328", "Žamberk", "Východní Čechy"],
+  ["359", "Ostrava - Poruba 8", "Severní Morava"],
+  ["334", "Velká Bíteš", "Východní Čechy"],
+  ["274", "Červený Kostelec", "Východní Čechy"],
+  ["187", "Jablonec nad Nisou - OC Rýnovka", "Severozápadní Čechy"],
+  ["314", "Dvůr Králové nad Labem", "Východní Čechy"],
+  ["247", "Chotěboř", "Východní Čechy"],
+  ["581", "Č. Budějovice - Sokolská", "Jihozápadní Čechy"],
+  ["94", "Holešov", "Jižní Morava"],
+  ["89", "Polná", "Jižní Morava"],
+  ["593", "Č. Budějovice - Lidická", "Jihozápadní Čechy"],
+  ["398", "OC HANÁ Olomouc", "Severní Morava"],
+  ["460", "Karlovo nám.", "Praha"],
+  ["223", "Futurum Hradec Králové", "Východní Čechy"],
+  ["215", "Semily", "Severozápadní Čechy"],
+  ["12", "Žabovřesky", "Jižní Morava"],
+  ["645", "Mariánské Lázně", "Jihozápadní Čechy"],
+  ["264", "Nová Paka", "Východní Čechy"],
+  ["169", "Varnsdorf", "Severozápadní Čechy"],
+  ["491", "Nové Butovice", "Praha"],
+  ["418", "Vrbno pod Pradědem", "Severní Morava"],
+  ["613", "Milevsko", "Jihozápadní Čechy"],
+  ["19", "Rosice", "Jižní Morava"],
+  ["317", "Úpice", "Východní Čechy"],
+  ["423", "Kravaře", "Severní Morava"],
+  ["231", "Čelákovice", "Východní Čechy"],
+  ["257", "Skuteč", "Východní Čechy"],
+  ["662", "Chodov", "Jihozápadní Čechy"],
+  ["576", "Jílové u Prahy", "Jihozápadní Čechy"],
+  ["631", "Sezimovo Ústí", "Jihozápadní Čechy"],
+  ["179", "Tanvald", "Severozápadní Čechy"],
+  ["401", "Olomouc - OC Bělidla", "Severní Morava"],
+  ["605", "Suchdol nad Lužnicí", "Jihozápadní Čechy"],
+  ["572", "Sedlčany", "Jihozápadní Čechy"],
+  ["500", "KAMERA (Barrandov)", "Praha"],
+  ["327", "Letohrad", "Východní Čechy"],
+  ["570", "Sázava", "Jihozápadní Čechy"],
+  ["2", "Brno - Česká", "Jižní Morava"],
+  ["651", "Toužim", "Jihozápadní Čechy"],
+  ["117", "Slavkov u Brna", "Jižní Morava"],
+  ["333", "Nové Město na Moravě", "Východní Čechy"],
+  ["580", "Týn nad Vltavou", "Jihozápadní Čechy"],
+  ["205", "Bílina", "Severozápadní Čechy"],
+  ["283", "Holice v Čechách", "Východní Čechy"],
+  ["395", "Odry", "Severní Morava"],
+  ["619", "Vimperk", "Jihozápadní Čechy"],
+  ["18", "Kuřim", "Jižní Morava"],
+  ["464", "Sladkovského nám.", "Praha"],
+  ["32", "Šlapanice", "Jižní Morava"],
+  ["643", "Aš", "Jihozápadní Čechy"],
+  ["186", "Hrádek nad Nisou", "Severozápadní Čechy"],
+  ["573", "Březnice", "Jihozápadní Čechy"],
+  ["221", "Chlumec nad Cidlinou", "Východní Čechy"],
+  ["239", "Zruč nad Sázavou", "Východní Čechy"],
+  ["102", "Náměšť nad Oslavou", "Jižní Morava"],
+  ["161", "Mimoň", "Severozápadní Čechy"],
+  ["125", "Děčín 4", "Severozápadní Čechy"],
+  ["213", "Jilemnice", "Severozápadní Čechy"],
+  ["417", "Rýmařov", "Severní Morava"],
+  ["669", "Planá", "Jihozápadní Čechy"],
+  ["194", "Štětí", "Severozápadní Čechy"],
+  ["447", "Vodičkova", "Praha"],
+  ["548", "Horažďovice", "Jihozápadní Čechy"],
+  ["479", "Palmovka", "Praha"],
+  ["399", "Litovel", "Severní Morava"],
+  ["77", "Strážnice", "Jižní Morava"],
+  ["273", "Broumov", "Východní Čechy"],
+  ["254", "Heřmanův Městec", "Východní Čechy"],
+  ["304", "Jevíčko", "Východní Čechy"],
+  ["529", "Uhříněves", "Praha"],
+  ["80", "Bzenec", "Jižní Morava"],
+  ["302", "Moravská Třebová", "Východní Čechy"],
+  ["330", "Králíky", "Východní Čechy"],
+  ["237", "Uhlířské Janovice", "Východní Čechy"],
+  ["626", "Vodňany", "Jihozápadní Čechy"],
+  ["37", "Pacov", "Jižní Morava"],
+  ["663", "Kraslice", "Jihozápadní Čechy"],
+  ["495", "Dělnická", "Praha"],
+  ["326", "Choceň", "Východní Čechy"],
+  ["85", "Telč", "Jižní Morava"],
+  ["115", "Bučovice", "Jižní Morava"],
+  ["515", "Praha 9 - OC Galerie Harfa", "Praha"],
+  ["648", "Ostrov", "Jihozápadní Čechy"],
+  ["625", "Blatná", "Jihozápadní Čechy"],
+  ["556", "Plzeň - Skvrňany", "Jihozápadní Čechy"],
+  ["432", "Lipník nad Bečvou", "Severní Morava"],
+  ["68", "Zlín - Dvanáctka", "Jižní Morava"],
+  ["220", "Hradec Králové - OC Aupark", "Východní Čechy"],
+  ["173", "Česká Kamenice", "Severozápadní Čechy"],
+];
+
 /* ---------------------------- Stav aplikace ---------------------------- */
 
 let SQL = null;
@@ -394,6 +727,9 @@ function createNewDatabase() {
   const insFurniture = db.prepare("INSERT INTO furniture_to_zone (segment, furniture, zone, wpl_counter) VALUES (?, ?, ?, ?)");
   SEED_FURNITURE.forEach((r) => { insFurniture.run(r); });
   insFurniture.free();
+  const insPobocky = db.prepare("INSERT INTO pobocky (id_pobocky, nazev, region) VALUES (?, ?, ?)");
+  SEED_POBOCKY.forEach((r) => { insPobocky.run(r); });
+  insPobocky.free();
   ensureRefVersionUpToDate("Založení nové databáze");
 }
 
@@ -617,6 +953,27 @@ function excelCell(ws, addr) {
 
 function isBlank(v) { return v === null || v === undefined || v === ""; }
 
+// Vyhodnotí jeden řádek pozice (segment, pozice, FTE, WPL) přesně podle pravidel
+// nacti_data_z_excelu: FTE <= 0 se vynechá; WPL se u segmentu CESTOVNÍ bere ze
+// zadané hodnoty (chybí-li, dopočte se při kalkulaci z otevírací doby), jinak se
+// použije `defaultWpl` (C4 v Excelu / "Doba vytížení WPL" u manuálního zadání).
+// Používá jak parsování Excelu, tak manuální zadání pozic — obě cesty tak mají
+// vždy identické chování.
+function buildLoadRow(segment, pozice, fteRaw, wplRaw, defaultWpl) {
+  if (isBlank(segment) || isBlank(pozice)) return null;
+  const fte = toNumberOrNull(fteRaw);
+  if (fte === null || fte <= 0) return null;
+
+  let wpl_load;
+  if (String(segment).trim().toUpperCase() === "CESTOVNÍ") {
+    wpl_load = toNumberOrNull(wplRaw); // pokud chybí, doplní se při výpočtu otevírací dobou
+  } else {
+    const parsed = toNumberOrNull(defaultWpl);
+    wpl_load = parsed !== null ? parsed : 40.0;
+  }
+  return { segment: String(segment).trim(), pozice: String(pozice).trim(), fte, wpl_load };
+}
+
 function parseVstupySheet(workbook) {
   if (!workbook.SheetNames.includes("VSTUPY")) {
     throw new Error("V Excelu chybí list „VSTUPY“.");
@@ -642,18 +999,8 @@ function parseVstupySheet(workbook) {
     if (isBlank(segment) && isBlank(pozice) && isBlank(fteRaw) && isBlank(wplRaw)) break;
     if (isBlank(segment)) break;
 
-    const fte = toNumberOrNull(fteRaw);
-    if (fte === null || fte <= 0) { radek++; continue; }
-
-    let wpl_load;
-    if (String(segment).trim().toUpperCase() === "CESTOVNÍ") {
-      wpl_load = toNumberOrNull(wplRaw); // pokud chybí, doplní se při výpočtu otevírací dobou
-    } else {
-      const parsed = toNumberOrNull(doba_vytezeni_wpl);
-      wpl_load = parsed !== null ? parsed : 40.0;
-    }
-
-    rows.push({ segment: String(segment).trim(), pozice: String(pozice).trim(), fte, wpl_load });
+    const row = buildLoadRow(segment, pozice, fteRaw, wplRaw, doba_vytezeni_wpl);
+    if (row) rows.push(row);
     radek++;
   }
 
@@ -663,6 +1010,29 @@ function parseVstupySheet(workbook) {
     oteviraci_doba: toNumberOrNull(oteviraci_doba) ?? 40,
     rows,
   };
+}
+
+// Uloží řádky pozic pro pobočku do excel_loads (ať už pochází z nahraného Excelu,
+// nebo z manuálního zadání) a nastaví je jako aktuálně rozpracovaný checklist
+// (pendingLoad), ze kterého se pak spočítá kalkulace — od tohoto bodu je průběh
+// pro obě cesty zadání naprosto shodný.
+async function commitLoad(pobocka_id, pobocka_nazev, oteviraci_doba, rows) {
+  const load_key = `load_${pobocka_id}-${pobocka_nazev}-${nowStamp()}`;
+  const createdAt = nowIso();
+
+  const ins = db.prepare(`INSERT INTO excel_loads
+    (load_key, pobocka_id, pobocka_nazev, oteviraci_doba, segment, pozice, fte, wpl_load, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  rows.forEach((r) => {
+    ins.run([load_key, pobocka_id, pobocka_nazev, oteviraci_doba, r.segment, r.pozice, r.fte, r.wpl_load, createdAt]);
+  });
+  ins.free();
+
+  await persistDatabase();
+
+  const committed = { load_key, pobocka_id, pobocka_nazev, oteviraci_doba, rows };
+  pendingLoad = committed;
+  return committed;
 }
 
 async function handleExcelFile(file) {
@@ -680,27 +1050,11 @@ async function handleExcelFile(file) {
       msgsEl.innerHTML = `<div class="msg err">V listu „VSTUPY“ nebyl nalezen žádný řádek s FTE &gt; 0.</div>`;
       return;
     }
-    const load_key = `load_${parsed.pobocka_id}-${parsed.pobocka_nazev}-${nowStamp()}`;
-    const createdAt = nowIso();
-
-    const ins = db.prepare(`INSERT INTO excel_loads
-      (load_key, pobocka_id, pobocka_nazev, oteviraci_doba, segment, pozice, fte, wpl_load, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    parsed.rows.forEach((r) => {
-      ins.run([load_key, parsed.pobocka_id, parsed.pobocka_nazev, parsed.oteviraci_doba,
-        r.segment, r.pozice, r.fte, r.wpl_load, createdAt]);
-    });
-    ins.free();
-
-    await persistDatabase();
-
-    pendingLoad = { load_key, pobocka_id: parsed.pobocka_id, pobocka_nazev: parsed.pobocka_nazev,
-      oteviraci_doba: parsed.oteviraci_doba, rows: parsed.rows };
-
+    const committed = await commitLoad(parsed.pobocka_id, parsed.pobocka_nazev, parsed.oteviraci_doba, parsed.rows);
     msgsEl.innerHTML = `<div class="msg ok">Checklist načten: <strong>${esc(parsed.pobocka_nazev)}</strong>
       (ID ${esc(parsed.pobocka_id)}), otevírací doba ${esc(parsed.oteviraci_doba)} h/týden,
       ${parsed.rows.length} pozic s FTE &gt; 0.</div>`;
-    renderExcelPreview(parsed);
+    renderExcelPreview(committed);
   } catch (e) {
     console.error(e);
     msgsEl.innerHTML = `<div class="msg err">${esc(e.message)}</div>`;
@@ -726,6 +1080,110 @@ function renderExcelPreview(parsed) {
       <button class="btn" id="btnCalculate">Spočítat kalkulaci WPL</button>
     </div>`;
   document.getElementById("btnCalculate").addEventListener("click", runCalculation);
+}
+
+/* ------------------------- Manuální zadání pozic --------------------------- */
+
+function getKnownSegments() {
+  return dbAll("SELECT DISTINCT segment FROM casove_dotace ORDER BY segment").map((r) => r.segment);
+}
+
+function getPositionsForSegment(segment) {
+  return dbAll("SELECT DISTINCT pozice FROM casove_dotace WHERE segment = ? ORDER BY pozice", [segment]).map((r) => r.pozice);
+}
+
+function renderPobockyDatalist() {
+  const dl = document.getElementById("pobockyDatalist");
+  if (!dl || !db) return;
+  const rows = dbAll("SELECT nazev FROM pobocky ORDER BY nazev");
+  dl.innerHTML = rows.map((r) => `<option value="${esc(r.nazev)}"></option>`).join("");
+}
+
+function manualRowHtml() {
+  const segments = getKnownSegments();
+  const firstSeg = segments[0] || "";
+  const segOptions = segments.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+  const pozOptions = getPositionsForSegment(firstSeg).map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+  const isCestovni = firstSeg.trim().toUpperCase() === "CESTOVNÍ";
+  const wplPlaceholder = isCestovni ? "zadejte vytížení, např. 12" : "dle otevírací doby";
+  return `<tr class="manual-row">
+    <td><select class="manual-segment">${segOptions}</select></td>
+    <td><select class="manual-pozice">${pozOptions}</select></td>
+    <td><input type="number" class="manual-fte" min="0" step="0.1" placeholder="0"></td>
+    <td><input type="number" class="manual-wpl" min="0" step="0.5" placeholder="${wplPlaceholder}"${isCestovni ? "" : " disabled"}></td>
+    <td><button class="btn secondary small btn-del">✕</button></td>
+  </tr>`;
+}
+
+function wireManualRow(tr) {
+  const segSelect = tr.querySelector(".manual-segment");
+  const pozSelect = tr.querySelector(".manual-pozice");
+  const wplInput = tr.querySelector(".manual-wpl");
+  segSelect.addEventListener("change", () => {
+    const seg = segSelect.value;
+    pozSelect.innerHTML = getPositionsForSegment(seg).map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+    const isCestovni = seg.trim().toUpperCase() === "CESTOVNÍ";
+    wplInput.disabled = !isCestovni;
+    wplInput.placeholder = isCestovni ? "zadejte vytížení, např. 12" : "dle otevírací doby";
+    if (!isCestovni) wplInput.value = "";
+  });
+  tr.querySelector(".btn-del").addEventListener("click", () => tr.remove());
+}
+
+function addManualRow() {
+  const tbody = document.getElementById("manualRowsTbody");
+  tbody.insertAdjacentHTML("beforeend", manualRowHtml());
+  wireManualRow(tbody.lastElementChild);
+}
+
+function setEntryMode(mode) {
+  document.getElementById("modeExcel").style.display = mode === "excel" ? "block" : "none";
+  document.getElementById("modeManual").style.display = mode === "manual" ? "block" : "none";
+  document.getElementById("btnModeExcel").classList.toggle("active", mode === "excel");
+  document.getElementById("btnModeManual").classList.toggle("active", mode === "manual");
+  if (mode === "manual" && document.getElementById("manualRowsTbody").children.length === 0) {
+    addManualRow();
+  }
+}
+
+async function handleCommitManual() {
+  const msgsEl = document.getElementById("excelMsgs");
+  msgsEl.innerHTML = "";
+  document.getElementById("excelPreview").innerHTML = "";
+  document.getElementById("resultsPanel").style.display = "none";
+  document.getElementById("layoutPanel").style.display = "none";
+  if (!requireDb()) return;
+
+  const pobocka_nazev = document.getElementById("manualPobockaName").value.trim();
+  const pobocka_id = document.getElementById("manualPobockaId").value.trim();
+  const oteviraci_doba = toNumberOrNull(document.getElementById("manualOtevDoba").value) ?? 40;
+  const doba_vytezeni_wpl = document.getElementById("manualVytezeniWpl").value;
+
+  if (!pobocka_nazev || !pobocka_id) {
+    msgsEl.innerHTML = `<div class="msg err">Zadejte název i ID pobočky.</div>`;
+    return;
+  }
+
+  const rows = [];
+  document.querySelectorAll("#manualRowsTbody .manual-row").forEach((tr) => {
+    const row = buildLoadRow(
+      tr.querySelector(".manual-segment").value,
+      tr.querySelector(".manual-pozice").value,
+      tr.querySelector(".manual-fte").value,
+      tr.querySelector(".manual-wpl").value,
+      doba_vytezeni_wpl,
+    );
+    if (row) rows.push(row);
+  });
+  if (!rows.length) {
+    msgsEl.innerHTML = `<div class="msg err">Zadejte alespoň jednu pozici s FTE &gt; 0.</div>`;
+    return;
+  }
+
+  const committed = await commitLoad(pobocka_id, pobocka_nazev, oteviraci_doba, rows);
+  msgsEl.innerHTML = `<div class="msg ok">Kalkulace vytvořena manuálně: <strong>${esc(pobocka_nazev)}</strong>
+    (ID ${esc(pobocka_id)}), ${rows.length} pozic s FTE &gt; 0.</div>`;
+  renderExcelPreview(committed);
 }
 
 /* ------------------------------- Kalkulace -------------------------------- */
@@ -1587,6 +2045,7 @@ function refreshAllTabsAfterDbChange() {
   renderAbsenceTable();
   renderDotaceTable();
   renderRefVersionsList();
+  renderPobockyDatalist();
   document.getElementById("refVersionDetail").style.display = "none";
   document.getElementById("historyDetailPanel").style.display = "none";
 }
@@ -1632,6 +2091,23 @@ async function init() {
     const file = e.dataTransfer.files[0];
     if (file) handleExcelFile(file);
   });
+
+  document.getElementById("btnModeExcel").addEventListener("click", () => setEntryMode("excel"));
+  document.getElementById("btnModeManual").addEventListener("click", () => setEntryMode("manual"));
+  document.getElementById("manualPobockaName").addEventListener("input", (e) => {
+    const regionInfo = document.getElementById("manualRegionInfo");
+    const idInput = document.getElementById("manualPobockaId");
+    if (!db) return;
+    const row = dbAll("SELECT id_pobocky, region FROM pobocky WHERE nazev = ?", [e.target.value])[0];
+    if (row) {
+      idInput.value = row.id_pobocky;
+      regionInfo.textContent = `Region: ${row.region}`;
+    } else {
+      regionInfo.textContent = e.target.value ? "Pobočka nenalezena v seznamu — zadejte ID pobočky ručně." : "";
+    }
+  });
+  document.getElementById("btnAddManualRow").addEventListener("click", addManualRow);
+  document.getElementById("btnCommitManual").addEventListener("click", handleCommitManual);
 
   document.getElementById("btnAddAbsenceRow").addEventListener("click", () => {
     document.getElementById("absenceTbody").insertAdjacentHTML("beforeend", absenceRowHtml({ segment: "", nepritomnost: 0, homeoffice: 0 }));
