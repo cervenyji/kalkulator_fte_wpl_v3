@@ -69,7 +69,8 @@ def main():
         backoffice_zone REAL,
         office_room REAL,
         created_at TEXT,
-        ref_version_id INTEGER
+        ref_version_id INTEGER,
+        status TEXT
     )
     """)
 
@@ -127,6 +128,16 @@ def main():
         backoffice_pct REAL,
         meeting_pct REAL,
         created_at TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE segments (
+        segment_key TEXT PRIMARY KEY,
+        nazev TEXT,
+        sort_order INTEGER,
+        color TEXT,
+        icon TEXT
     )
     """)
 
@@ -697,6 +708,25 @@ def main():
         INSERT INTO pobocky (id_pobocky, nazev, region)
         VALUES (?, ?, ?)
     """, pobocky_data)
+
+    # (segment_key, nazev, sort_order, color, icon) — barevné/ikonové schéma segmentů,
+    # shodné s SEED_SEGMENTS v app.js.
+    segments_data = [
+        ("MMMA", "MMMA", 1, "#2770f0", "🏠"),
+        ("SBC", "SBC", 2, "#0bb43f", "🏢"),
+        ("HC", "HC", 3, "#f0a020", "🏡"),
+        ("EPC", "EPC", 4, "#8b5cf6", "💼"),
+        ("EPB", "EPB", 5, "#d6336c", "👑"),
+        ("PROVOZ", "PROVOZ", 6, "#0e7490", "⚙️"),
+        ("RKC", "RKC", 7, "#b45309", "🏭"),
+        ("CESTOVNÍ", "CESTOVNÍ", 8, "#64748b", "🚗"),
+        ("CESTOVNÍ POZICE", "CESTOVNÍ POZICE", 9, "#94a3b8", "🚙"),
+        ("OSTATNÍ", "OSTATNÍ", 10, "#6b7684", "📋"),
+    ]
+    cur.executemany("""
+        INSERT INTO segments (segment_key, nazev, sort_order, color, icon)
+        VALUES (?, ?, ?, ?, ?)
+    """, segments_data)
 
     conn.commit()
     conn.close()

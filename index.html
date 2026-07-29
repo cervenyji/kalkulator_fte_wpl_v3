@@ -72,8 +72,26 @@
   table th, table td{border:1px solid var(--border); padding:6px 8px; text-align:left; vertical-align:top;}
   table th{background:var(--table-head); font-weight:600; white-space:nowrap;}
   table tr.total-row td{background:#eafcef; font-weight:700;}
-  table input, table select{width:100%; border:1px solid transparent; background:transparent; font-size:13px; padding:2px 3px; border-radius:4px;}
-  table input:hover, table input:focus, table select:hover, table select:focus{border-color:var(--border); background:#fff;}
+  table input, table select{
+    width:100%; border:1px solid var(--border); background:#fbfcfe; font-size:13px; padding:4px 6px;
+    border-radius:4px; transition:border-color .15s, box-shadow .15s;
+  }
+  table input:hover, table select:hover{border-color:var(--accent);}
+  table input:focus, table select:focus{
+    border-color:var(--accent); background:#fff; outline:none; box-shadow:0 0 0 2px rgba(39,112,240,.15);
+  }
+  /* Počty kusů v layoutu a FTE vstupy — vizuálně odlišené jako "vyplňte mě" pole,
+     aby bylo na první pohled jasné, že jde o editovatelné buňky. */
+  input.layout-qty, input.manual-fte, input.manual-wpl,
+  #manualOtevDoba, #manualVytezeniWpl{
+    background:#fff8e6; border:1.5px solid #f0c96b; font-weight:600; text-align:center;
+  }
+  input.layout-qty:hover, input.manual-fte:hover, input.manual-wpl:hover,
+  #manualOtevDoba:hover, #manualVytezeniWpl:hover{border-color:#d9a83a;}
+  input.layout-qty:focus, input.manual-fte:focus, input.manual-wpl:focus,
+  #manualOtevDoba:focus, #manualVytezeniWpl:focus{
+    background:#fff; border-color:var(--accent); box-shadow:0 0 0 2px rgba(39,112,240,.15);
+  }
   #manualRowsTbody td:nth-child(1) select{min-width:110px;}
   #manualRowsTbody td:nth-child(2) select{min-width:280px;}
   #absenceTbody td:nth-child(1) input{min-width:110px;}
@@ -166,6 +184,26 @@
   .kpi-table td:first-child{color:var(--muted);}
   .kpi-up{color:var(--ok);}
   .kpi-down{color:var(--warn);}
+
+  /* --- Barevné schéma segmentů --- */
+  .seg-badge{
+    display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border-radius:10px;
+    font-size:12px; font-weight:700; white-space:nowrap;
+  }
+
+  /* --- Stav kalkulace (rozpracovaná / potvrzená) --- */
+  .status-row{display:flex; align-items:center; gap:10px; margin:10px 0; flex-wrap:wrap;}
+
+  /* --- Nákres pobočky (floor plan) --- */
+  .floor-plan-wrap{margin:14px 0; text-align:center;}
+
+  /* --- Struktura checklistu: segmenty/pozice/nábytek --- */
+  #segmentsTbody input[type="color"]{width:44px; height:30px; padding:2px; cursor:pointer;}
+  #segmentsTbody td:nth-child(1) input, #segmentsTbody td:nth-child(2) input{min-width:120px;}
+  #furnitureTbody td:nth-child(1) input{min-width:100px;}
+  #furnitureTbody td:nth-child(3) input{min-width:220px;}
+  #adminDotaceTable td:nth-child(1) input{min-width:90px;}
+  #adminDotaceTable td:nth-child(2) input{min-width:320px;}
 </style>
 </head>
 <body>
@@ -186,6 +224,7 @@
   <button class="tabbtn active" data-tab="new">Nový výpočet</button>
   <button class="tabbtn" data-tab="history">Historie kalkulací</button>
   <button class="tabbtn" data-tab="ref">Referenční data</button>
+  <button class="tabbtn" data-tab="admin">Struktura checklistu</button>
 </nav>
 
 <main>
@@ -341,6 +380,54 @@
     referenčních dat byla spočítána — zpětně tak dohledáte přesné nastavení.</p>
     <div id="refVersionsList"></div>
     <div id="refVersionDetail" style="display:none; margin-top:14px;"></div>
+  </div>
+</section>
+
+<section class="tab" id="tab-admin">
+  <div class="panel">
+    <h2>Segmenty</h2>
+    <p class="muted">Definujte segmenty, jejich pořadí, barvu a ikonu — používá se v celé aplikaci (tabulky,
+      layout, PDF exporty) i při generování Excel šablony.</p>
+    <div id="segmentsTable"></div>
+    <div class="row" style="margin-top:10px;">
+      <button class="btn secondary small" id="btnAddSegmentRow">+ Přidat segment</button>
+      <button class="btn small" id="btnSaveSegments">Uložit segmenty</button>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Pozice</h2>
+    <p class="muted">Seznam pozic po segmentech a jejich časové dotace — stejná data jako v záložce
+      „Referenční data“. Nová pozice se automaticky propíše do generovaného Excel checklistu i do formuláře
+      manuálního zadání.</p>
+    <div class="filterbox"><input type="text" id="adminDotaceFilter" placeholder="Filtrovat dle segmentu nebo pozice…"></div>
+    <div id="adminDotaceTable"></div>
+    <div class="row" style="margin-top:10px;">
+      <button class="btn secondary small" id="btnAdminAddDotaceRow">+ Přidat pozici</button>
+      <button class="btn small" id="btnAdminSaveDotace">Uložit tabulku dotací</button>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Nábytek</h2>
+    <p class="muted">Nábytkové prvky pro sestavení layoutu, po segmentech a zónách — stejná data jako v
+      layoutu kalkulace (tabulka <code>furniture_to_zone</code>).</p>
+    <div id="furnitureTable"></div>
+    <div class="row" style="margin-top:10px;">
+      <button class="btn secondary small" id="btnAddFurnitureRow">+ Přidat nábytek</button>
+      <button class="btn small" id="btnSaveFurniture">Uložit tabulku nábytku</button>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Generovat Excel šablonu checklistu</h2>
+    <p class="muted">Vygeneruje .xlsx se stejnou strukturou (listy <code>VSTUPY</code> a <code>CHL</code>,
+      stejné pořadí sloupců i pozic v řádcích), jako checklist vyplňovaný pobočkami — na základě aktuálního
+      seznamu segmentů, pozic a nábytku výše. Soubor lze po vyplnění bez úprav znovu načíst zpět do aplikace
+      (záložka „Nový výpočet“ → „Nahrát Excel checklist“).</p>
+    <p class="msg warn">Upozornění: knihovna pro práci s Excelem v prohlížeči (SheetJS, komunitní edice) umí
+      barevné formátování buněk při čtení, ale při zápisu ho zahazuje — vygenerovaný soubor tak nemá barevné
+      podbarvení jako originální šablona. Sloupce, pořadí i názvy pozic/nábytku ale přesně odpovídají.</p>
+    <div class="row">
+      <button class="btn" id="btnGenerateTemplate">Generovat Excel šablonu</button>
+    </div>
   </div>
 </section>
 

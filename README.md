@@ -158,6 +158,55 @@ znovu otevře s předvyplněnými počty kusů a uložení přepíše původní 
 Pokud pro nějaký segment/zónu není v databázi definovaný žádný nábytek,
 zobrazí se u dané zóny informační poznámka místo formuláře.
 
+## Barevné schéma a ikony segmentů
+
+Každý segment (MMMA, SBC, HC, EPC, EPB, PROVOZ, RKC, CESTOVNÍ, CESTOVNÍ POZICE, OSTATNÍ) má
+přiřazenou barvu a ikonu — používají se jednotně v tabulce výsledků, v sestavení layoutu (včetně
+nákresu pobočky, viz níže) i v PDF exportech (barevný čtvereček před názvem segmentu; ikony jako
+emoji se v PDF nevykreslují, protože je vložený font DejaVu Sans neobsahuje). Barvy, ikony i pořadí
+segmentů lze upravit v novém modulu „Struktura checklistu“ (viz níže).
+
+## Stav kalkulace: rozpracovaná / potvrzená
+
+Každá spočítaná kalkulace má stav — nově vytvořená je vždy **„Rozpracovaná“**. U výsledku kalkulace
+i v detailu v historii je tlačítko, kterým lze kalkulaci **potvrdit / uzavřít** (nebo naopak vrátit
+zpět do rozpracované). Stav se zobrazuje jako štítek u výsledku, v detailu kalkulace i v přehledu
+kalkulací dané pobočky v historii.
+
+## Nákres pobočky (schematický)
+
+V kroku „Sestavení layoutu“ (i v historii kalkulací) se nad seznamem přiřazeného nábytku zobrazuje
+schematický nákres pobočky ve tvaru domečku — každá dvojice segment+zóna, do které byl v layoutu
+přiřazen nábytek, je jedna „místnost“, barevně odlišená podle segmentu, s popisem (segment, zóna,
+počet kusů nábytku a přiřazené WPL). Počet a velikost místností se tak mění podle toho, co je v
+konkrétní kalkulaci skutečně přiřazeno. Stejný nákres (vykreslený vektorově, ne jako obrázek) je
+součástí i PDF exportu layoutu.
+
+## Struktura checklistu (segmenty, pozice, nábytek, Excel šablona)
+
+Nová záložka **„Struktura checklistu“** v horní liště slouží ke správě dat, ze kterých vychází
+Excel checklist i celá kalkulace:
+
+- **Segmenty** — pořadí, barva a ikona (viz výše).
+- **Pozice** — stejná data a stejný editor jako v „Referenčních datech“ (tabulka `casove_dotace`);
+  nová/upravená pozice se okamžitě promítne i tam a naopak.
+- **Nábytek** — nábytkové prvky pro sestavení layoutu po segmentech a zónách (tabulka
+  `furniture_to_zone`), nyní přímo editovatelné (dosud jen needitovatelná seedovaná data).
+
+Tlačítkem **„Generovat Excel šablonu“** se z aktuálního obsahu těchto tří tabulek vygeneruje
+`.xlsx` se dvěma listy — `VSTUPY` (stejné sloupce a pořadí jako běžný checklist: C1–C4 hlavička
+pobočky, od řádku 6 Segment/Pozice/FTE/Vytížení WPL pro každou pozici) a `CHL` (přehled nábytku po
+segmentech a zónách se sloupcem pro počet kusů, který vyplňují pobočky). Nově přidaná pozice nebo
+nábytkový prvek se tak při dalším vygenerování šablony automaticky objeví, a takto vygenerovaný a
+vyplněný soubor lze bez úprav znovu načíst zpět do aplikace (záložka „Nový výpočet“ → „Nahrát Excel
+checklist“) — parser čte pozice dynamicky řádek po řádku, není závislý na pevném počtu ani pořadí.
+
+**Známé omezení:** knihovna pro práci s Excelem v prohlížeči (SheetJS, vendorovaná komunitní
+edice) umí barevné formátování buněk přečíst, ale při zápisu (`XLSX.write`) ho zahazuje — ověřeno
+přímým testem (zápis buňky s nastaveným `fill`/`font` a zpětné přečtení výsledku vždy vrátí
+„bez formátování“). Vygenerovaná šablona proto nemá barevné podbarvení jako originální checklist,
+ale sloupce, pořadí i názvy pozic/nábytku přesně odpovídají aktuálnímu nastavení v aplikaci.
+
 ## Formát vstupního Excelu
 
 Aplikace čte list **„VSTUPY“** stejně jako původní appka:
