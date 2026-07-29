@@ -116,6 +116,28 @@ Kliknutím na pobočku se zobrazí seznam všech jejích kalkulací v čase; kli
 na konkrétní kalkulaci pak její detail (vstupní data, výsledek, referenční
 data i sestavený layout).
 
+## Klíčové ukazatele a benchmark
+
+Pod výsledkem kalkulace se zobrazí:
+
+- **Stanovený formát pobočky** (small / medium economy / medium / flagship),
+  doporučený počet fasttracků a doporučený počet židlí v čekací zóně — stejná
+  logika jako v původní appce.
+- **Poměr WPL / FTE** — kolik WPL připadá na jedno FTE (v %).
+- **Podíl Backoffice zóny** a **podíl míst pro jednání s klientem (meeting
+  zone)** — jaký podíl z celkového spočítaného WPL tvoří tyto zóny.
+
+Každá z těchto tří poměrových hodnot se porovnává s **benchmarkem** — průměrem
+přes všechny dosud spočítané kalkulace se stejným formátem pobočky (tabulka
+`calculation_stats`). Jak postupně přibývají kalkulace, benchmark se zpřesňuje
+a je vidět, o kolik procentních bodů se aktuální pobočka od průměru liší.
+Kalkulace uložené ještě před zavedením této funkce se při připojení databáze
+automaticky dopočítají, takže se do benchmarku započítá i starší historie.
+
+Zaškrtávacím políčkem „Zahrnout klíčové ukazatele a benchmark do PDF“ (nad
+tlačítkem exportu) lze tuto sekci do PDF přidat, nebo z něj vynechat —
+souhrnná tabulka a doporučení formátu/fasttracků/židlí v PDF zůstávají vždy.
+
 ## Sestavení layoutu
 
 Pro každý segment a zónu, kde kalkulace vyžaduje WPL > 0, aplikace nabídne
@@ -125,6 +147,13 @@ přiřazeno vůči požadavku. Tlačítkem „Uložit layout“ se přiřazení 
 kalkulaci (tabulka `layouts`) a lze ho poté exportovat do PDF se sestavou
 nábytku po zónách a segmentech — stejné rozdělení jako v původní appce
 (`export_layout_to_pdf`). Layout je vidět i v historii kalkulací.
+
+Zóny bez vypočítané potřeby WPL se zobrazí sbalené („bez výpočtu WPL — ruční
+přiřazení“) — jde o pojistku, díky které lze do libovolné zóny doplnit nábytek
+i nad rámec výpočtu (např. ruční rezervu), pokud je potřeba kalkulaci přebít.
+
+Uložený layout lze kdykoliv upravit tlačítkem „Upravit layout“ — formulář se
+znovu otevře s předvyplněnými počty kusů a uložení přepíše původní přiřazení.
 
 Pokud pro nějaký segment/zónu není v databázi definovaný žádný nábytek,
 zobrazí se u dané zóny informační poznámka místo formuláře.

@@ -80,6 +80,17 @@ CREATE TABLE IF NOT EXISTS pobocky (
   nazev TEXT,
   region TEXT
 );
+CREATE TABLE IF NOT EXISTS calculation_stats (
+  calculation_key TEXT PRIMARY KEY,
+  load_key TEXT,
+  format_typ TEXT,
+  celkem_fte REAL,
+  celkem_wpl REAL,
+  wpl_fte_ratio REAL,
+  backoffice_pct REAL,
+  meeting_pct REAL,
+  created_at TEXT
+);
 `;
 
 // Doplní chybějící tabulky/sloupce v databázích vytvořených starší verzí aplikace.
@@ -738,6 +749,7 @@ function loadDatabaseFromBytes(bytes) {
   migrateSchema(candidate); // doplní chybějící tabulky/sloupce ze starších verzí aplikace, zbytek dat zachová
   db = candidate;
   ensureRefVersionUpToDate("Stav při připojení databáze");
+  backfillCalculationStats(); // dopočítá ukazatele pro kalkulace uložené před zavedením benchmarku
 }
 
 function exportDatabaseBytes() {
@@ -1326,9 +1338,12 @@ function runCalculation() {
     celkemRow.service_zone, celkemRow.meeting_zone, celkemRow.backoffice_zone, celkemRow.office_room, createdAt, refVersionId]);
   insCalc.free();
 
+  const inputRows = rows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte, wpl_load: r.wpl_load }));
+  const stats = computeCalculationStats({ rows: resultRows, celkem: celkemRow, inputRows });
+  persistCalculationStats(calculation_key, load_key, stats, createdAt);
+
   persistDatabase();
 
-  const inputRows = rows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte, wpl_load: r.wpl_load }));
   renderResults({ calculation_key, load_key, createdAt, rows: resultRows, celkem: celkemRow, warnings, inputRows,
     refVersionId, pobocka_id: pendingLoad.pobocka_id, pobocka_nazev: pendingLoad.pobocka_nazev, oteviraci_doba });
   goToWizardStep(4);
@@ -1345,6 +1360,7 @@ function renderResults(result) {
     ? `<div class="msg warn">${result.warnings.map(esc).join("<br>")}</div>` : "";
 
   const rowsHtml = result.rows.map((r) => resultRowHtml(r)).join("") + resultRowHtml(result.celkem, true);
+  const stats = computeCalculationStats(result);
 
   document.getElementById("resultsArea").innerHTML = `
     ${warnHtml}
@@ -1357,6 +1373,7 @@ function renderResults(result) {
       </table>
     </div>
     ${refVersionDetailsHtml(result.refVersionId)}
+    ${renderStatsSection(stats, "pdfIncludeStats")}
     <div class="row" style="margin-top:14px;">
       <button class="btn secondary" id="btnExportPdf">Exportovat PDF s přehledem WPL</button>
     </div>
@@ -1364,12 +1381,49 @@ function renderResults(result) {
       <label class="muted" for="pdfNote">Poznámka do PDF (nepovinné):</label>
       <textarea id="pdfNote" rows="2"></textarea>
     </div>`;
-  document.getElementById("btnExportPdf").addEventListener("click", () => exportCalculationPdf(result));
+  document.getElementById("btnExportPdf").addEventListener("click", () => {
+    const note = document.getElementById("pdfNote").value.trim();
+    const includeStats = document.getElementById("pdfIncludeStats").checked;
+    exportCalculationPdf(result, { note, includeStats });
+  });
 
   document.getElementById("layoutPanel").style.display = "block";
   renderLayoutSection("layoutArea", result.rows, {
     calculation_key: result.calculation_key, pobocka_id: result.pobocka_id, pobocka_nazev: result.pobocka_nazev,
   });
+}
+
+// Zobrazí formát pobočky, doporučení pro layout a poměrové ukazatele (WPL/FTE,
+// podíl backoffice a míst pro jednání s klientem) včetně srovnání s benchmarkem
+// ostatních kalkulací se stejným formátem pobočky. checkboxId řídí, jestli se
+// tato sekce zahrne i do PDF exportu.
+function renderStatsSection(stats, checkboxId) {
+  const benchmark = getBenchmark(stats.formatTyp);
+  const fmtPct = (v) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : `${v.toFixed(1)} %`;
+  const deltaHtml = (value, avg) => {
+    if (!benchmark || value === null || avg === null || avg === undefined) return "";
+    const diff = value - avg;
+    const cls = diff > 0 ? "kpi-up" : diff < 0 ? "kpi-down" : "";
+    return ` <span class="muted ${cls}">(benchmark ${fmtPct(avg)}, rozdíl ${diff >= 0 ? "+" : ""}${diff.toFixed(1)} p.b.)</span>`;
+  };
+  const benchmarkNote = benchmark
+    ? `Benchmark je průměr ${czechCalcCount(benchmark.n)} s formátem „${esc(stats.formatTyp)}“.`
+    : `Zatím není dostatek kalkulací pro benchmark formátu „${esc(stats.formatTyp)}“.`;
+  return `
+    <div style="margin-top:14px;">
+      <h3>Klíčové ukazatele</h3>
+      <div class="table-wrap"><table class="kpi-table">
+        <tr><td>Stanovený formát pobočky</td><td><strong>${esc(stats.formatTyp)}</strong>
+          <span class="muted">(dle ${stats.obchodniFteSumDisplay} obchodních FTE)</span></td></tr>
+        <tr><td>Doporučený počet fasttracků na hale</td><td>${stats.recommendedFasttracks}</td></tr>
+        <tr><td>Doporučený počet židlí v čekací zóně</td><td>${stats.recommendedChairs}</td></tr>
+        <tr><td>Poměr WPL / FTE</td><td>${fmtPct(stats.wplFteRatio)}${deltaHtml(stats.wplFteRatio, benchmark?.avg_ratio)}</td></tr>
+        <tr><td>Podíl Backoffice zóny</td><td>${fmtPct(stats.backofficePct)}${deltaHtml(stats.backofficePct, benchmark?.avg_backoffice)}</td></tr>
+        <tr><td>Podíl míst pro jednání s klientem (meeting zone)</td><td>${fmtPct(stats.meetingPct)}${deltaHtml(stats.meetingPct, benchmark?.avg_meeting)}</td></tr>
+      </table></div>
+      <p class="muted">${benchmarkNote}</p>
+      <label class="muted"><input type="checkbox" id="${checkboxId}" checked> Zahrnout klíčové ukazatele a benchmark do PDF</label>
+    </div>`;
 }
 
 // Vrátí sbalitelné shrnutí referenčních dat, se kterými byla kalkulace spočítána.
@@ -1423,7 +1477,11 @@ const OBCHODNI_POZICE = new Set([
 ]);
 const MEETING_ZONE_SUM_SEGMENTS = ["MMMA", "SBC", "HC"];
 
-function computeDerivedPdfStats(result) {
+// Spočítá odvozené ukazatele kalkulace ze segmentových řádků (bez "Celkem"),
+// řádku "Celkem" a vstupních pozic z checklistu. Používá se jak pro okamžité
+// zobrazení po dokončení kalkulace, tak pro PDF export a pro zpětné dopočítání
+// (backfill) starších kalkulací do tabulky calculation_stats.
+function computeCalculationStats(result) {
   let meetingZoneSum = 0;
   result.rows.forEach((r) => {
     if (MEETING_ZONE_SUM_SEGMENTS.includes(r.segment)) meetingZoneSum += r.meeting_zone || 0;
@@ -1442,14 +1500,66 @@ function computeDerivedPdfStats(result) {
   else if (obchodniFteSum >= 5) formatTyp = "medium economy";
   else formatTyp = "small";
 
-  const combinedTotal = (result.celkem.service_zone || 0) + (result.celkem.meeting_zone || 0);
+  const serviceZone = result.celkem.service_zone || 0;
+  const meetingZoneTotal = result.celkem.meeting_zone || 0;
+  const backofficeZone = result.celkem.backoffice_zone || 0;
+  const officeRoom = result.celkem.office_room || 0;
+  const celkemWpl = serviceZone + meetingZoneTotal + backofficeZone + officeRoom;
+  const celkemFte = result.celkem.total_positions || 0;
+  const combinedTotal = serviceZone + meetingZoneTotal;
+
   return {
     meetingZoneSum,
+    obchodniFteSum,
     obchodniFteSumDisplay: round1(obchodniFteSum).toFixed(1),
     formatTyp,
     recommendedFasttracks: Math.ceil(combinedTotal * 0.15),
     recommendedChairs: Math.ceil(combinedTotal * 0.50),
+    celkemFte,
+    celkemWpl,
+    wplFteRatio: celkemFte > 0 ? (celkemWpl / celkemFte) * 100 : null,
+    backofficePct: celkemWpl > 0 ? (backofficeZone / celkemWpl) * 100 : null,
+    meetingPct: celkemWpl > 0 ? (meetingZoneTotal / celkemWpl) * 100 : null,
   };
+}
+
+function persistCalculationStats(calculationKey, loadKey, stats, createdAt) {
+  db.run(`INSERT OR REPLACE INTO calculation_stats
+    (calculation_key, load_key, format_typ, celkem_fte, celkem_wpl, wpl_fte_ratio, backoffice_pct, meeting_pct, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [calculationKey, loadKey, stats.formatTyp, stats.celkemFte, stats.celkemWpl,
+      stats.wplFteRatio, stats.backofficePct, stats.meetingPct, createdAt]);
+}
+
+function getBenchmark(formatTyp) {
+  const row = dbAll(`SELECT AVG(wpl_fte_ratio) AS avg_ratio, AVG(backoffice_pct) AS avg_backoffice,
+    AVG(meeting_pct) AS avg_meeting, COUNT(*) AS n
+    FROM calculation_stats WHERE format_typ = ?`, [formatTyp])[0];
+  return row && row.n > 0 ? row : null;
+}
+
+// Dopočítá calculation_stats pro kalkulace uložené ještě před zavedením této
+// funkce, aby benchmark fungoval i s dříve pořízenou historií.
+function backfillCalculationStats() {
+  const missing = dbAll(`
+    SELECT DISTINCT c.calculation_key AS calculation_key, c.load_key AS load_key
+    FROM calculations c
+    LEFT JOIN calculation_stats cs ON cs.calculation_key = c.calculation_key
+    WHERE cs.calculation_key IS NULL`);
+  missing.forEach(({ calculation_key, load_key }) => {
+    try {
+      const rows = dbAll(`SELECT segment, total_positions, service_zone, meeting_zone, backoffice_zone, office_room, created_at
+        FROM calculations WHERE calculation_key = ?`, [calculation_key]);
+      const celkemRow = rows.find((r) => r.segment === "Celkem");
+      const segmentRows = rows.filter((r) => r.segment !== "Celkem");
+      if (!celkemRow) return;
+      const inputRows = dbAll("SELECT segment, pozice, fte FROM excel_loads WHERE load_key = ?", [load_key]);
+      const stats = computeCalculationStats({ rows: segmentRows, celkem: celkemRow, inputRows });
+      persistCalculationStats(calculation_key, load_key, stats, celkemRow.created_at || nowIso());
+    } catch (e) {
+      console.warn("Nepodařilo se dopočítat calculation_stats pro", calculation_key, e);
+    }
+  });
 }
 
 // Vrátí [nepritomnost, homeoffice] pro daný segment ze snapshotu verze referenčních
@@ -1459,8 +1569,8 @@ function absenceFromSnapshot(absenceSnapshot, segment) {
   return row ? [row[1] || 0, row[2] || 0] : [0, 0];
 }
 
-function exportCalculationPdf(result) {
-  const note = document.getElementById("pdfNote") ? document.getElementById("pdfNote").value.trim() : "";
+function exportCalculationPdf(result, options) {
+  const { note = "", includeStats = true } = options || {};
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF();
   const marginX = 14;
@@ -1566,7 +1676,7 @@ function exportCalculationPdf(result) {
   y += 8;
   const celkemSum = (result.celkem.service_zone || 0) + (result.celkem.meeting_zone || 0) +
                      (result.celkem.backoffice_zone || 0) + (result.celkem.office_room || 0);
-  const stats = computeDerivedPdfStats(result);
+  const stats = computeCalculationStats(result);
   pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(9);
   pdf.text(`Celkový součet (ServiceZ + MeetingZ + BackofficeZ + OfficeRoom) z řádku 'Celkem': ${celkemSum.toFixed(2)}`, marginX, y);
   y += 9;
@@ -1579,6 +1689,36 @@ function exportCalculationPdf(result) {
   ];
   statLines.forEach((line) => { pdf.text(line, marginX, y); y += 6; });
   y += 4;
+
+  if (includeStats) {
+    if (y > pageBottom - 30) { pdf.addPage(); y = 18; }
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
+    pdf.text("Klíčové ukazatele a benchmark", marginX, y); y += 7;
+    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(9);
+    const benchmark = getBenchmark(stats.formatTyp);
+    const pctOrDash = (v) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : `${v.toFixed(1)} %`;
+    const withBenchmark = (label, value, avg) => {
+      let line = `${label}: ${pctOrDash(value)}`;
+      if (benchmark && value !== null && avg !== null && avg !== undefined) {
+        const diff = value - avg;
+        line += ` (benchmark ${stats.formatTyp}: ${pctOrDash(avg)}, rozdíl ${diff >= 0 ? "+" : ""}${diff.toFixed(1)} p.b.)`;
+      }
+      return line;
+    };
+    [
+      withBenchmark("Poměr WPL / FTE", stats.wplFteRatio, benchmark?.avg_ratio),
+      withBenchmark("Podíl Backoffice zóny", stats.backofficePct, benchmark?.avg_backoffice),
+      withBenchmark("Podíl míst pro jednání s klientem (meeting zone)", stats.meetingPct, benchmark?.avg_meeting),
+    ].forEach((line) => {
+      pdf.splitTextToSize(line, 182).forEach((l) => { if (y > pageBottom) { pdf.addPage(); y = 18; } pdf.text(l, marginX, y); y += 5.5; });
+    });
+    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(8);
+    pdf.setTextColor(120, 120, 120);
+    pdf.text(benchmark ? `Benchmark vychází z ${czechCalcCount(benchmark.n)} s formátem „${stats.formatTyp}“.`
+      : `Zatím není dostatek kalkulací pro benchmark formátu „${stats.formatTyp}“.`, marginX, y);
+    pdf.setTextColor(0, 0, 0);
+    y += 8;
+  }
 
   if (result.warnings.length) {
     pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
@@ -1625,37 +1765,50 @@ function renderLayoutSection(containerId, segmentRows, meta) {
   if (!container) return;
   const existing = getExistingLayout(meta.calculation_key);
   if (existing.length) {
-    renderLayoutReadonly(container, existing, meta);
+    renderLayoutReadonly(container, existing, meta, segmentRows);
   } else {
-    renderLayoutForm(container, segmentRows, meta);
+    renderLayoutForm(container, segmentRows, meta, []);
   }
 }
 
-function renderLayoutForm(container, segmentRows, meta) {
+// existingRows (volitelné) předvyplní počty kusů uloženého layoutu při úpravě.
+// Zóny se spočítaným požadavkem WPL == 0 se také zobrazí (jen s poznámkou),
+// aby šlo nábytek přiřadit i nad rámec výpočtu jako pojistku/ruční korekci.
+function renderLayoutForm(container, segmentRows, meta, existingRows) {
+  const existingMap = {};
+  (existingRows || []).forEach((r) => { existingMap[`${r.segment}||${r.zone}||${r.furniture}`] = r.piece_count; });
+
   let groupsHtml = "";
   let anyGroup = false;
   segmentRows.forEach((seg) => {
     ZONES.forEach((zone) => {
       const required = seg[zone] || 0;
-      if (required <= 0) return;
-      anyGroup = true;
       const options = getFurnitureOptions(seg.segment, zone);
       if (!options.length) {
-        groupsHtml += `
-          <div class="layout-group">
-            <h4>${esc(seg.segment)} — ${ZONE_LABELS[zone]} <span class="muted">(potřeba WPL: ${fmt1(required)})</span></h4>
-            <p class="muted">Pro tento segment a zónu nejsou v databázi definované žádné nábytkové prvky
-            (tabulka „furniture_to_zone“) — WPL nelze rozpočítat na konkrétní kusy nábytku.</p>
-          </div>`;
+        if (required > 0) {
+          anyGroup = true;
+          groupsHtml += `
+            <div class="layout-group">
+              <h4>${esc(seg.segment)} — ${ZONE_LABELS[zone]} <span class="muted">(potřeba WPL: ${fmt1(required)})</span></h4>
+              <p class="muted">Pro tento segment a zónu nejsou v databázi definované žádné nábytkové prvky
+              (tabulka „furniture_to_zone“) — WPL nelze rozpočítat na konkrétní kusy nábytku.</p>
+            </div>`;
+        }
         return;
       }
-      const rowsHtml = options.map((o) => `<tr>
-        <td>${esc(o.furniture)}</td>
-        <td>${o.wpl_counter > 0 ? fmt1(o.wpl_counter) : '<span class="muted">nepřispívá k WPL</span>'}</td>
-        <td><input type="number" min="0" step="1" value="0" class="layout-qty"
-          data-furniture="${esc(o.furniture)}" data-wpl-counter="${o.wpl_counter}"></td>
-      </tr>`).join("");
-      groupsHtml += `
+      anyGroup = true;
+      let hasPrefill = false;
+      const rowsHtml = options.map((o) => {
+        const prefill = existingMap[`${seg.segment}||${zone}||${o.furniture}`] || 0;
+        if (prefill > 0) hasPrefill = true;
+        return `<tr>
+          <td>${esc(o.furniture)}</td>
+          <td>${o.wpl_counter > 0 ? fmt1(o.wpl_counter) : '<span class="muted">nepřispívá k WPL</span>'}</td>
+          <td><input type="number" min="0" step="1" value="${prefill}" class="layout-qty"
+            data-furniture="${esc(o.furniture)}" data-wpl-counter="${o.wpl_counter}"></td>
+        </tr>`;
+      }).join("");
+      const groupBody = `
         <div class="layout-group" data-segment="${esc(seg.segment)}" data-zone="${zone}" data-required="${required}">
           <h4>${esc(seg.segment)} — ${ZONE_LABELS[zone]} <span class="muted">(potřeba WPL: ${fmt1(required)})</span></h4>
           <div class="table-wrap"><table>
@@ -1664,10 +1817,21 @@ function renderLayoutForm(container, segmentRows, meta) {
           </table></div>
           <p class="muted layout-summary">Přiřazeno WPL: <strong>0.0</strong> / ${fmt1(required)}</p>
         </div>`;
+      // Zóny bez vypočítané potřeby WPL se sbalí do <details>, aby nezahlcovaly
+      // formulář — jde jen o ruční pojistku/rezervu nad rámec výpočtu. Pokud
+      // v nich ale už něco přiřazeno je (např. při úpravě layoutu), zůstanou rozbalené.
+      if (required <= 0) {
+        groupsHtml += `<details class="layout-optional-zone"${hasPrefill ? " open" : ""}>
+          <summary>${esc(seg.segment)} — ${ZONE_LABELS[zone]} <span class="muted">(bez výpočtu WPL — ruční přiřazení)</span></summary>
+          ${groupBody}
+        </details>`;
+      } else {
+        groupsHtml += groupBody;
+      }
     });
   });
   if (!anyGroup) {
-    container.innerHTML = `<p class="muted">Pro tuto kalkulaci nejsou definované nábytkové prvky nebo není potřeba žádné WPL — sestavení layoutu se neprovádí.</p>`;
+    container.innerHTML = `<p class="muted">Pro tuto kalkulaci nejsou v databázi definované žádné nábytkové prvky — sestavení layoutu se neprovádí.</p>`;
     return;
   }
   container.innerHTML = `${groupsHtml}
@@ -1675,11 +1839,13 @@ function renderLayoutForm(container, segmentRows, meta) {
       <button class="btn" id="btnSaveLayout">Uložit layout</button>
     </div>`;
   wireLayoutFormListeners(container);
-  document.getElementById("btnSaveLayout").addEventListener("click", () => saveLayoutAssignment(container, meta));
+  document.getElementById("btnSaveLayout").addEventListener("click", () => saveLayoutAssignment(container, meta, segmentRows));
 }
 
 function wireLayoutFormListeners(container) {
   container.querySelectorAll(".layout-group").forEach((group) => {
+    const summaryEl = group.querySelector(".layout-summary");
+    if (!summaryEl) return; // informační skupina bez definovaného nábytku (jen text, žádné vstupy)
     const update = () => {
       let assigned = 0;
       group.querySelectorAll(".layout-qty").forEach((input) => {
@@ -1688,21 +1854,22 @@ function wireLayoutFormListeners(container) {
         assigned += pieces * wplCounter;
       });
       const required = parseFloat(group.dataset.required);
-      const summaryEl = group.querySelector(".layout-summary");
       summaryEl.querySelector("strong").textContent = assigned.toFixed(1);
       summaryEl.classList.toggle("over", assigned > required);
     };
     group.querySelectorAll(".layout-qty").forEach((input) => input.addEventListener("input", update));
+    update(); // zohlední předvyplněné hodnoty při úpravě existujícího layoutu
   });
 }
 
-function saveLayoutAssignment(container, meta) {
+function saveLayoutAssignment(container, meta, segmentRows) {
   const layoutKey = `layout_${meta.pobocka_id}-${meta.pobocka_nazev}-${nowStamp()}`;
   const createdAt = nowIso();
   const rows = [];
   container.querySelectorAll(".layout-group").forEach((group) => {
     const segment = group.dataset.segment;
     const zone = group.dataset.zone;
+    if (!segment || !zone) return; // skupina bez nábytkových prvků (jen informační poznámka)
     const required = parseFloat(group.dataset.required);
     group.querySelectorAll(".layout-qty").forEach((input) => {
       const pieces = parseInt(input.value, 10) || 0;
@@ -1714,6 +1881,8 @@ function saveLayoutAssignment(container, meta) {
   });
   if (!rows.length) { toast("Nebyl přiřazen žádný nábytek — zadejte alespoň jeden počet kusů.", "err"); return; }
 
+  // Úprava existujícího layoutu přepíše původní přiřazení (nezakládá historii verzí).
+  dbRun("DELETE FROM layouts WHERE calculation_key = ?", [meta.calculation_key]);
   const ins = db.prepare(`INSERT INTO layouts
     (layout_key, calculation_key, segment, zone, furniture, wpl_assigned, calculated_wpl, piece_count, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -1723,10 +1892,10 @@ function saveLayoutAssignment(container, meta) {
   ins.free();
   persistDatabase();
   toast("Layout byl uložen.", "ok");
-  renderLayoutReadonly(container, getExistingLayout(meta.calculation_key), meta);
+  renderLayoutReadonly(container, getExistingLayout(meta.calculation_key), meta, segmentRows);
 }
 
-function renderLayoutReadonly(container, rows, meta) {
+function renderLayoutReadonly(container, rows, meta, segmentRows) {
   const bySegZone = {};
   const order = [];
   rows.forEach((r) => {
@@ -1746,8 +1915,10 @@ function renderLayoutReadonly(container, rows, meta) {
   container.innerHTML = `${groupsHtml}
     <div class="row" style="margin-top:12px;">
       <button class="btn secondary" id="btnExportLayoutPdf">Exportovat PDF layoutu</button>
+      <button class="btn secondary" id="btnEditLayout">Upravit layout</button>
     </div>`;
   document.getElementById("btnExportLayoutPdf").addEventListener("click", () => exportLayoutPdf(rows, meta));
+  document.getElementById("btnEditLayout").addEventListener("click", () => renderLayoutForm(container, segmentRows, meta, rows));
 }
 
 function exportLayoutPdf(rows, meta) {
@@ -1884,6 +2055,9 @@ function showHistoryDetail(calculationKey, loadKey) {
   const found = resultRows.find((r) => r.segment === "Celkem");
   const refVersionId = resultRows[0] ? resultRows[0].ref_version_id : null;
   const createdAt = resultRows[0] ? resultRows[0].created_at : nowIso();
+  const rowsNoTotal = resultRows.filter((r) => r.segment !== "Celkem");
+  const mappedInputRows = inputRows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte, wpl_load: r.wpl_load }));
+  const stats = computeCalculationStats({ rows: rowsNoTotal, celkem: found || {}, inputRows: mappedInputRows });
 
   document.getElementById("historyDetail").innerHTML = `
     <p class="muted">${branch ? `${esc(branch.pobocka_nazev)} (ID ${esc(branch.pobocka_id)}) · otevírací doba ${esc(branch.oteviraci_doba)} h/týden` : ""}</p>
@@ -1896,21 +2070,27 @@ function showHistoryDetail(calculationKey, loadKey) {
       <th>Service zone</th><th>Meeting zone</th><th>Backoffice zone</th><th>Office room</th></tr></thead>
       <tbody>${resultHtml}</tbody></table></div>
     ${refVersionDetailsHtml(refVersionId)}
+    ${renderStatsSection(stats, "pdfIncludeStatsHistory")}
     <div class="row" style="margin-top:12px;">
       <button class="btn secondary" id="btnExportPdfHistory">Exportovat PDF s přehledem WPL</button>
+    </div>
+    <div style="margin-top:10px; max-width:480px;">
+      <label class="muted" for="pdfNoteHistory">Poznámka do PDF (nepovinné):</label>
+      <textarea id="pdfNoteHistory" rows="2"></textarea>
     </div>
     <h3 style="margin-top:22px;">Sestavení layoutu</h3>
     <div id="historyLayoutArea"></div>`;
 
-  const rowsNoTotal = resultRows.filter((r) => r.segment !== "Celkem");
   document.getElementById("btnExportPdfHistory").addEventListener("click", () => {
+    const note = document.getElementById("pdfNoteHistory").value.trim();
+    const includeStats = document.getElementById("pdfIncludeStatsHistory").checked;
     exportCalculationPdf({
       calculation_key: calculationKey, load_key: loadKey,
       createdAt, rows: rowsNoTotal, celkem: found || {},
-      inputRows: inputRows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte, wpl_load: r.wpl_load })),
+      inputRows: mappedInputRows,
       warnings: [], pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev,
       oteviraci_doba: branch?.oteviraci_doba, refVersionId,
-    });
+    }, { note, includeStats });
   });
 
   renderLayoutSection("historyLayoutArea", rowsNoTotal,

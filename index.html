@@ -112,6 +112,9 @@
   .layout-qty{width:70px;}
   .layout-summary strong{color:var(--accent-dark);}
   .layout-summary.over strong{color:var(--warn);}
+  .layout-optional-zone{margin-bottom:14px;}
+  .layout-optional-zone > summary{cursor:pointer; color:var(--muted); font-size:13px; padding:6px 0;}
+  .layout-optional-zone .layout-group{margin-top:8px; margin-bottom:0;}
   #modeManual label{display:block; font-size:12.5px; margin-bottom:3px;}
   #modeManual input[type="text"], #modeManual input[type="number"]{
     width:100%; padding:7px 9px; border:1px solid var(--border); border-radius:6px; font-size:13px;
@@ -157,6 +160,12 @@
     display:flex; justify-content:space-between; align-items:center; gap:10px;
   }
   .branch-item:hover{border-color:var(--accent); background:#fafcff;}
+
+  /* --- Klíčové ukazatele --- */
+  .kpi-table td{padding:6px 10px;}
+  .kpi-table td:first-child{color:var(--muted);}
+  .kpi-up{color:var(--ok);}
+  .kpi-down{color:var(--warn);}
 </style>
 </head>
 <body>

@@ -116,6 +116,20 @@ def main():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE calculation_stats (
+        calculation_key TEXT PRIMARY KEY,
+        load_key TEXT,
+        format_typ TEXT,
+        celkem_fte REAL,
+        celkem_wpl REAL,
+        wpl_fte_ratio REAL,
+        backoffice_pct REAL,
+        meeting_pct REAL,
+        created_at TEXT
+    )
+    """)
+
     absence_data = [
         ("MMMA", 22.9, 0.7),
         ("EPC", 19.7, 2.5),
