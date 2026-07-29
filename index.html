@@ -112,11 +112,51 @@
   .layout-qty{width:70px;}
   .layout-summary strong{color:var(--accent-dark);}
   .layout-summary.over strong{color:var(--warn);}
-  .btn.secondary.active{background:var(--accent); color:#fff;}
   #modeManual label{display:block; font-size:12.5px; margin-bottom:3px;}
   #modeManual input[type="text"], #modeManual input[type="number"]{
     width:100%; padding:7px 9px; border:1px solid var(--border); border-radius:6px; font-size:13px;
   }
+
+  /* --- Stepper (průvodce Nový výpočet) --- */
+  .stepper{display:flex; margin-bottom:26px;}
+  .stepper .step{
+    flex:1; position:relative; text-align:center; color:var(--muted);
+    font-size:12.5px; font-weight:600;
+  }
+  .stepper .step::after{
+    content:""; position:absolute; top:15px; left:50%; width:100%; height:2px;
+    background:var(--border); z-index:0;
+  }
+  .stepper .step:last-child::after{display:none;}
+  .stepper .step.done::after{background:var(--ok);}
+  .stepper .step-num{
+    display:flex; align-items:center; justify-content:center; width:30px; height:30px; margin:0 auto 6px;
+    border-radius:50%; background:#fff; border:2px solid var(--border); color:var(--muted);
+    font-size:13px; position:relative; z-index:1;
+  }
+  .stepper .step-label{position:relative; z-index:1; background:var(--bg); padding:0 4px;}
+  .stepper .step.active .step-num{border-color:var(--accent); color:var(--accent-dark); background:#eaf1ff;}
+  .stepper .step.active .step-label{color:var(--accent-dark);}
+  .stepper .step.done .step-num{border-color:var(--ok); background:var(--ok); color:#fff;}
+  .stepper .step.done .step-label{color:var(--text);}
+  .stepper .step.done, .stepper .step[data-step="1"]{cursor:pointer;}
+
+  /* --- Zdroj dat: volba karet --- */
+  .source-choice{display:flex; gap:16px; flex-wrap:wrap;}
+  .source-card{
+    flex:1; min-width:220px; background:#fafcff; border:2px solid var(--border); border-radius:10px;
+    padding:22px 18px; text-align:center; cursor:pointer; font-family:inherit; color:var(--text);
+  }
+  .source-card:hover{border-color:var(--accent); background:#eaf1ff;}
+  .source-card-icon{font-size:32px; margin-bottom:8px;}
+  .source-card-title{font-weight:700; font-size:15px; margin-bottom:5px;}
+
+  /* --- Historie: přehled poboček / kalkulací --- */
+  .branch-item{
+    border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:8px; cursor:pointer;
+    display:flex; justify-content:space-between; align-items:center; gap:10px;
+  }
+  .branch-item:hover{border-color:var(--accent); background:#fafcff;}
 </style>
 </head>
 <body>
@@ -156,69 +196,96 @@
   </div>
 
   <div class="panel">
-    <h2>2) Nahrát checklist nebo vytvořit kalkulaci manuálně</h2>
-    <div class="row" style="margin-bottom:14px;">
-      <button class="btn secondary small active" id="btnModeExcel">Nahrát Excel checklist</button>
-      <button class="btn secondary small" id="btnModeManual">Vytvořit manuálně</button>
+    <div class="stepper" id="stepper">
+      <div class="step" data-step="1"><span class="step-num">1</span><span class="step-label">Zdroj dat</span></div>
+      <div class="step" data-step="2"><span class="step-num">2</span><span class="step-label">Zadání pozic</span></div>
+      <div class="step" data-step="3"><span class="step-num">3</span><span class="step-label">Výsledek</span></div>
+      <div class="step" data-step="4"><span class="step-num">4</span><span class="step-label">Layout</span></div>
+    </div>
+    <div class="row" id="newCalcRow" style="display:none; margin-bottom:16px;">
+      <button class="btn secondary small" id="btnNewCalculation">+ Založit další kalkulaci</button>
     </div>
 
-    <div id="modeExcel">
-      <div id="dropzone">
-        <div>📄 Přetáhněte sem vyplněný Excel checklist (list „VSTUPY“) — nebo</div>
-        <div style="margin-top:10px;"><button class="btn secondary" id="btnPickExcel">vybrat soubor…</button></div>
-        <input type="file" id="excelInput" accept=".xlsx,.xlsm,.xls" style="display:none;">
-      </div>
-    </div>
-
-    <div id="modeManual" style="display:none;">
-      <div class="grid2">
-        <div>
-          <label class="muted" for="manualPobockaName">Pobočka</label>
-          <input type="text" id="manualPobockaName" list="pobockyDatalist" placeholder="Zadejte nebo vyberte název pobočky…">
-          <datalist id="pobockyDatalist"></datalist>
-        </div>
-        <div>
-          <label class="muted" for="manualPobockaId">ID pobočky</label>
-          <input type="text" id="manualPobockaId" placeholder="doplní se automaticky, nebo zadejte ručně">
-        </div>
-      </div>
-      <p class="muted" id="manualRegionInfo" style="margin-top:4px;"></p>
-
-      <div class="grid2" style="margin-top:10px;">
-        <div>
-          <label class="muted" for="manualOtevDoba">Otevírací doba pobočky (h/týden)</label>
-          <input type="number" id="manualOtevDoba" value="40" step="0.5" min="0">
-        </div>
-        <div>
-          <label class="muted" for="manualVytezeniWpl">Doba vytížení WPL (h/týden)</label>
-          <input type="number" id="manualVytezeniWpl" value="40" step="0.5" min="0">
-        </div>
-      </div>
-
-      <h3 style="margin-top:16px;">Pozice</h3>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Vytížení WPL (jen CESTOVNÍ)</th><th></th></tr></thead>
-        <tbody id="manualRowsTbody"></tbody>
-      </table></div>
-      <div class="row" style="margin-top:10px;">
-        <button class="btn secondary small" id="btnAddManualRow">+ Přidat pozici</button>
-      </div>
-      <div class="row" style="margin-top:14px;">
-        <button class="btn" id="btnCommitManual">Vytvořit a spočítat</button>
+    <div id="stepSource">
+      <h2>Jak chcete kalkulaci zadat?</h2>
+      <div class="source-choice">
+        <button class="source-card" id="btnChooseExcel" type="button">
+          <div class="source-card-icon">📄</div>
+          <div class="source-card-title">Nahrát Excel checklist</div>
+          <div class="muted">Přetáhnete vyplněný checklist (list „VSTUPY“) a data se z něj načtou.</div>
+        </button>
+        <button class="source-card" id="btnChooseManual" type="button">
+          <div class="source-card-icon">✏️</div>
+          <div class="source-card-title">Vytvořit manuálně</div>
+          <div class="muted">Vyberete pobočku ze seznamu a pozice zadáte přímo v aplikaci.</div>
+        </button>
       </div>
     </div>
 
-    <div id="excelMsgs" style="margin-top:12px;"></div>
-    <div id="excelPreview"></div>
+    <div id="stepSourceSummary" style="display:none;">
+      <p class="muted">Zdroj dat: <strong id="sourceSummaryText"></strong> ·
+        <a href="#" id="btnChangeSource">změnit</a></p>
+    </div>
+
+    <div id="stepInput" style="display:none;">
+      <div id="modeExcel">
+        <div id="dropzone">
+          <div>📄 Přetáhněte sem vyplněný Excel checklist (list „VSTUPY“) — nebo</div>
+          <div style="margin-top:10px;"><button class="btn secondary" id="btnPickExcel">vybrat soubor…</button></div>
+          <input type="file" id="excelInput" accept=".xlsx,.xlsm,.xls" style="display:none;">
+        </div>
+      </div>
+
+      <div id="modeManual" style="display:none;">
+        <div class="grid2">
+          <div>
+            <label class="muted" for="manualPobockaName">Pobočka</label>
+            <input type="text" id="manualPobockaName" list="pobockyDatalist" placeholder="Zadejte nebo vyberte název pobočky…">
+            <datalist id="pobockyDatalist"></datalist>
+          </div>
+          <div>
+            <label class="muted" for="manualPobockaId">ID pobočky</label>
+            <input type="text" id="manualPobockaId" placeholder="doplní se automaticky, nebo zadejte ručně">
+          </div>
+        </div>
+        <p class="muted" id="manualRegionInfo" style="margin-top:4px;"></p>
+
+        <div class="grid2" style="margin-top:10px;">
+          <div>
+            <label class="muted" for="manualOtevDoba">Otevírací doba pobočky (h/týden)</label>
+            <input type="number" id="manualOtevDoba" value="40" step="0.5" min="0">
+          </div>
+          <div>
+            <label class="muted" for="manualVytezeniWpl">Doba vytížení WPL (h/týden)</label>
+            <input type="number" id="manualVytezeniWpl" value="40" step="0.5" min="0">
+          </div>
+        </div>
+
+        <h3 style="margin-top:16px;">Pozice</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Vytížení WPL (jen CESTOVNÍ)</th><th></th></tr></thead>
+          <tbody id="manualRowsTbody"></tbody>
+        </table></div>
+        <div class="row" style="margin-top:10px;">
+          <button class="btn secondary small" id="btnAddManualRow">+ Přidat pozici</button>
+        </div>
+        <div class="row" style="margin-top:14px;">
+          <button class="btn" id="btnCommitManual">Vytvořit a spočítat</button>
+        </div>
+      </div>
+
+      <div id="excelMsgs" style="margin-top:12px;"></div>
+      <div id="excelPreview"></div>
+    </div>
   </div>
 
   <div class="panel" id="resultsPanel" style="display:none;">
-    <h2>3) Výsledek kalkulace</h2>
+    <h2>Výsledek kalkulace</h2>
     <div id="resultsArea"></div>
   </div>
 
   <div class="panel" id="layoutPanel" style="display:none;">
-    <h2>4) Sestavení layoutu</h2>
+    <h2>Sestavení layoutu</h2>
     <p class="muted">Pro každou zónu se spočítaným požadavkem WPL vyberte, kolika kusy jakého nábytku bude
     obsazena, a uložte layout. Po uložení lze vyexportovat PDF se sestavou nábytku po zónách a segmentech.</p>
     <div id="layoutArea"></div>
@@ -228,8 +295,10 @@
 <section class="tab" id="tab-history">
   <div class="panel">
     <h2>Historie kalkulací</h2>
-    <p class="muted">Kliknutím na kalkulaci zobrazíte vstupní data i výsledné WPL, ze kterých vznikla.</p>
-    <div id="historyList"></div>
+    <p class="muted" id="historyIntro">Přehled poboček, pro které existuje alespoň jedna spočítaná kalkulace.
+    Klikněte na pobočku pro zobrazení všech jejích kalkulací.</p>
+    <div id="historyBranchList"></div>
+    <div id="historyCalcList" style="display:none;"></div>
   </div>
   <div class="panel" id="historyDetailPanel" style="display:none;">
     <h2>Detail kalkulace</h2>

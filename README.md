@@ -26,18 +26,24 @@ Celou složku je potřeba udržet spolu — `index.html` odkazuje na soubory ve
 2. Klikněte v pravém horním rohu na **„Otevřít databázi…“** a vyberte
    přiložený soubor `fte_wpl_calculator.db`. Tím se připojí databáze se
    všemi referenčními tabulkami (absence, časové dotace pozic).
-3. Přetáhněte vyplněný Excel checklist do plochy „Nahrát checklist“ (nebo
-   klikněte na „vybrat soubor…“) — nebo klikněte na „Vytvořit manuálně“ a
-   sestavte kalkulaci přímo v aplikaci (viz níže).
-4. Klikněte na „Spočítat kalkulaci WPL“ — výsledek se zobrazí v tabulce a
-   zároveň se uloží do databáze (záložka „Historie kalkulací“), takže je
-   kdykoliv zpětně dohledatelné, z jakých vstupních dat kalkulace vznikla.
+3. Záložka „Nový výpočet“ vede čtyřkrokovým průvodcem (nahoře je vidět
+   orientační timeline): 1) zdroj dat, 2) zadání pozic, 3) výsledek,
+   4) sestavení layoutu. V kroku 1 zvolíte buď „Nahrát Excel checklist“,
+   nebo „Vytvořit manuálně“ — jakmile zvolíte, zobrazí se jen odpovídající
+   formulář (žádné rušivé přepínání mezi oběma možnostmi). Tlačítkem
+   „změnit“ u shrnutí zdroje dat nebo kliknutím na krok 1/2 v timeline se
+   lze kdykoliv vrátit a zadat kalkulaci znovu.
+4. V kroku 2 klikněte na „Spočítat kalkulaci WPL“ — výsledek (krok 3) se
+   zobrazí v tabulce a zároveň se uloží do databáze (záložka „Historie
+   kalkulací“), takže je kdykoliv zpětně dohledatelné, z jakých vstupních
+   dat kalkulace vznikla. Formulář pro zadání zmizí, aby nepletl — pro další
+   kalkulaci klikněte na „+ Založit další kalkulaci“.
 5. Volitelně klikněte na „Exportovat PDF s přehledem WPL“ pro stažení PDF
    shrnutí — obsahuje přehled všech pozic z checklistu, referenční data (verzi)
    a nepřítomnost po segmentech, se kterými se počítalo, souhrnnou tabulku a
    doporučený formát pobočky, počet fasttracků a počet židlí v čekací zóně
    (stejná logika jako v původní appce).
-6. V sekci „4) Sestavení layoutu“ přiřaďte konkrétní nábytek do každé zóny
+6. V kroku 4 „Sestavení layoutu“ přiřaďte konkrétní nábytek do každé zóny
    s vypočítaným požadavkem WPL a uložte layout — poté lze vyexportovat PDF
    se sestavou nábytku po zónách a segmentech.
 
@@ -60,7 +66,7 @@ zpět do této složky (přepsat starý `fte_wpl_calculator.db`).
 
 ## Vytvoření kalkulace bez Excelu (manuálně)
 
-V kroku „2)“ lze místo nahrání Excelu kliknout na „Vytvořit manuálně“:
+V kroku 1 průvodce lze místo „Nahrát Excel checklist“ zvolit „Vytvořit manuálně“:
 
 1. Do pole „Pobočka“ začněte psát název — nabídne se ze seznamu poboček
    (tabulka `pobocky`, 317 poboček) a po výběru se automaticky doplní ID a
@@ -100,6 +106,15 @@ spočítána (sloupec `ref_version_id` v tabulce `calculations`). U výsledku
 kalkulace i v historii kalkulací tak najdete rozbalovací odkaz „Referenční
 data použitá při této kalkulaci“, který ukáže přesné hodnoty absence a
 časových dotací platné v okamžiku výpočtu — i zpětně, po dalších úpravách.
+
+## Historie kalkulací
+
+Záložka „Historie kalkulací“ je dvouúrovňová: nejprve uvidíte přehled poboček,
+pro které existuje alespoň jedna spočítaná kalkulace (s počtem kalkulací a
+datem té poslední), takže je hned vidět, kde už kalkulace proběhla vícekrát.
+Kliknutím na pobočku se zobrazí seznam všech jejích kalkulací v čase; kliknutím
+na konkrétní kalkulaci pak její detail (vstupní data, výsledek, referenční
+data i sestavený layout).
 
 ## Sestavení layoutu
 

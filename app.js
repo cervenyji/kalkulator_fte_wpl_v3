@@ -1136,14 +1136,57 @@ function addManualRow() {
   wireManualRow(tbody.lastElementChild);
 }
 
-function setEntryMode(mode) {
+/* --------------------------------- Wizard ----------------------------------- */
+// Průvodce "Nový výpočet" má 4 kroky: 1) volba zdroje dat, 2) zadání pozic
+// (Excel nebo manuálně), 3) výsledek, 4) sestavení layoutu. Kroky 3 a 4 se
+// zobrazí společně po úspěšném spočítání kalkulace. Díky tomu po dokončení
+// kalkulace nezůstává nahoře viditelný formulář pro zadání dalšího vstupu —
+// to byl hlavní zdroj zmatku v předchozí verzi.
+
+let wizardStep = 1;
+
+function updateStepper() {
+  document.querySelectorAll("#stepper .step").forEach((el) => {
+    const n = Number(el.dataset.step);
+    el.classList.toggle("done", n < wizardStep);
+    el.classList.toggle("active", n === wizardStep);
+  });
+  document.getElementById("newCalcRow").style.display = wizardStep >= 3 ? "flex" : "none";
+}
+
+function resetInputForms() {
+  document.getElementById("manualRowsTbody").innerHTML = "";
+  document.getElementById("manualPobockaName").value = "";
+  document.getElementById("manualPobockaId").value = "";
+  document.getElementById("manualRegionInfo").textContent = "";
+  document.getElementById("manualOtevDoba").value = "40";
+  document.getElementById("manualVytezeniWpl").value = "40";
+  document.getElementById("excelInput").value = "";
+  document.getElementById("excelMsgs").innerHTML = "";
+  document.getElementById("excelPreview").innerHTML = "";
+}
+
+function goToWizardStep(n) {
+  wizardStep = n;
+  document.getElementById("stepSource").style.display = n === 1 ? "block" : "none";
+  document.getElementById("stepSourceSummary").style.display = n >= 2 ? "block" : "none";
+  document.getElementById("stepInput").style.display = n === 2 ? "block" : "none";
+  if (n === 1) resetInputForms();
+  if (n < 3) {
+    document.getElementById("resultsPanel").style.display = "none";
+    document.getElementById("layoutPanel").style.display = "none";
+  }
+  updateStepper();
+}
+
+function chooseSource(mode) {
+  document.getElementById("sourceSummaryText").textContent = mode === "excel" ? "Excel checklist" : "Manuální zadání";
   document.getElementById("modeExcel").style.display = mode === "excel" ? "block" : "none";
   document.getElementById("modeManual").style.display = mode === "manual" ? "block" : "none";
-  document.getElementById("btnModeExcel").classList.toggle("active", mode === "excel");
-  document.getElementById("btnModeManual").classList.toggle("active", mode === "manual");
   if (mode === "manual" && document.getElementById("manualRowsTbody").children.length === 0) {
     addManualRow();
   }
+  goToWizardStep(2);
 }
 
 async function handleCommitManual() {
@@ -1288,6 +1331,7 @@ function runCalculation() {
   const inputRows = rows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte, wpl_load: r.wpl_load }));
   renderResults({ calculation_key, load_key, createdAt, rows: resultRows, celkem: celkemRow, warnings, inputRows,
     refVersionId, pobocka_id: pendingLoad.pobocka_id, pobocka_nazev: pendingLoad.pobocka_nazev, oteviraci_doba });
+  goToWizardStep(4);
   toast("Kalkulace byla spočítána a uložena do historie.", "ok");
   renderHistoryList();
 }
@@ -1761,26 +1805,68 @@ function exportLayoutPdf(rows, meta) {
 
 /* ------------------------------ Historie ---------------------------------- */
 
-function renderHistoryList() {
-  const el = document.getElementById("historyList");
-  if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
-  const calcs = dbAll(`
-    SELECT calculation_key, load_key, MIN(created_at) AS created_at
-    FROM calculations GROUP BY calculation_key ORDER BY created_at DESC`);
-  if (!calcs.length) { el.innerHTML = `<p class="muted">Zatím žádné uložené kalkulace.</p>`; return; }
+function czechCalcCount(n) {
+  if (n === 1) return "1 kalkulace";
+  if (n >= 2 && n <= 4) return `${n} kalkulace`;
+  return `${n} kalkulací`;
+}
 
-  el.innerHTML = calcs.map((c) => {
-    const branch = dbAll("SELECT pobocka_id, pobocka_nazev FROM excel_loads WHERE load_key = ? LIMIT 1", [c.load_key])[0];
-    const label = branch ? `${branch.pobocka_nazev} (ID ${branch.pobocka_id})` : "(neznámá pobočka)";
-    return `<div class="history-item" data-calc="${esc(c.calculation_key)}" data-load="${esc(c.load_key)}">
-      <div><strong>${esc(label)}</strong><br><span class="muted">${new Date(c.created_at).toLocaleString("cs-CZ")}</span></div>
+// Historie kalkulací je dvouúrovňová: nejprve přehled poboček (aby bylo hned
+// vidět, kde už proběhlo víc kalkulací a co se s pobočkou v čase dělo), po
+// kliknutí na pobočku se zobrazí seznam jejích kalkulací.
+function renderHistoryList() {
+  const branchListEl = document.getElementById("historyBranchList");
+  const calcListEl = document.getElementById("historyCalcList");
+  calcListEl.style.display = "none";
+  branchListEl.style.display = "block";
+  if (!db) { branchListEl.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
+
+  const branches = dbAll(`
+    SELECT el.pobocka_id AS pobocka_id, el.pobocka_nazev AS pobocka_nazev,
+           COUNT(DISTINCT c.calculation_key) AS pocet, MAX(c.created_at) AS posledni
+    FROM calculations c
+    JOIN excel_loads el ON el.load_key = c.load_key
+    GROUP BY el.pobocka_id, el.pobocka_nazev
+    ORDER BY posledni DESC`);
+  if (!branches.length) { branchListEl.innerHTML = `<p class="muted">Zatím žádné uložené kalkulace.</p>`; return; }
+
+  branchListEl.innerHTML = branches.map((b) => `
+    <div class="branch-item" data-pobocka-id="${esc(b.pobocka_id)}" data-pobocka-nazev="${esc(b.pobocka_nazev)}">
+      <div><strong>${esc(b.pobocka_nazev)}</strong> <span class="muted">(ID ${esc(b.pobocka_id)})</span><br>
+        <span class="muted">${czechCalcCount(b.pocet)} · naposledy ${new Date(b.posledni).toLocaleString("cs-CZ")}</span></div>
+      <div class="muted">▸</div>
+    </div>`).join("");
+
+  branchListEl.querySelectorAll(".branch-item").forEach((item) => {
+    item.addEventListener("click", () => showBranchCalculations(item.dataset.pobockaId, item.dataset.pobockaNazev));
+  });
+}
+
+function showBranchCalculations(pobockaId, pobockaNazev) {
+  const calcs = dbAll(`
+    SELECT c.calculation_key AS calculation_key, c.load_key AS load_key, MIN(c.created_at) AS created_at
+    FROM calculations c
+    JOIN excel_loads el ON el.load_key = c.load_key
+    WHERE el.pobocka_id = ?
+    GROUP BY c.calculation_key
+    ORDER BY created_at DESC`, [pobockaId]);
+
+  const el = document.getElementById("historyCalcList");
+  el.innerHTML = `
+    <button class="btn secondary small" id="btnBackToBranches">← Zpět na přehled poboček</button>
+    <h3 style="margin-top:14px;">${esc(pobockaNazev)} (ID ${esc(pobockaId)}) — ${czechCalcCount(calcs.length)}</h3>
+    ${calcs.map((c) => `<div class="history-item" data-calc="${esc(c.calculation_key)}" data-load="${esc(c.load_key)}">
+      <div><span class="muted">${new Date(c.created_at).toLocaleString("cs-CZ")}</span></div>
       <div class="key">${esc(c.calculation_key)}</div>
-    </div>`;
-  }).join("");
+    </div>`).join("")}`;
 
   el.querySelectorAll(".history-item").forEach((item) => {
     item.addEventListener("click", () => showHistoryDetail(item.dataset.calc, item.dataset.load));
   });
+  document.getElementById("btnBackToBranches").addEventListener("click", renderHistoryList);
+
+  document.getElementById("historyBranchList").style.display = "none";
+  el.style.display = "block";
 }
 
 function showHistoryDetail(calculationKey, loadKey) {
@@ -2092,8 +2178,18 @@ async function init() {
     if (file) handleExcelFile(file);
   });
 
-  document.getElementById("btnModeExcel").addEventListener("click", () => setEntryMode("excel"));
-  document.getElementById("btnModeManual").addEventListener("click", () => setEntryMode("manual"));
+  document.getElementById("btnChooseExcel").addEventListener("click", () => chooseSource("excel"));
+  document.getElementById("btnChooseManual").addEventListener("click", () => chooseSource("manual"));
+  document.getElementById("btnChangeSource").addEventListener("click", (e) => { e.preventDefault(); goToWizardStep(1); });
+  document.getElementById("btnNewCalculation").addEventListener("click", () => goToWizardStep(1));
+  document.querySelectorAll("#stepper .step").forEach((el) => {
+    const n = Number(el.dataset.step);
+    if (n > 2) return;
+    el.addEventListener("click", () => {
+      if (n === 1 || wizardStep >= 2) goToWizardStep(n);
+    });
+  });
+
   document.getElementById("manualPobockaName").addEventListener("input", (e) => {
     const regionInfo = document.getElementById("manualRegionInfo");
     const idInput = document.getElementById("manualPobockaId");
@@ -2123,6 +2219,8 @@ async function init() {
     dotaceFilterText = e.target.value.trim().toLowerCase();
     renderDotaceTable();
   });
+
+  updateStepper();
 
   updateDbStatus(null, "Načítání SQLite modulu…");
   // sql-wasm.wasm se předává jako předem načtený binární blob (base64 z vendor/sql-wasm-binary.js),
