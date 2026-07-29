@@ -194,9 +194,6 @@
   /* --- Stav kalkulace (rozpracovaná / potvrzená) --- */
   .status-row{display:flex; align-items:center; gap:10px; margin:10px 0; flex-wrap:wrap;}
 
-  /* --- Nákres pobočky (floor plan) --- */
-  .floor-plan-wrap{margin:14px 0; text-align:center;}
-
   /* --- Struktura checklistu: segmenty/pozice/nábytek --- */
   #segmentsTbody input[type="color"]{width:44px; height:30px; padding:2px; cursor:pointer;}
   #segmentsTbody td:nth-child(1) input, #segmentsTbody td:nth-child(2) input{min-width:120px;}
@@ -418,13 +415,16 @@
   </div>
   <div class="panel">
     <h2>Generovat Excel šablonu checklistu</h2>
-    <p class="muted">Vygeneruje .xlsx se stejnou strukturou (listy <code>VSTUPY</code> a <code>CHL</code>,
-      stejné pořadí sloupců i pozic v řádcích), jako checklist vyplňovaný pobočkami — na základě aktuálního
-      seznamu segmentů, pozic a nábytku výše. Soubor lze po vyplnění bez úprav znovu načíst zpět do aplikace
-      (záložka „Nový výpočet“ → „Nahrát Excel checklist“).</p>
+    <p class="muted">Vygeneruje .xlsx ve stejném uspořádání jako vzorový checklist: list <code>CHL</code> je
+      vstupní list, do kterého pobočka vyplňuje počty FTE po pozicích (a u segmentu CESTOVNÍ i vytížení
+      WPL), a list <code>VSTUPY</code> si tyto hodnoty pomocí vzorců jen stahuje do podoby, kterou aplikace
+      načítá — beze změny stávajícího importu. Pořadí segmentů, pozic a nábytku odpovídá aktuálnímu nastavení
+      výše. Po vyplnění listu CHL a uložení v Excelu (kvůli přepočtu vzorců) lze soubor bez úprav načíst zpět
+      do aplikace (záložka „Nový výpočet“ → „Nahrát Excel checklist“).</p>
     <p class="msg warn">Upozornění: knihovna pro práci s Excelem v prohlížeči (SheetJS, komunitní edice) umí
       barevné formátování buněk při čtení, ale při zápisu ho zahazuje — vygenerovaný soubor tak nemá barevné
-      podbarvení jako originální šablona. Sloupce, pořadí i názvy pozic/nábytku ale přesně odpovídají.</p>
+      podbarvení jako originální šablona. Struktura listů, provázání CHL → VSTUPY i pořadí pozic/nábytku ale
+      odpovídají.</p>
     <div class="row">
       <button class="btn" id="btnGenerateTemplate">Generovat Excel šablonu</button>
     </div>

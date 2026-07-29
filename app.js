@@ -1859,113 +1859,6 @@ const ZONE_LABELS = {
   office_room: "Office room",
 };
 
-/* ------------------------- Nákres pobočky (floor plan) --------------------- */
-// Sdílená geometrie pro schematický "nákres pobočky" — každá dvojice
-// segment+zóna z uloženého layoutu je jedna "místnost". Počet a velikost
-// místností se odvíjí od toho, co bylo do layoutu skutečně přiřazeno, takže
-// nákres se měně podle konkrétní kalkulace. Souřadnice jsou v relativním
-// prostoru 0..1 vůči tělu "domečku" — SVG (na obrazovce) i PDF export z nich
-// jen odvozují konkrétní pixely/milimetry.
-function computeFloorPlanRooms(rows) {
-  const bySegZone = {};
-  const order = [];
-  rows.forEach((r) => {
-    const key = `${r.segment}||${r.zone}`;
-    if (!bySegZone[key]) { bySegZone[key] = { segment: r.segment, zone: r.zone, items: [], pieces: 0, wpl: 0 }; order.push(key); }
-    const g = bySegZone[key];
-    g.items.push(r);
-    g.pieces += r.piece_count || 0;
-    g.wpl += r.wpl_assigned || 0;
-  });
-  const rooms = order.map((k) => bySegZone[k]);
-  const n = rooms.length;
-  if (!n) return [];
-  const cols = n <= 2 ? n : n <= 6 ? Math.ceil(n / 2) : Math.ceil(Math.sqrt(n * 1.5));
-  const rowsCount = Math.ceil(n / cols);
-  const cellW = 1 / cols;
-  const cellH = 1 / rowsCount;
-  const pad = 0.08; // relativní mezera mezi místnostmi
-  return rooms.map((r, i) => {
-    const col = i % cols;
-    const rowIdx = Math.floor(i / cols);
-    return {
-      ...r,
-      x: col * cellW + (pad * cellW) / 2,
-      y: rowIdx * cellH + (pad * cellH) / 2,
-      w: cellW * (1 - pad),
-      h: cellH * (1 - pad),
-    };
-  });
-}
-
-// Vykreslí nákres jako inline SVG (na obrazovce) — "domeček" se střechou a
-// tělem, uvnitř dlaždice jednotlivých místností barevně odlišené po segmentech.
-function renderFloorPlanSvg(rows) {
-  const rooms = computeFloorPlanRooms(rows);
-  if (!rooms.length) return "";
-  const W = 640, H = 420;
-  const roofH = 72;
-  const bodyY = roofH;
-  const bodyH = H - roofH - 12;
-  const bodyX = 12, bodyW = W - 24;
-  const roomsSvg = rooms.map((r) => {
-    const m = getSegmentMeta(r.segment);
-    const rx = bodyX + r.x * bodyW, ry = bodyY + r.y * bodyH;
-    const rw = r.w * bodyW, rh = r.h * bodyH;
-    const label = `${esc(r.segment)} · ${esc(ZONE_LABELS[r.zone] || r.zone)}`;
-    const sub = `${r.pieces} ks nábytku${r.wpl > 0 ? `, WPL ${fmt1(r.wpl)}` : " (ruční přiřazení)"}`;
-    return `<g>
-      <rect x="${rx.toFixed(1)}" y="${ry.toFixed(1)}" width="${rw.toFixed(1)}" height="${rh.toFixed(1)}"
-        rx="7" fill="${m.color}1f" stroke="${m.color}" stroke-width="1.6"${r.wpl <= 0 ? ' stroke-dasharray="5,4"' : ""}/>
-      <text x="${(rx + 8).toFixed(1)}" y="${(ry + 20).toFixed(1)}" font-size="13" font-weight="700" fill="${m.color}">${m.icon} ${label}</text>
-      <text x="${(rx + 8).toFixed(1)}" y="${(ry + 36).toFixed(1)}" font-size="11" fill="#5b6472">${esc(sub)}</text>
-    </g>`;
-  }).join("");
-  return `<div class="floor-plan-wrap">
-    <svg viewBox="0 0 ${W} ${H}" style="width:100%; max-width:640px; height:auto;">
-      <polygon points="${W / 2},4 ${W - 16},${roofH} 16,${roofH}" fill="#8b96a8" stroke="#5b6472" stroke-width="1.5"/>
-      <rect x="${bodyX}" y="${bodyY}" width="${bodyW}" height="${bodyH}" rx="9" fill="#fbfcfe" stroke="#5b6472" stroke-width="1.5"/>
-      ${roomsSvg}
-    </svg>
-    <p class="muted">Schematický nákres — velikost a počet "místností" odpovídá segmentům a zónám přiřazeným v layoutu.</p>
-  </div>`;
-}
-
-// Stejná geometrie, ale kreslená vektorově přímo do PDF (jsPDF neumí vykreslit
-// SVG bez dalšího pluginu). x0/y0/wmm/hmm jsou souřadnice a rozměry v mm.
-function drawFloorPlanPdf(pdf, x0, y0, wmm, hmm, rows) {
-  const rooms = computeFloorPlanRooms(rows);
-  if (!rooms.length) return;
-  const roofH = hmm * 0.16;
-  const bodyY = y0 + roofH;
-  const bodyH = hmm - roofH - 4;
-  const bodyX = x0 + 4, bodyW = wmm - 8;
-
-  pdf.setDrawColor(91, 100, 114);
-  pdf.setFillColor(139, 150, 168);
-  pdf.triangle(x0 + wmm / 2, y0, x0 + wmm - 4, bodyY, x0 + 4, bodyY, "FD");
-  pdf.setFillColor(251, 252, 254);
-  pdf.rect(bodyX, bodyY, bodyW, bodyH, "FD");
-
-  rooms.forEach((r) => {
-    const m = getSegmentMeta(r.segment);
-    const [cr, cg, cb] = hexToRgb(m.color);
-    const rx = bodyX + r.x * bodyW, ry = bodyY + r.y * bodyH, rw = r.w * bodyW, rh = r.h * bodyH;
-    pdf.setDrawColor(cr, cg, cb);
-    pdf.setFillColor(Math.min(255, cr + 165), Math.min(255, cg + 165), Math.min(255, cb + 165));
-    if (r.wpl <= 0) pdf.setLineDashPattern([1.2, 1], 0); else pdf.setLineDashPattern([], 0);
-    pdf.rect(rx, ry, rw, rh, "FD");
-    pdf.setLineDashPattern([], 0);
-    pdf.setTextColor(cr, cg, cb);
-    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(8);
-    pdf.text(`${r.segment} - ${ZONE_LABELS[r.zone] || r.zone}`, rx + 2, ry + 5, { maxWidth: rw - 4 });
-    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.5);
-    pdf.setTextColor(70, 76, 84);
-    pdf.text(`${r.pieces} ks${r.wpl > 0 ? ", WPL " + fmt1(r.wpl) : ""}`, rx + 2, ry + 10, { maxWidth: rw - 4 });
-  });
-  pdf.setTextColor(0, 0, 0);
-}
-
 function getFurnitureOptions(segment, zone) {
   return dbAll("SELECT furniture, wpl_counter FROM furniture_to_zone WHERE segment = ? AND zone = ? ORDER BY id", [segment, zone]);
 }
@@ -2128,10 +2021,7 @@ function renderLayoutReadonly(container, rows, meta, segmentRows) {
       <ul>${itemsHtml}</ul>
     </div>`;
   }).join("");
-  container.innerHTML = `
-    <h4 style="margin-top:0;">Nákres pobočky</h4>
-    ${renderFloorPlanSvg(rows)}
-    ${groupsHtml}
+  container.innerHTML = `${groupsHtml}
     <div class="row" style="margin-top:12px;">
       <button class="btn secondary" id="btnExportLayoutPdf">Exportovat PDF layoutu</button>
       <button class="btn secondary" id="btnEditLayout">Upravit layout</button>
@@ -2155,11 +2045,6 @@ function exportLayoutPdf(rows, meta) {
     `Calculation key: ${meta.calculation_key || ""}`, `Datum vytvoření: ${new Date().toLocaleString("cs-CZ")}`]
     .forEach((line) => { pdf.text(line, marginX, y); y += 6; });
   y += 4;
-
-  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
-  pdf.text("Nákres pobočky (schematicky)", marginX, y); y += 8;
-  drawFloorPlanPdf(pdf, marginX, y, 182, 130, rows);
-  pdf.addPage(); y = 18;
 
   const byZone = {};
   rows.forEach((r) => { (byZone[r.zone] = byZone[r.zone] || []).push(r); });
@@ -2660,18 +2545,25 @@ function saveFurnitureTable() {
   toast("Tabulka nábytku byla uložena.", "ok");
 }
 
-// Vygeneruje .xlsx šablonu checklistu (listy VSTUPY + CHL) z aktuálního stavu
-// segmentů/pozic/nábytku v databázi. Sloupce a pořadí odpovídají tomu, co čte
-// parseVstupySheet() (C1–C4 + řádky od 6, sloupce A–D) — nová/upravená pozice
-// se tak vždy automaticky propíše do dalšího vygenerování šablony a soubor po
-// vyplnění půjde bez úprav načíst zpět do aplikace.
+// Vygeneruje .xlsx šablonu checklistu (listy CHL + VSTUPY) z aktuálního stavu
+// segmentů/pozic/nábytku v databázi — ve stejném vztahu jako vzorový checklist:
+// **CHL je list, do kterého pobočka skutečně vyplňuje data** (FTE po pozicích,
+// případně vytížení WPL u segmentu CESTOVNÍ), **VSTUPY je list, který si tyto
+// hodnoty vzorci jen stahuje z CHL** do podoby, kterou čte parseVstupySheet()
+// (C1–C4 + řádky od 6, sloupce A–D). Aplikace samotná parsuje výhradně list
+// VSTUPY — beze změny stávajícího parseru. Díky vzorcům funguje načítání dat
+// z Excelu stejně jako u originální šablony: jakmile pobočka vyplní CHL a
+// soubor uloží (Excel vzorce přepočítá), VSTUPY už obsahuje aktuální hodnoty.
+// Nová/upravená pozice nebo nábytek se při dalším vygenerování šablony
+// automaticky promítne do obou listů.
 //
 // Poznámka k designu: knihovna SheetJS v prohlížeči (komunitní edice, kterou
 // tato appka vendoruje) umí barevné formátování buněk při čtení, ale při
 // zápisu (XLSX.write) ho úplně zahazuje — ověřeno přímým testem zápisu buňky
 // se zadaným `s.fill`/`s.font` a zpětného přečtení výsledku. Vygenerovaný
-// soubor proto nemá barevné podbarvení jako originální šablona, ale sloupce,
-// pořadí i názvy pozic/nábytku přesně odpovídají.
+// soubor proto nemá barevné podbarvení jako originální šablona, ale struktura
+// (listy, sloupce, provázání CHL → VSTUPY, pořadí i názvy pozic/nábytku)
+// odpovídá.
 function generateChecklistTemplate() {
   if (!requireDb()) return;
   const segments = dbAll("SELECT segment_key FROM segments ORDER BY sort_order, segment_key").map((r) => r.segment_key);
@@ -2686,21 +2578,34 @@ function generateChecklistTemplate() {
     return a.pozice.localeCompare(b.pozice);
   });
 
-  const ws = {};
-  ws.B1 = { t: "s", v: "ID pobočky" }; ws.C1 = { t: "s", v: "" };
-  ws.B2 = { t: "s", v: "Název pobočky" }; ws.C2 = { t: "s", v: "" };
-  ws.B3 = { t: "s", v: "Otevírací doba (h/týden)" }; ws.C3 = { t: "n", v: 40 };
-  ws.B4 = { t: "s", v: "Doba vytížení WPL (h/týden)" }; ws.C4 = { t: "n", v: 40 };
-  ws.A5 = { t: "s", v: "Segment" }; ws.B5 = { t: "s", v: "Pozice" };
-  ws.C5 = { t: "s", v: "Počet FTE" }; ws.D5 = { t: "s", v: "Vytížení WPL (jen CESTOVNÍ)" };
-  let r = 6;
-  orderedPositions.forEach((row) => {
-    ws[`A${r}`] = { t: "s", v: row.segment };
-    ws[`B${r}`] = { t: "s", v: row.pozice };
-    r++;
+  // --- CHL: skutečný vstupní list pro pobočku ---
+  const chl = {};
+  chl.A1 = { t: "s", v: "CHECKLIST" };
+  chl.F1 = { t: "s", v: "ID pobočky:" };
+  chl.G1 = { t: "s", v: "" };
+  chl.A3 = { t: "s", v: "DETAILY POBOČKY" };
+  chl.A4 = { t: "s", v: "Název pobočky:" };
+  chl.C4 = { t: "s", v: "" };
+  chl.A5 = { t: "s", v: "Otevírací doba pobočky (h/týden):" };
+  chl.C5 = { t: "n", v: 40 };
+  chl.A6 = { t: "s", v: "Doba vytěžení WPL (h/týden):" };
+  chl.C6 = { t: "n", v: 40 };
+  chl.A8 = { t: "s", v: "OBSAZENOST POBOČKY" };
+  chl.G8 = { t: "s", v: "Vytížení WPL (jen CESTOVNÍ)" };
+  chl.H8 = { t: "s", v: "Počet FTE" };
+  chl.I8 = { t: "s", v: "Poznámka" };
+
+  const CHL_DATA_START = 9; // řádek první pozice v CHL
+  const VSTUPY_DATA_START = 6; // řádek první pozice ve VSTUPY (dáno parseVstupySheet())
+  const rowOffset = CHL_DATA_START - VSTUPY_DATA_START;
+
+  orderedPositions.forEach((row, i) => {
+    const chlRow = CHL_DATA_START + i;
+    chl[`A${chlRow}`] = { t: "s", v: row.segment };
+    chl[`B${chlRow}`] = { t: "s", v: row.pozice };
+    chl[`H${chlRow}`] = { t: "n", v: 0 };
   });
-  ws["!ref"] = `A1:D${Math.max(r - 1, 6)}`;
-  ws["!cols"] = [{ wch: 16 }, { wch: 56 }, { wch: 14 }, { wch: 24 }];
+  const chlPosEnd = CHL_DATA_START + orderedPositions.length - 1;
 
   const furnitureRows = dbAll("SELECT segment, zone, furniture, wpl_counter FROM furniture_to_zone ORDER BY segment, zone, id");
   const orderedFurniture = [...furnitureRows].sort((a, b) => {
@@ -2708,22 +2613,51 @@ function generateChecklistTemplate() {
     if (oa !== ob) return oa - ob;
     return a.segment.localeCompare(b.segment);
   });
-  const chl = {};
-  chl.A1 = { t: "s", v: "Segment" }; chl.B1 = { t: "s", v: "Zóna" };
-  chl.C1 = { t: "s", v: "Nábytek" }; chl.D1 = { t: "s", v: "WPL / kus" };
-  chl.E1 = { t: "s", v: "Počet kusů (vyplní pobočka)" };
-  let cr = 2;
+  let fr = chlPosEnd + 3;
+  chl[`A${fr}`] = { t: "s", v: "NÁBYTEK PRO SESTAVENÍ LAYOUTU" };
+  fr += 1;
+  chl[`A${fr}`] = { t: "s", v: "Segment" }; chl[`B${fr}`] = { t: "s", v: "Zóna" };
+  chl[`C${fr}`] = { t: "s", v: "Nábytek" }; chl[`D${fr}`] = { t: "s", v: "WPL / kus" };
+  chl[`E${fr}`] = { t: "s", v: "Počet kusů (vyplní pobočka)" };
+  fr += 1;
   orderedFurniture.forEach((f) => {
-    chl[`A${cr}`] = { t: "s", v: f.segment };
-    chl[`B${cr}`] = { t: "s", v: ZONE_LABELS[f.zone] || f.zone };
-    chl[`C${cr}`] = { t: "s", v: f.furniture };
-    chl[`D${cr}`] = { t: "n", v: f.wpl_counter || 0 };
-    cr++;
+    chl[`A${fr}`] = { t: "s", v: f.segment };
+    chl[`B${fr}`] = { t: "s", v: ZONE_LABELS[f.zone] || f.zone };
+    chl[`C${fr}`] = { t: "s", v: f.furniture };
+    chl[`D${fr}`] = { t: "n", v: f.wpl_counter || 0 };
+    fr += 1;
   });
-  chl["!ref"] = `A1:E${Math.max(cr - 1, 1)}`;
-  chl["!cols"] = [{ wch: 16 }, { wch: 18 }, { wch: 34 }, { wch: 12 }, { wch: 28 }];
+  chl["!ref"] = `A1:I${Math.max(fr - 1, chlPosEnd)}`;
+  chl["!cols"] = [{ wch: 16 }, { wch: 56 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 10 },
+    { wch: 28 }, { wch: 14 }, { wch: 28 }];
 
-  const wb = { SheetNames: ["VSTUPY", "CHL"], Sheets: { VSTUPY: ws, CHL: chl } };
+  // --- VSTUPY: hodnoty se stahují vzorcem z CHL (parseVstupySheet() čte jen tento list) ---
+  const ws = {};
+  ws.A1 = { t: "s", v: "ID pobočky" };
+  ws.C1 = { t: "s", v: "", f: "CHL!G1" };
+  ws.A2 = { t: "s", v: "Název pobočky" };
+  ws.C2 = { t: "s", v: "", f: "CHL!C4" };
+  ws.A3 = { t: "s", v: "Otevírací doba pobočky (h/týden)" };
+  ws.C3 = { t: "n", v: 40, f: "CHL!C5" };
+  ws.A4 = { t: "s", v: "Doba vytěžení WPL (h/týden)" };
+  ws.C4 = { t: "n", v: 40, f: "CHL!C6" };
+  ws.A5 = { t: "s", v: "Segment" }; ws.B5 = { t: "s", v: "Pozice" };
+  ws.C5 = { t: "s", v: "Počet FTE" }; ws.D5 = { t: "s", v: "Vytěžení WPL" };
+  orderedPositions.forEach((row, i) => {
+    const vRow = VSTUPY_DATA_START + i;
+    const chlRow = vRow + rowOffset;
+    ws[`A${vRow}`] = { t: "s", v: row.segment };
+    ws[`B${vRow}`] = { t: "s", v: row.pozice };
+    ws[`C${vRow}`] = { t: "n", v: 0, f: `CHL!H${chlRow}` };
+    ws[`D${vRow}`] = row.segment.trim().toUpperCase() === "CESTOVNÍ"
+      ? { t: "n", v: 0, f: `CHL!G${chlRow}` }
+      : { t: "n", v: 40, f: "$C$4" };
+  });
+  const vstupyLastRow = VSTUPY_DATA_START + orderedPositions.length - 1;
+  ws["!ref"] = `A1:D${Math.max(vstupyLastRow, VSTUPY_DATA_START)}`;
+  ws["!cols"] = [{ wch: 16 }, { wch: 56 }, { wch: 14 }, { wch: 16 }];
+
+  const wb = { SheetNames: ["CHL", "VSTUPY"], Sheets: { CHL: chl, VSTUPY: ws } };
   const out = XLSX.write(wb, { type: "array", bookType: "xlsx" });
   const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
@@ -2731,7 +2665,7 @@ function generateChecklistTemplate() {
   a.href = url; a.download = "checklist_sablona.xlsx";
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
-  toast(`Excel šablona vygenerována (${orderedPositions.length} pozic, ${orderedFurniture.length} nábytkových prvků).`, "ok");
+  toast(`Excel šablona vygenerována (${orderedPositions.length} pozic, ${orderedFurniture.length} nábytkových prvků). Pobočka vyplňuje list CHL, do listu VSTUPY se hodnoty stahují automaticky.`, "ok");
 }
 
 /* --------------------------------- Tabs ------------------------------------ */
