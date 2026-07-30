@@ -70,7 +70,8 @@ def main():
         office_room REAL,
         created_at TEXT,
         ref_version_id INTEGER,
-        status TEXT
+        status TEXT,
+        duvod TEXT
     )
     """)
 

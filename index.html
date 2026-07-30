@@ -137,6 +137,7 @@
   #modeManual input[type="text"], #modeManual input[type="number"]{
     width:100%; padding:7px 9px; border:1px solid var(--border); border-radius:6px; font-size:13px;
   }
+  #calcReason{width:100%; padding:7px 9px; border:1px solid var(--border); border-radius:6px; font-size:13px;}
 
   /* --- Stepper (průvodce Nový výpočet) --- */
   .stepper{display:flex; margin-bottom:26px;}
@@ -273,6 +274,17 @@
     </div>
 
     <div id="stepInput" style="display:none;">
+      <div style="max-width:360px; margin-bottom:16px;">
+        <label class="muted" for="calcReason">Důvod kalkulace</label>
+        <select id="calcReason">
+          <option value="" disabled selected>Vyberte důvod kalkulace…</option>
+          <option value="Přechod na cashless">Přechod na cashless</option>
+          <option value="Modernizace">Modernizace</option>
+          <option value="Ad-hoc kalkulace">Ad-hoc kalkulace</option>
+          <option value="Optimalizace">Optimalizace</option>
+        </select>
+      </div>
+
       <div id="modeExcel">
         <div id="dropzone">
           <div>📄 Přetáhněte sem vyplněný Excel checklist (list „VSTUPY“) — nebo</div>
@@ -440,6 +452,7 @@
 <script src="vendor/xlsx.full.min.js"></script>
 <script src="vendor/jspdf.umd.min.js"></script>
 <script src="vendor/dejavu-fonts.js"></script>
+<script src="xlsx_writer.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

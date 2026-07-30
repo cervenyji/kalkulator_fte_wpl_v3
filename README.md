@@ -11,6 +11,7 @@ backoffice / office room) přesně podle stejné logiky jako originální appka.
 ```
 index.html                  – aplikace, otevřete ji v prohlížeči
 app.js                      – veškerá logika (parsování Excelu, výpočet, PDF, DB)
+xlsx_writer.js              – vlastní zapisovač .xlsx s formátováním (viz "Struktura checklistu")
 fte_wpl_calculator.db       – vzorová SQLite databáze s výchozími referenčními daty
 vendor/                     – vendorované knihovny (sql.js, SheetJS, jsPDF, DejaVu font)
 tools/gen_seed_db.py        – skript, kterým byla vygenerována fte_wpl_calculator.db
@@ -33,11 +34,13 @@ Celou složku je potřeba udržet spolu — `index.html` odkazuje na soubory ve
    formulář (žádné rušivé přepínání mezi oběma možnostmi). Tlačítkem
    „změnit“ u shrnutí zdroje dat nebo kliknutím na krok 1/2 v timeline se
    lze kdykoliv vrátit a zadat kalkulaci znovu.
-4. V kroku 2 klikněte na „Spočítat kalkulaci WPL“ — výsledek (krok 3) se
-   zobrazí v tabulce a zároveň se uloží do databáze (záložka „Historie
-   kalkulací“), takže je kdykoliv zpětně dohledatelné, z jakých vstupních
-   dat kalkulace vznikla. Formulář pro zadání zmizí, aby nepletl — pro další
-   kalkulaci klikněte na „+ Založit další kalkulaci“.
+4. V kroku 2 vyberte **„Důvod kalkulace“** (Přechod na cashless / Modernizace /
+   Ad-hoc kalkulace / Optimalizace) a klikněte na „Spočítat kalkulaci WPL“ —
+   výsledek (krok 3) se zobrazí v tabulce a zároveň se uloží do databáze
+   (záložka „Historie kalkulací“), takže je kdykoliv zpětně dohledatelné,
+   z jakých vstupních dat a z jakého důvodu kalkulace vznikla. Formulář pro
+   zadání zmizí, aby nepletl — pro další kalkulaci klikněte na „+ Založit
+   další kalkulaci“.
 5. Volitelně klikněte na „Exportovat PDF s přehledem WPL“ pro stažení PDF
    shrnutí — obsahuje přehled všech pozic z checklistu, referenční data (verzi)
    a nepřítomnost po segmentech, se kterými se počítalo, souhrnnou tabulku a
@@ -123,6 +126,7 @@ Pod výsledkem kalkulace se zobrazí:
 - **Stanovený formát pobočky** (small / medium economy / medium / flagship),
   doporučený počet fasttracků a doporučený počet židlí v čekací zóně — stejná
   logika jako v původní appce.
+- **Potřebná plocha** — spočítaná jako celkové WPL × 25 m².
 - **Poměr WPL / FTE** — kolik WPL připadá na jedno FTE (v %).
 - **Podíl Backoffice zóny** a **podíl míst pro jednání s klientem (meeting
   zone)** — jaký podíl z celkového spočítaného WPL tvoří tyto zóny.
@@ -201,12 +205,13 @@ v obou listech se správně provázanými vzorci, a takto vygenerovaný a vypln�
 v Excelu bez úprav znovu načíst zpět do aplikace (záložka „Nový výpočet“ → „Nahrát Excel checklist“)
 — parser čte pozice dynamicky řádek po řádku z listu VSTUPY, není závislý na pevném počtu ani pořadí.
 
-**Známé omezení:** knihovna pro práci s Excelem v prohlížeči (SheetJS, vendorovaná komunitní
-edice) umí barevné formátování buněk přečíst, ale při zápisu (`XLSX.write`) ho zahazuje — ověřeno
-přímým testem (zápis buňky s nastaveným `fill`/`font` a zpětné přečtení výsledku vždy vrátí
-„bez formátování“). Vygenerovaná šablona proto nemá barevné podbarvení jako originální checklist,
-ale struktura listů, provázání CHL → VSTUPY i pořadí/názvy pozic a nábytku přesně odpovídají
-aktuálnímu nastavení v aplikaci.
+Šablona je **skutečně naformátovaná** — tučné a barevné nadpisy sekcí, šedě podbarvené buňky se
+segmentem, žlutě zvýrazněné vstupní buňky (kam pobočka píše), ohraničené tabulky a nastavené šířky
+sloupců. Vendorovaná knihovna SheetJS (komunitní edice) umí formátování buněk sice přečíst, ale při
+zápisu (`XLSX.write`) ho vždy zahazuje (ověřeno přímým testem) — proto se šablona nesestavuje přes
+SheetJS, ale přes vlastní minimalistický zapisovač `.xlsx` (`xlsx_writer.js`), který .xlsx (ZIP +
+OOXML XML) sestaví přímo a formátování do souboru skutečně zapíše. Ověřeno jak knihovnou `openpyxl`
+(barvy výplně, tučné písmo, ohraničení, sloučené buňky), tak zpětným načtením do samotné aplikace.
 
 ## Formát vstupního Excelu
 
@@ -229,7 +234,12 @@ záznam v tabulce časových dotací, řádek se vynechá a zobrazí se upozorn�
   (WebAssembly). `.wasm` binárka je vložená jako base64 v
   `vendor/sql-wasm-binary.js`, aby fungovala i při otevření `index.html`
   přímo ze souborového systému (prohlížeče blokují `fetch()` na `file://`).
-- Excel se čte/parsuje přes [SheetJS](https://sheetjs.com) (`vendor/xlsx.full.min.js`).
+- Nahraný Excel checklist se čte/parsuje přes [SheetJS](https://sheetjs.com)
+  (`vendor/xlsx.full.min.js`).
+- Generovaná Excel šablona (záložka „Struktura checklistu“) se naopak zapisuje
+  vlastním minimalistickým zapisovačem `.xlsx` (`xlsx_writer.js`) — vendorovaná
+  SheetJS (komunitní edice) při zápisu zahazuje veškeré formátování buněk, což
+  by pro šablonu, která má vypadat jako vzorový checklist, nešlo použít.
 - PDF export přes [jsPDF](https://github.com/parallax/jsPDF) s vloženým
   fontem DejaVu Sans (`vendor/dejavu-fonts.js`), aby se správně zobrazovala
   česká diakritika.

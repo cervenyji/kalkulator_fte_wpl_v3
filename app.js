@@ -8,6 +8,10 @@
 
 const ZONES = ["service_zone", "meeting_zone", "backoffice_zone", "office_room"];
 
+// Číselník důvodů kalkulace — vybírá se při zadání kalkulace (krok 2 průvodce),
+// platí stejně pro Excel i manuální zadání.
+const CALCULATION_REASONS = ["Přechod na cashless", "Modernizace", "Ad-hoc kalkulace", "Optimalizace"];
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS absence (
   segment TEXT PRIMARY KEY,
@@ -48,7 +52,8 @@ CREATE TABLE IF NOT EXISTS calculations (
   office_room REAL,
   created_at TEXT,
   ref_version_id INTEGER,
-  status TEXT
+  status TEXT,
+  duvod TEXT
 );
 CREATE TABLE IF NOT EXISTS ref_data_versions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,6 +112,7 @@ function migrateSchema(dbi) {
   try { dbi.run("ALTER TABLE calculations ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
   try { dbi.run("ALTER TABLE calculations ADD COLUMN status TEXT"); } catch (e) { /* sloupec už existuje */ }
   dbi.run("UPDATE calculations SET status = 'rozpracovana' WHERE status IS NULL");
+  try { dbi.run("ALTER TABLE calculations ADD COLUMN duvod TEXT"); } catch (e) { /* sloupec už existuje */ }
   const furnitureCount = dbAll("SELECT COUNT(*) AS n FROM furniture_to_zone", [], dbi)[0].n;
   if (furnitureCount === 0) {
     const ins = dbi.prepare("INSERT INTO furniture_to_zone (segment, furniture, zone, wpl_counter) VALUES (?, ?, ?, ?)");
@@ -1236,6 +1242,7 @@ function updateStepper() {
 }
 
 function resetInputForms() {
+  document.getElementById("calcReason").value = "";
   document.getElementById("manualRowsTbody").innerHTML = "";
   document.getElementById("manualPobockaName").value = "";
   document.getElementById("manualPobockaId").value = "";
@@ -1316,6 +1323,9 @@ function runCalculation() {
   if (!pendingLoad) return;
   const { load_key, oteviraci_doba } = pendingLoad;
 
+  const duvod = document.getElementById("calcReason").value;
+  if (!duvod) { toast("Vyberte důvod kalkulace.", "err"); return; }
+
   const rows = dbAll("SELECT segment, pozice, fte, wpl_load FROM excel_loads WHERE load_key = ?", [load_key]);
   if (!rows.length) { toast("Pro tento checklist nejsou žádná data.", "err"); return; }
 
@@ -1375,8 +1385,8 @@ function runCalculation() {
 
   const insCalc = db.prepare(`INSERT INTO calculations
     (load_key, calculation_key, segment, total_positions, position_list,
-     service_zone, meeting_zone, backoffice_zone, office_room, created_at, ref_version_id, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+     service_zone, meeting_zone, backoffice_zone, office_room, created_at, ref_version_id, status, duvod)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
   const resultRows = [];
   segments.forEach((seg) => {
@@ -1392,7 +1402,7 @@ function runCalculation() {
     };
     resultRows.push(row);
     insCalc.run([load_key, calculation_key, row.segment, row.total_positions, row.position_list,
-      row.service_zone, row.meeting_zone, row.backoffice_zone, row.office_room, createdAt, refVersionId, "rozpracovana"]);
+      row.service_zone, row.meeting_zone, row.backoffice_zone, row.office_room, createdAt, refVersionId, "rozpracovana", duvod]);
   });
   const celkemRow = {
     segment: "Celkem",
@@ -1404,7 +1414,7 @@ function runCalculation() {
     office_room: round1(celkem.office_room),
   };
   insCalc.run([load_key, calculation_key, celkemRow.segment, celkemRow.total_positions, celkemRow.position_list,
-    celkemRow.service_zone, celkemRow.meeting_zone, celkemRow.backoffice_zone, celkemRow.office_room, createdAt, refVersionId, "rozpracovana"]);
+    celkemRow.service_zone, celkemRow.meeting_zone, celkemRow.backoffice_zone, celkemRow.office_room, createdAt, refVersionId, "rozpracovana", duvod]);
   insCalc.free();
 
   const inputRows = rows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte, wpl_load: r.wpl_load }));
@@ -1414,7 +1424,7 @@ function runCalculation() {
   persistDatabase();
 
   renderResults({ calculation_key, load_key, createdAt, rows: resultRows, celkem: celkemRow, warnings, inputRows,
-    refVersionId, pobocka_id: pendingLoad.pobocka_id, pobocka_nazev: pendingLoad.pobocka_nazev, oteviraci_doba });
+    refVersionId, pobocka_id: pendingLoad.pobocka_id, pobocka_nazev: pendingLoad.pobocka_nazev, oteviraci_doba, duvod });
   goToWizardStep(4);
   toast("Kalkulace byla spočítána a uložena do historie.", "ok");
   renderHistoryList();
@@ -1435,6 +1445,7 @@ function renderResults(result) {
   document.getElementById("resultsArea").innerHTML = `
     ${warnHtml}
     <p class="muted">Calculation key: <code>${esc(result.calculation_key)}</code> · Load key: <code>${esc(result.load_key)}</code></p>
+    ${result.duvod ? `<p class="muted">Důvod kalkulace: <strong>${esc(result.duvod)}</strong></p>` : ""}
     <div class="status-row">${statusBadgeHtml(status)} ${statusToggleButtonHtml(status)}</div>
     <div class="table-wrap">
       <table>
@@ -1493,6 +1504,7 @@ function renderStatsSection(stats, checkboxId) {
           <span class="muted">(dle ${stats.obchodniFteSumDisplay} obchodních FTE)</span></td></tr>
         <tr><td>Doporučený počet fasttracků na hale</td><td>${stats.recommendedFasttracks}</td></tr>
         <tr><td>Doporučený počet židlí v čekací zóně</td><td>${stats.recommendedChairs}</td></tr>
+        <tr><td>Potřebná plocha</td><td>${stats.requiredAreaM2.toFixed(1)} m² <span class="muted">(WPL × 25 m²)</span></td></tr>
         <tr><td>Poměr WPL / FTE</td><td>${fmtPct(stats.wplFteRatio)}${deltaHtml(stats.wplFteRatio, benchmark?.avg_ratio)}</td></tr>
         <tr><td>Podíl Backoffice zóny</td><td>${fmtPct(stats.backofficePct)}${deltaHtml(stats.backofficePct, benchmark?.avg_backoffice)}</td></tr>
         <tr><td>Podíl míst pro jednání s klientem (meeting zone)</td><td>${fmtPct(stats.meetingPct)}${deltaHtml(stats.meetingPct, benchmark?.avg_meeting)}</td></tr>
@@ -1593,6 +1605,7 @@ function computeCalculationStats(result) {
     recommendedChairs: Math.ceil(combinedTotal * 0.50),
     celkemFte,
     celkemWpl,
+    requiredAreaM2: celkemWpl * 25,
     wplFteRatio: celkemFte > 0 ? (celkemWpl / celkemFte) * 100 : null,
     backofficePct: celkemWpl > 0 ? (backofficeZone / celkemWpl) * 100 : null,
     meetingPct: celkemWpl > 0 ? (meetingZoneTotal / celkemWpl) * 100 : null,
@@ -1795,6 +1808,7 @@ function exportCalculationPdf(result, options) {
     `Stanovený formát dle počtu (${stats.obchodniFteSumDisplay}) obchodních FTE: ${stats.formatTyp}`,
     `Doporučený počet fasttracků na hale: ${stats.recommendedFasttracks}`,
     `Doporučený počet židlí v čekací zóně: ${stats.recommendedChairs}`,
+    `Potřebná plocha (WPL × 25 m²): ${stats.requiredAreaM2.toFixed(1)} m²`,
   ];
   statLines.forEach((line) => { pdf.text(line, marginX, y); y += 6; });
   y += 4;
@@ -2128,7 +2142,7 @@ function renderHistoryList() {
 function showBranchCalculations(pobockaId, pobockaNazev) {
   const calcs = dbAll(`
     SELECT c.calculation_key AS calculation_key, c.load_key AS load_key, MIN(c.created_at) AS created_at,
-           MAX(c.status) AS status
+           MAX(c.status) AS status, MAX(c.duvod) AS duvod
     FROM calculations c
     JOIN excel_loads el ON el.load_key = c.load_key
     WHERE el.pobocka_id = ?
@@ -2140,7 +2154,8 @@ function showBranchCalculations(pobockaId, pobockaNazev) {
     <button class="btn secondary small" id="btnBackToBranches">← Zpět na přehled poboček</button>
     <h3 style="margin-top:14px;">${esc(pobockaNazev)} (ID ${esc(pobockaId)}) — ${czechCalcCount(calcs.length)}</h3>
     ${calcs.map((c) => `<div class="history-item" data-calc="${esc(c.calculation_key)}" data-load="${esc(c.load_key)}">
-      <div><span class="muted">${new Date(c.created_at).toLocaleString("cs-CZ")}</span> ${statusBadgeHtml(c.status)}</div>
+      <div><span class="muted">${new Date(c.created_at).toLocaleString("cs-CZ")}</span>
+        ${c.duvod ? `<span class="muted"> · ${esc(c.duvod)}</span>` : ""} ${statusBadgeHtml(c.status)}</div>
       <div class="key">${esc(c.calculation_key)}</div>
     </div>`).join("")}`;
 
@@ -2158,7 +2173,7 @@ function showHistoryDetail(calculationKey, loadKey) {
   panel.style.display = "block";
   const inputRows = dbAll("SELECT segment, pozice, fte, wpl_load, created_at FROM excel_loads WHERE load_key = ? ORDER BY id", [loadKey]);
   const resultRows = dbAll(`SELECT segment, total_positions, position_list, service_zone, meeting_zone,
-    backoffice_zone, office_room, created_at, ref_version_id FROM calculations WHERE calculation_key = ?
+    backoffice_zone, office_room, created_at, ref_version_id, duvod FROM calculations WHERE calculation_key = ?
     ORDER BY (segment = 'Celkem'), id`, [calculationKey]);
   const branch = dbAll("SELECT pobocka_id, pobocka_nazev, oteviraci_doba FROM excel_loads WHERE load_key = ? LIMIT 1", [loadKey])[0];
 
@@ -2176,6 +2191,7 @@ function showHistoryDetail(calculationKey, loadKey) {
   document.getElementById("historyDetail").innerHTML = `
     <p class="muted">${branch ? `${esc(branch.pobocka_nazev)} (ID ${esc(branch.pobocka_id)}) · otevírací doba ${esc(branch.oteviraci_doba)} h/týden` : ""}</p>
     <p>Load key: <code>${esc(loadKey)}</code><br>Calculation key: <code>${esc(calculationKey)}</code></p>
+    ${resultRows[0] && resultRows[0].duvod ? `<p class="muted">Důvod kalkulace: <strong>${esc(resultRows[0].duvod)}</strong></p>` : ""}
     <div class="status-row">${statusBadgeHtml(status)} ${statusToggleButtonHtml(status)}</div>
     <h3>Vstupní data z checklistu</h3>
     <div class="table-wrap"><table><thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Vytížení WPL</th></tr></thead>
@@ -2557,13 +2573,20 @@ function saveFurnitureTable() {
 // Nová/upravená pozice nebo nábytek se při dalším vygenerování šablony
 // automaticky promítne do obou listů.
 //
-// Poznámka k designu: knihovna SheetJS v prohlížeči (komunitní edice, kterou
-// tato appka vendoruje) umí barevné formátování buněk při čtení, ale při
-// zápisu (XLSX.write) ho úplně zahazuje — ověřeno přímým testem zápisu buňky
-// se zadaným `s.fill`/`s.font` a zpětného přečtení výsledku. Vygenerovaný
-// soubor proto nemá barevné podbarvení jako originální šablona, ale struktura
-// (listy, sloupce, provázání CHL → VSTUPY, pořadí i názvy pozic/nábytku)
-// odpovídá.
+// Poznámka k designu: vendorovaná knihovna SheetJS (komunitní edice) umí
+// barevné formátování buněk při čtení, ale při zápisu (XLSX.write) ho úplně
+// zahazuje — ověřeno přímým testem zápisu buňky se zadaným `s.fill`/`s.font`
+// a zpětného přečtení výsledku (i pro čerstvě vytvořený sešit). Aby byla
+// vygenerovaná šablona opravdu naformátovaná stejně jako vzorový checklist
+// (a ne jen strukturně shodná), sestavuje se přímo přes `xlsx_writer.js` —
+// vlastní minimalistický zapisovač .xlsx (OOXML), který barvy výplně, tučné
+// písmo i ohraničení do souboru skutečně zapíše.
+function hexToArgb(hex) {
+  const h = String(hex || "#6b7684").replace("#", "");
+  const n = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  return "FF" + n.toUpperCase();
+}
+
 function generateChecklistTemplate() {
   if (!requireDb()) return;
   const segments = dbAll("SELECT segment_key FROM segments ORDER BY sort_order, segment_key").map((r) => r.segment_key);
@@ -2577,23 +2600,45 @@ function generateChecklistTemplate() {
     if (a.segment !== b.segment) return a.segment.localeCompare(b.segment);
     return a.pozice.localeCompare(b.pozice);
   });
+  const furnitureRows = dbAll("SELECT segment, zone, furniture, wpl_counter FROM furniture_to_zone ORDER BY segment, zone, id");
+  const orderedFurniture = [...furnitureRows].sort((a, b) => {
+    const oa = segOrder[a.segment] ?? 999, ob = segOrder[b.segment] ?? 999;
+    if (oa !== ob) return oa - ob;
+    return a.segment.localeCompare(b.segment);
+  });
 
-  // --- CHL: skutečný vstupní list pro pobočku ---
+  const sb = createStyleBook();
+  const stTitle = sb.addStyle({ bold: true, size: 14 });
+  const stSection = sb.addStyle({ bold: true, size: 11, color: "FFFFFFFF", fill: "FF2770F0", border: true, align: "left" });
+  const stTableHeader = sb.addStyle({ bold: true, size: 10, fill: "FFD9E2F3", border: true, align: "center" });
+  const stLabel = sb.addStyle({ bold: true, size: 10 });
+  const stSeg = sb.addStyle({ bold: true, fill: "FFD0CECE", border: true });
+  const stData = sb.addStyle({ border: true });
+  const stInput = sb.addStyle({ fill: "FFFFF8E6", border: true });
+  const stInputCenter = sb.addStyle({ fill: "FFFFF8E6", border: true, align: "center" });
+
+  const str = (v, s) => ({ t: "str", v: v ?? "", s });
+  const num = (v, s) => ({ v: v ?? 0, s });
+  const formula = (f, v, s, isStr) => ({ f, v: v ?? (isStr ? "" : 0), t: isStr ? "str" : undefined, s });
+
+  // --- CHL: skutečný vstupní list pro pobočku (formátovaný stejně jako vzor) ---
   const chl = {};
-  chl.A1 = { t: "s", v: "CHECKLIST" };
-  chl.F1 = { t: "s", v: "ID pobočky:" };
-  chl.G1 = { t: "s", v: "" };
-  chl.A3 = { t: "s", v: "DETAILY POBOČKY" };
-  chl.A4 = { t: "s", v: "Název pobočky:" };
-  chl.C4 = { t: "s", v: "" };
-  chl.A5 = { t: "s", v: "Otevírací doba pobočky (h/týden):" };
-  chl.C5 = { t: "n", v: 40 };
-  chl.A6 = { t: "s", v: "Doba vytěžení WPL (h/týden):" };
-  chl.C6 = { t: "n", v: 40 };
-  chl.A8 = { t: "s", v: "OBSAZENOST POBOČKY" };
-  chl.G8 = { t: "s", v: "Vytížení WPL (jen CESTOVNÍ)" };
-  chl.H8 = { t: "s", v: "Počet FTE" };
-  chl.I8 = { t: "s", v: "Poznámka" };
+  chl.A1 = str("CHECKLIST", stTitle);
+  chl.F1 = str("ID pobočky:", stLabel);
+  chl.G1 = str("", stInput);
+  chl.A3 = str("DETAILY POBOČKY", stSection);
+  for (const c of ["B3", "C3", "D3", "E3", "F3", "G3", "H3", "I3"]) chl[c] = str("", stSection);
+  chl.A4 = str("Název pobočky:", stLabel);
+  chl.C4 = str("", stInput);
+  chl.A5 = str("Otevírací doba pobočky (h/týden):", stLabel);
+  chl.C5 = num(40, stInputCenter);
+  chl.A6 = str("Doba vytěžení WPL (h/týden):", stLabel);
+  chl.C6 = num(40, stInputCenter);
+  chl.A8 = str("OBSAZENOST POBOČKY", stSection);
+  for (const c of ["B8", "C8", "D8", "E8", "F8"]) chl[c] = str("", stSection);
+  chl.G8 = str("Vytížení WPL (jen CESTOVNÍ)", stTableHeader);
+  chl.H8 = str("Počet FTE", stTableHeader);
+  chl.I8 = str("Poznámka", stTableHeader);
 
   const CHL_DATA_START = 9; // řádek první pozice v CHL
   const VSTUPY_DATA_START = 6; // řádek první pozice ve VSTUPY (dáno parseVstupySheet())
@@ -2601,64 +2646,64 @@ function generateChecklistTemplate() {
 
   orderedPositions.forEach((row, i) => {
     const chlRow = CHL_DATA_START + i;
-    chl[`A${chlRow}`] = { t: "s", v: row.segment };
-    chl[`B${chlRow}`] = { t: "s", v: row.pozice };
-    chl[`H${chlRow}`] = { t: "n", v: 0 };
+    chl[`A${chlRow}`] = str(row.segment, stSeg);
+    chl[`B${chlRow}`] = str(row.pozice, stData);
+    chl[`G${chlRow}`] = row.segment.trim().toUpperCase() === "CESTOVNÍ" ? num(0, stInputCenter) : num(0, stData);
+    chl[`H${chlRow}`] = num(0, stInputCenter);
+    chl[`I${chlRow}`] = str("", stData);
   });
   const chlPosEnd = CHL_DATA_START + orderedPositions.length - 1;
 
-  const furnitureRows = dbAll("SELECT segment, zone, furniture, wpl_counter FROM furniture_to_zone ORDER BY segment, zone, id");
-  const orderedFurniture = [...furnitureRows].sort((a, b) => {
-    const oa = segOrder[a.segment] ?? 999, ob = segOrder[b.segment] ?? 999;
-    if (oa !== ob) return oa - ob;
-    return a.segment.localeCompare(b.segment);
-  });
   let fr = chlPosEnd + 3;
-  chl[`A${fr}`] = { t: "s", v: "NÁBYTEK PRO SESTAVENÍ LAYOUTU" };
+  chl[`A${fr}`] = str("NÁBYTEK PRO SESTAVENÍ LAYOUTU", stSection);
+  for (const col of ["B", "C", "D", "E"]) chl[`${col}${fr}`] = str("", stSection);
   fr += 1;
-  chl[`A${fr}`] = { t: "s", v: "Segment" }; chl[`B${fr}`] = { t: "s", v: "Zóna" };
-  chl[`C${fr}`] = { t: "s", v: "Nábytek" }; chl[`D${fr}`] = { t: "s", v: "WPL / kus" };
-  chl[`E${fr}`] = { t: "s", v: "Počet kusů (vyplní pobočka)" };
+  chl[`A${fr}`] = str("Segment", stTableHeader); chl[`B${fr}`] = str("Zóna", stTableHeader);
+  chl[`C${fr}`] = str("Nábytek", stTableHeader); chl[`D${fr}`] = str("WPL / kus", stTableHeader);
+  chl[`E${fr}`] = str("Počet kusů (vyplní pobočka)", stTableHeader);
   fr += 1;
   orderedFurniture.forEach((f) => {
-    chl[`A${fr}`] = { t: "s", v: f.segment };
-    chl[`B${fr}`] = { t: "s", v: ZONE_LABELS[f.zone] || f.zone };
-    chl[`C${fr}`] = { t: "s", v: f.furniture };
-    chl[`D${fr}`] = { t: "n", v: f.wpl_counter || 0 };
+    chl[`A${fr}`] = str(f.segment, stSeg);
+    chl[`B${fr}`] = str(ZONE_LABELS[f.zone] || f.zone, stData);
+    chl[`C${fr}`] = str(f.furniture, stData);
+    chl[`D${fr}`] = num(f.wpl_counter || 0, stData);
+    chl[`E${fr}`] = num(0, stInputCenter);
     fr += 1;
   });
-  chl["!ref"] = `A1:I${Math.max(fr - 1, chlPosEnd)}`;
-  chl["!cols"] = [{ wch: 16 }, { wch: 56 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 10 },
-    { wch: 28 }, { wch: 14 }, { wch: 28 }];
+
+  const chlSheet = {
+    name: "CHL",
+    cells: chl,
+    cols: [{ index: 1, width: 16 }, { index: 2, width: 56 }, { index: 3, width: 12 }, { index: 4, width: 12 },
+      { index: 5, width: 10 }, { index: 6, width: 10 }, { index: 7, width: 28 }, { index: 8, width: 14 }, { index: 9, width: 28 }],
+    merges: ["A3:I3", "A8:F8", `A${fr - orderedFurniture.length - 1}:E${fr - orderedFurniture.length - 1}`],
+  };
 
   // --- VSTUPY: hodnoty se stahují vzorcem z CHL (parseVstupySheet() čte jen tento list) ---
   const ws = {};
-  ws.A1 = { t: "s", v: "ID pobočky" };
-  ws.C1 = { t: "s", v: "", f: "CHL!G1" };
-  ws.A2 = { t: "s", v: "Název pobočky" };
-  ws.C2 = { t: "s", v: "", f: "CHL!C4" };
-  ws.A3 = { t: "s", v: "Otevírací doba pobočky (h/týden)" };
-  ws.C3 = { t: "n", v: 40, f: "CHL!C5" };
-  ws.A4 = { t: "s", v: "Doba vytěžení WPL (h/týden)" };
-  ws.C4 = { t: "n", v: 40, f: "CHL!C6" };
-  ws.A5 = { t: "s", v: "Segment" }; ws.B5 = { t: "s", v: "Pozice" };
-  ws.C5 = { t: "s", v: "Počet FTE" }; ws.D5 = { t: "s", v: "Vytěžení WPL" };
+  ws.A1 = str("ID pobočky", stLabel); ws.C1 = formula("CHL!G1", "", stInput, true);
+  ws.A2 = str("Název pobočky", stLabel); ws.C2 = formula("CHL!C4", "", stInput, true);
+  ws.A3 = str("Otevírací doba pobočky (h/týden)", stLabel); ws.C3 = formula("CHL!C5", 40, stInputCenter);
+  ws.A4 = str("Doba vytěžení WPL (h/týden)", stLabel); ws.C4 = formula("CHL!C6", 40, stInputCenter);
+  ws.A5 = str("Segment", stTableHeader); ws.B5 = str("Pozice", stTableHeader);
+  ws.C5 = str("Počet FTE", stTableHeader); ws.D5 = str("Vytěžení WPL", stTableHeader);
   orderedPositions.forEach((row, i) => {
     const vRow = VSTUPY_DATA_START + i;
     const chlRow = vRow + rowOffset;
-    ws[`A${vRow}`] = { t: "s", v: row.segment };
-    ws[`B${vRow}`] = { t: "s", v: row.pozice };
-    ws[`C${vRow}`] = { t: "n", v: 0, f: `CHL!H${chlRow}` };
+    ws[`A${vRow}`] = str(row.segment, stSeg);
+    ws[`B${vRow}`] = str(row.pozice, stData);
+    ws[`C${vRow}`] = formula(`CHL!H${chlRow}`, 0, stData);
     ws[`D${vRow}`] = row.segment.trim().toUpperCase() === "CESTOVNÍ"
-      ? { t: "n", v: 0, f: `CHL!G${chlRow}` }
-      : { t: "n", v: 40, f: "$C$4" };
+      ? formula(`CHL!G${chlRow}`, 0, stData)
+      : formula("$C$4", 40, stData);
   });
-  const vstupyLastRow = VSTUPY_DATA_START + orderedPositions.length - 1;
-  ws["!ref"] = `A1:D${Math.max(vstupyLastRow, VSTUPY_DATA_START)}`;
-  ws["!cols"] = [{ wch: 16 }, { wch: 56 }, { wch: 14 }, { wch: 16 }];
+  const vstupySheet = {
+    name: "VSTUPY",
+    cells: ws,
+    cols: [{ index: 1, width: 16 }, { index: 2, width: 56 }, { index: 3, width: 14 }, { index: 4, width: 16 }],
+  };
 
-  const wb = { SheetNames: ["CHL", "VSTUPY"], Sheets: { CHL: chl, VSTUPY: ws } };
-  const out = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+  const out = buildXlsxWorkbook([chlSheet, vstupySheet], sb);
   const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
