@@ -205,6 +205,43 @@ Prvek **„Interní zasedací místnost - malá“** se počítá jako 1 WPL / k
 byl vedený jako prvek nepřispívající k WPL). U databází vytvořených starší verzí
 aplikace se hodnota při připojení automaticky opraví.
 
+### Kompletní přehled WPL po zónách a segmentech
+
+Po uložení layoutu se nad seznamem nábytku zobrazí souhrnná matice
+**segment × zóna** s těmito sloupci:
+
+| Segment | FTE | Service zone | Meeting zone | Backoffice zone | Office room | WPL celkem | WPL / FTE |
+
+- U každé zóny je uvedena **potřeba WPL z kalkulace** a za lomítkem **skutečně
+  přiřazené WPL** ze sestaveného layoutu; barevně se odlišuje shoda (zeleně),
+  méně (oranžově) a více (modře), než je potřeba.
+- Sloupec **WPL / FTE** je metrika, na kolik FTE dané WPL vychází — jak
+  **celkem**, tak **za každý segment zvlášť**.
+- Součtový řádek „Celkem“ přebírá potřebu WPL a FTE z řádku „Celkem“ kalkulace,
+  ne ze součtu zobrazených hodnot za segmenty. Hodnoty za segmenty jsou totiž
+  zaokrouhlené na jedno desetinné místo, takže jejich součet se může o desetinu
+  lišit (např. segmenty 2,3 + 0,0, ale Celkem 2,4). Díky tomu přehled ukazuje
+  stejná čísla jako tabulka výsledku kalkulace a klíčové ukazatele.
+
+Stejná tabulka je i v PDF exportu layoutu (a tedy i ve spojené sestavě).
+
+### Analýza segmentů, zón a jejich prvků
+
+Pod seznamem nábytku je **rozbalovací analýza**: po rozbalení se zobrazí každý
+segment jako samostatná rozbalovací sekce (s FTE, potřebou a přiřazeným WPL a
+počtem kusů) a v ní jednotlivé zóny s výpisem konkrétních nábytkových prvků,
+jejich počtu kusů a přiřazeného WPL.
+
+### Generovat celou sestavu (kalkulace + layout v jednom PDF)
+
+Tlačítkem **„Generovat celou sestavu (kalkulace + layout)“** se vyexportuje
+jeden PDF dokument, který obsahuje obojí — nejprve celou kalkulaci FTE → WPL
+(stejný obsah jako „Exportovat PDF s přehledem WPL“, včetně zaškrtnuté volby
+klíčových ukazatelů a poznámky) a na další stránce sestavení layoutu (včetně
+kompletního přehledu WPL po zónách a segmentech). Soubor se jmenuje
+`sestava_<calculation_key>.pdf`. Samostatné exporty kalkulace i layoutu zůstávají
+zachované.
+
 ## Barevné schéma a ikony segmentů
 
 Každý segment (MMMA, SBC, HC, EPC, EPB, PROVOZ, RKC, CESTOVNÍ, CESTOVNÍ POZICE, OSTATNÍ) má

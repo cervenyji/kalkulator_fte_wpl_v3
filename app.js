@@ -762,6 +762,12 @@ function fmt1(n) {
   return n.toFixed(1);
 }
 
+// Počty kusů nábytku jsou celá čísla — "9 ks" se čte lépe než "9.0 ks".
+function fmtPieces(n) {
+  if (n === null || n === undefined || Number.isNaN(n)) return "";
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
 function pad(n, len = 2) { return String(n).padStart(len, "0"); }
 
 function nowStamp() {
@@ -1482,6 +1488,8 @@ function renderResults(result) {
   document.getElementById("layoutPanel").style.display = "block";
   renderLayoutSection("layoutArea", result.rows, {
     calculation_key: result.calculation_key, pobocka_id: result.pobocka_id, pobocka_nazev: result.pobocka_nazev, stats,
+    // Data kalkulace pro "Generovat celou sestavu" (kalkulace + layout v jednom PDF)
+    calcResult: result, pdfNoteId: "pdfNote", pdfStatsId: "pdfIncludeStats",
   });
 }
 
@@ -1686,12 +1694,25 @@ function absenceFromSnapshot(absenceSnapshot, segment) {
   return row ? [row[1] || 0, row[2] || 0] : [0, 0];
 }
 
-function exportCalculationPdf(result, options) {
-  const { note = "", includeStats = true } = options || {};
+function newPdfDoc() {
   const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF();
+  return new jsPDF();
+}
+
+function exportCalculationPdf(result, options) {
+  const pdf = newPdfDoc();
+  drawCalculationPdf(pdf, 18, result, options);
+  pdf.save(`export_${result.calculation_key}.pdf`);
+}
+
+// Vykreslí část "Kalkulace FTE → WPL" do už existujícího PDF dokumentu od
+// zadané souřadnice y a vrátí y za poslední vykreslenou částí. Díky tomu jde
+// stejný obsah použít jak pro samostatný export kalkulace, tak pro spojenou
+// sestavu (kalkulace + layout v jednom PDF).
+function drawCalculationPdf(pdf, startY, result, options) {
+  const { note = "", includeStats = true } = options || {};
   const marginX = 14;
-  let y = 18;
+  let y = startY;
   const pageBottom = 280;
 
   pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(16);
@@ -1866,7 +1887,7 @@ function exportCalculationPdf(result, options) {
     pdf.splitTextToSize(note, 180).forEach((line) => { pdf.text(line, marginX, y); y += 5; });
   }
 
-  pdf.save(`export_${result.calculation_key}.pdf`);
+  return y;
 }
 
 /* --------------------------- Sestavení layoutu ----------------------------- */
@@ -1877,6 +1898,84 @@ const ZONE_LABELS = {
   backoffice_zone: "Backoffice zone",
   office_room: "Office room",
 };
+
+const ZONE_LABELS_SHORT = {
+  service_zone: "ServiceZ",
+  meeting_zone: "MeetingZ",
+  backoffice_zone: "BackofficeZ",
+  office_room: "OfficeRoom",
+};
+
+/* --------------------- Kompletní přehled WPL (matice) ---------------------- */
+// Sestaví kompletní přehled WPL po segmentech a zónách: potřebu z kalkulace,
+// počet FTE, poměr WPL/FTE (celkem i za každý segment zvlášť) a — pokud už je
+// layout sestavený — také skutečně přiřazené WPL. Používá se pro zobrazení
+// v aplikaci i pro PDF export layoutu, aby obojí vycházelo ze stejných čísel.
+//
+// `celkemRow` (řádek „Celkem“ z kalkulace) je nepovinný, ale měl by se předávat:
+// hodnoty v něm vznikly zaokrouhlením nezaokrouhlených součtů, takže se mohou
+// o desetinu lišit od součtu už zaokrouhlených hodnot jednotlivých segmentů
+// (např. segmenty 2.3 + 0.0, ale Celkem 2.4). Řádek „Celkem“ je autoritativní —
+// je to totéž číslo, které ukazuje tabulka výsledku kalkulace i klíčové
+// ukazatele, takže přehled musí vycházet z něj, aby si čísla na jedné obrazovce
+// neodporovala. Bez něj se použije součet segmentů jako nejlepší přiblížení.
+function computeWplOverview(segmentRows, layoutRows, celkemRow) {
+  const assignedBySegZone = {};
+  const piecesBySegZone = {};
+  (layoutRows || []).forEach((r) => {
+    const key = `${r.segment}||${r.zone}`;
+    assignedBySegZone[key] = (assignedBySegZone[key] || 0) + (r.wpl_assigned || 0);
+    piecesBySegZone[key] = (piecesBySegZone[key] || 0) + (r.piece_count || 0);
+  });
+
+  const rows = (segmentRows || []).map((seg) => {
+    const zones = {}, assignedZones = {}, pieces = {};
+    let wplTotal = 0, assignedTotal = 0, piecesTotal = 0;
+    ZONES.forEach((z) => {
+      const key = `${seg.segment}||${z}`;
+      zones[z] = seg[z] || 0;
+      assignedZones[z] = assignedBySegZone[key] || 0;
+      pieces[z] = piecesBySegZone[key] || 0;
+      wplTotal += zones[z];
+      assignedTotal += assignedZones[z];
+      piecesTotal += pieces[z];
+    });
+    const fte = seg.total_positions || 0;
+    return {
+      segment: seg.segment, fte, zones, assignedZones, pieces,
+      wplTotal, assignedTotal, piecesTotal,
+      wplPerFtePct: fte > 0 ? (wplTotal / fte) * 100 : null,
+    };
+  });
+
+  const total = {
+    segment: "Celkem", fte: 0, zones: {}, assignedZones: {}, pieces: {},
+    wplTotal: 0, assignedTotal: 0, piecesTotal: 0,
+  };
+  ZONES.forEach((z) => { total.zones[z] = 0; total.assignedZones[z] = 0; total.pieces[z] = 0; });
+  rows.forEach((r) => {
+    total.fte += r.fte;
+    total.wplTotal += r.wplTotal;
+    total.assignedTotal += r.assignedTotal;
+    total.piecesTotal += r.piecesTotal;
+    ZONES.forEach((z) => {
+      total.zones[z] += r.zones[z];
+      total.assignedZones[z] += r.assignedZones[z];
+      total.pieces[z] += r.pieces[z];
+    });
+  });
+  // Potřeba WPL i FTE se v součtovém řádku přebírá z autoritativního řádku
+  // „Celkem“ kalkulace (viz komentář u hlavičky funkce). Přiřazené WPL a počty
+  // kusů zůstávají součtem z layoutu — ty žádným zaokrouhlením neprošly.
+  if (celkemRow) {
+    total.fte = celkemRow.total_positions || 0;
+    total.wplTotal = 0;
+    ZONES.forEach((z) => { total.zones[z] = celkemRow[z] || 0; total.wplTotal += total.zones[z]; });
+  }
+  total.wplPerFtePct = total.fte > 0 ? (total.wplTotal / total.fte) * 100 : null;
+
+  return { rows, total, hasLayout: (layoutRows || []).length > 0 };
+}
 
 /* ------------------- Pravidla pro předvyplnění layoutu --------------------- */
 // Deklarativní definice pravidel, podle kterých se v sestavení layoutu
@@ -2100,7 +2199,11 @@ function renderLayoutForm(container, segmentRows, meta, existingRows) {
       <button class="btn" id="btnSaveLayout">Uložit layout</button>
     </div>`;
   wireLayoutFormListeners(container);
-  document.getElementById("btnSaveLayout").addEventListener("click", () => saveLayoutAssignment(container, meta, segmentRows));
+  // Tlačítka se hledají v rámci `container`, ne přes document.getElementById —
+  // sekce layoutu je na stránce dvakrát (krok 4 průvodce a detail v historii),
+  // takže stejná id existují ve dvou instancích a globální hledání by našlo
+  // vždy jen tu první.
+  container.querySelector("#btnSaveLayout").addEventListener("click", () => saveLayoutAssignment(container, meta, segmentRows));
 }
 
 function wireLayoutFormListeners(container) {
@@ -2156,6 +2259,71 @@ function saveLayoutAssignment(container, meta, segmentRows) {
   renderLayoutReadonly(container, getExistingLayout(meta.calculation_key), meta, segmentRows);
 }
 
+// Kompletní přehled WPL po zónách a segmentech vč. FTE a poměru WPL/FTE
+// (celkem i za každý segment zvlášť). Je-li layout už sestavený, ukazuje se
+// u každé zóny i skutečně přiřazené WPL ve formátu "potřeba / přiřazeno".
+function renderWplOverviewHtml(overview) {
+  const pct = (v) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : `${v.toFixed(1)} %`;
+  const cell = (req, asg) => {
+    if (!overview.hasLayout) return `<td>${fmt1(req)}</td>`;
+    const cls = asg + 0.05 < req ? "wpl-under" : asg > req + 0.05 ? "wpl-over" : "wpl-ok";
+    return `<td>${fmt1(req)} <span class="${cls}">/ ${fmt1(asg)}</span></td>`;
+  };
+  const rowHtml = (r, isTotal) => `<tr class="${isTotal ? "total-row" : ""}">
+    <td>${isTotal ? esc(r.segment) : segmentBadgeHtml(r.segment)}</td>
+    <td>${fmt1(r.fte)}</td>
+    ${ZONES.map((z) => cell(r.zones[z], r.assignedZones[z])).join("")}
+    ${cell(r.wplTotal, r.assignedTotal)}
+    <td>${pct(r.wplPerFtePct)}</td>
+  </tr>`;
+  return `<h4 style="margin-top:0;">Kompletní přehled WPL po zónách a segmentech</h4>
+    <div class="table-wrap"><table class="wpl-overview">
+      <thead><tr><th>Segment</th><th>FTE</th>
+        ${ZONES.map((z) => `<th>${ZONE_LABELS[z]}</th>`).join("")}
+        <th>WPL celkem</th><th>WPL / FTE</th></tr></thead>
+      <tbody>${overview.rows.map((r) => rowHtml(r, false)).join("")}${rowHtml(overview.total, true)}</tbody>
+    </table></div>
+    <p class="muted">${overview.hasLayout
+      ? 'U každé zóny je uvedena <strong>potřeba WPL z kalkulace</strong> a za lomítkem <strong>skutečně přiřazené WPL</strong> ze sestaveného layoutu (zeleně shoda, oranžově méně, modře více než potřeba).'
+      : "Uvedena je potřeba WPL z kalkulace."}
+      Sloupec <strong>WPL / FTE</strong> udává, na kolik FTE dané WPL vychází — celkem i za každý segment zvlášť.</p>`;
+}
+
+// Rozbalovací analýza: segment -> zóny -> jednotlivé nábytkové prvky.
+function renderZoneAnalysisHtml(overview, layoutRows) {
+  const byKey = {};
+  (layoutRows || []).forEach((r) => { (byKey[`${r.segment}||${r.zone}`] = byKey[`${r.segment}||${r.zone}`] || []).push(r); });
+
+  const segmentsHtml = overview.rows.map((r) => {
+    const zonesHtml = ZONES.map((z) => {
+      const items = byKey[`${r.segment}||${z}`] || [];
+      const req = r.zones[z], asg = r.assignedZones[z];
+      if (!items.length && req <= 0) return "";
+      const itemsHtml = items.length
+        ? `<ul>${items.map((it) => `<li>${esc(it.furniture)} — <strong>${fmtPieces(it.piece_count)} ks</strong>
+            ${it.wpl_assigned > 0 ? `(WPL: ${fmt1(it.wpl_assigned)})` : '<span class="muted">(nepočítá se jako WPL)</span>'}</li>`).join("")}</ul>`
+        : `<p class="muted">Do této zóny nebyl přiřazen žádný nábytek.</p>`;
+      return `<div class="analysis-zone">
+        <div class="analysis-zone-head"><strong>${ZONE_LABELS[z]}</strong>
+          <span class="muted">potřeba WPL ${fmt1(req)} · přiřazeno ${fmt1(asg)} · ${fmtPieces(r.pieces[z])} ks</span></div>
+        ${itemsHtml}
+      </div>`;
+    }).join("");
+    return `<details class="analysis-segment">
+      <summary>${segmentBadgeHtml(r.segment)}
+        <span class="muted">FTE ${fmt1(r.fte)} · potřeba WPL ${fmt1(r.wplTotal)} · přiřazeno ${fmt1(r.assignedTotal)}
+        · ${fmtPieces(r.piecesTotal)} ks nábytku</span></summary>
+      ${zonesHtml || '<p class="muted">Pro tento segment nevyšla potřeba WPL v žádné zóně.</p>'}
+    </details>`;
+  }).join("");
+
+  return `<details class="analysis-wrap" style="margin-top:16px;">
+    <summary><strong>Analýza segmentů, zón a jejich prvků</strong>
+      <span class="muted">(rozbalte pro detail po segmentech)</span></summary>
+    <div style="margin-top:10px;">${segmentsHtml}</div>
+  </details>`;
+}
+
 function renderLayoutReadonly(container, rows, meta, segmentRows) {
   const bySegZone = {};
   const order = [];
@@ -2173,21 +2341,130 @@ function renderLayoutReadonly(container, rows, meta, segmentRows) {
       <ul>${itemsHtml}</ul>
     </div>`;
   }).join("");
-  container.innerHTML = `${groupsHtml}
-    <div class="row" style="margin-top:12px;">
+
+  const overview = computeWplOverview(segmentRows, rows, meta.calcResult?.celkem);
+  container.innerHTML = `
+    <div class="layout-group">${renderWplOverviewHtml(overview)}</div>
+    ${groupsHtml}
+    ${renderZoneAnalysisHtml(overview, rows)}
+    <div class="row" style="margin-top:14px;">
+      <button class="btn" id="btnExportFullReport">Generovat celou sestavu (kalkulace + layout)</button>
       <button class="btn secondary" id="btnExportLayoutPdf">Exportovat PDF layoutu</button>
       <button class="btn secondary" id="btnEditLayout">Upravit layout</button>
     </div>`;
-  document.getElementById("btnExportLayoutPdf").addEventListener("click", () => exportLayoutPdf(rows, meta));
-  document.getElementById("btnEditLayout").addEventListener("click", () => renderLayoutForm(container, segmentRows, meta, rows));
+  // Hledání v rámci `container` — viz poznámka v renderLayoutForm().
+  container.querySelector("#btnExportLayoutPdf").addEventListener("click", () => exportLayoutPdf(rows, meta, segmentRows));
+  container.querySelector("#btnEditLayout").addEventListener("click", () => renderLayoutForm(container, segmentRows, meta, rows));
+
+  const btnFull = container.querySelector("#btnExportFullReport");
+  if (meta.calcResult) {
+    btnFull.addEventListener("click", () => {
+      const noteEl = document.getElementById(meta.pdfNoteId);
+      const statsEl = document.getElementById(meta.pdfStatsId);
+      exportFullReportPdf(meta.calcResult, rows, meta, segmentRows, {
+        note: noteEl ? noteEl.value.trim() : "",
+        includeStats: statsEl ? statsEl.checked : true,
+      });
+    });
+  } else {
+    // Bez dat kalkulace (neočekávaný stav) nelze spojenou sestavu sestavit.
+    btnFull.disabled = true;
+    btnFull.title = "Spojenou sestavu lze vygenerovat jen z detailu kalkulace.";
+  }
 }
 
-function exportLayoutPdf(rows, meta) {
-  const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF();
+function exportLayoutPdf(rows, meta, segmentRows) {
+  const pdf = newPdfDoc();
+  drawLayoutPdf(pdf, 18, rows, meta, segmentRows);
+  pdf.save(`layout_${meta.calculation_key || "export"}.pdf`);
+}
+
+// Spojená sestava — kalkulace i layout v jednom PDF dokumentu.
+function exportFullReportPdf(result, layoutRows, meta, segmentRows, options) {
+  const pdf = newPdfDoc();
+  drawCalculationPdf(pdf, 18, result, options);
+  pdf.addPage();
+  drawLayoutPdf(pdf, 18, layoutRows, meta, segmentRows);
+  pdf.save(`sestava_${meta.calculation_key || result.calculation_key || "export"}.pdf`);
+  toast("Celá sestava (kalkulace + layout) byla vygenerována.", "ok");
+}
+
+// Vykreslí kompletní přehled WPL po zónách a segmentech (stejná čísla jako
+// tabulka v aplikaci) a vrátí novou souřadnici y.
+function drawWplOverviewPdf(pdf, startY, overview, marginX, pageBottom) {
+  let y = startY;
+  const headers = ["Segment", "FTE", ...ZONES.map((z) => ZONE_LABELS_SHORT[z]), "WPL celkem", "WPL/FTE"];
+  const colW = [30, 12, 19, 19, 22, 22, 21, 19];
+  const rowH = 6.6;
+
+  // setFillColor/setTextColor se volají znovu před každou buňkou — jsPDF si
+  // barvy drží ve společné cache, takže prokládané rect()/text() by je jinak rozjelo.
+  const drawHeader = () => {
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(7.6);
+    let x = marginX;
+    headers.forEach((h, i) => {
+      pdf.setFillColor(39, 112, 240);
+      pdf.rect(x, y, colW[i], rowH, "FD");
+      pdf.setTextColor(255, 255, 255);
+      pdf.text(h, x + 1.6, y + 4.5);
+      x += colW[i];
+    });
+    y += rowH;
+    pdf.setTextColor(0, 0, 0);
+  };
+
+  const drawRow = (r, isTotal) => {
+    if (y + rowH > pageBottom) { pdf.addPage(); y = 18; drawHeader(); }
+    pdf.setFont("DejaVuSans", isTotal ? "bold" : "normal"); pdf.setFontSize(7.6);
+    const pctText = (r.wplPerFtePct === null || r.wplPerFtePct === undefined || Number.isNaN(r.wplPerFtePct))
+      ? "—" : `${r.wplPerFtePct.toFixed(1)} %`;
+    const vals = [
+      r.segment, fmt1(r.fte),
+      ...ZONES.map((z) => overview.hasLayout ? `${fmt1(r.zones[z])} / ${fmt1(r.assignedZones[z])}` : fmt1(r.zones[z])),
+      overview.hasLayout ? `${fmt1(r.wplTotal)} / ${fmt1(r.assignedTotal)}` : fmt1(r.wplTotal),
+      pctText,
+    ];
+    let x = marginX;
+    vals.forEach((v, i) => {
+      if (isTotal) pdf.setFillColor(200, 240, 210);
+      pdf.rect(x, y, colW[i], rowH, isTotal ? "FD" : "D");
+      pdf.setTextColor(0, 0, 0);
+      let textX = x + 1.6;
+      if (i === 0 && !isTotal) {
+        const [cr, cg, cb] = hexToRgb(getSegmentMeta(v).color);
+        pdf.setFillColor(cr, cg, cb);
+        pdf.rect(x + 1.6, y + 1.9, 2.6, 2.6, "F");
+        textX += 4;
+      }
+      pdf.text(String(v), textX, y + 4.5, { maxWidth: colW[i] - 3 });
+      x += colW[i];
+    });
+    y += rowH;
+  };
+
+  if (y > pageBottom - 30) { pdf.addPage(); y = 18; }
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
+  pdf.text("Kompletní přehled WPL po zónách a segmentech", marginX, y); y += 7;
+  drawHeader();
+  overview.rows.forEach((r) => drawRow(r, false));
+  drawRow(overview.total, true);
+  y += 5;
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.5);
+  pdf.setTextColor(120, 120, 120);
+  const legend = overview.hasLayout
+    ? "U zón je uvedena potřeba WPL z kalkulace / skutečně přiřazené WPL ze sestaveného layoutu."
+    : "Uvedena je potřeba WPL z kalkulace.";
+  pdf.splitTextToSize(`${legend} Sloupec WPL/FTE udává, na kolik FTE dané WPL vychází — celkem i za každý segment zvlášť.`, 182)
+    .forEach((l) => { pdf.text(l, marginX, y); y += 4.2; });
+  pdf.setTextColor(0, 0, 0);
+  return y + 5;
+}
+
+// Vykreslí část "Sestavení layoutu" do už existujícího PDF dokumentu.
+function drawLayoutPdf(pdf, startY, rows, meta, segmentRows) {
   const marginX = 14;
   const pageBottom = 280;
-  let y = 18;
+  let y = startY;
 
   pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(16);
   pdf.text("Sestavení layoutu", marginX, y); y += 9;
@@ -2197,6 +2474,10 @@ function exportLayoutPdf(rows, meta) {
     `Calculation key: ${meta.calculation_key || ""}`, `Datum vytvoření: ${new Date().toLocaleString("cs-CZ")}`]
     .forEach((line) => { pdf.text(line, marginX, y); y += 6; });
   y += 4;
+
+  if (segmentRows && segmentRows.length) {
+    y = drawWplOverviewPdf(pdf, y, computeWplOverview(segmentRows, rows, meta.calcResult?.celkem), marginX, pageBottom);
+  }
 
   const byZone = {};
   rows.forEach((r) => { (byZone[r.zone] = byZone[r.zone] || []).push(r); });
@@ -2235,7 +2516,7 @@ function exportLayoutPdf(rows, meta) {
     y += 3;
   });
 
-  pdf.save(`layout_${meta.calculation_key || "export"}.pdf`);
+  return y;
 }
 
 /* ------------------------------ Historie ---------------------------------- */
@@ -2350,24 +2631,31 @@ function showHistoryDetail(calculationKey, loadKey) {
     <h3 style="margin-top:22px;">Sestavení layoutu${layoutRulesHelpHtml()}</h3>
     <div id="historyLayoutArea"></div>`;
 
+  // Stejná data kalkulace se použijí pro samostatný PDF export i pro spojenou
+  // sestavu (kalkulace + layout), kterou nabízí sekce sestavení layoutu.
+  const calcResult = {
+    calculation_key: calculationKey, load_key: loadKey,
+    createdAt, rows: rowsNoTotal, celkem: found || {},
+    inputRows: mappedInputRows,
+    warnings: [], pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev,
+    oteviraci_doba: branch?.oteviraci_doba, refVersionId,
+    duvod: resultRows[0] ? resultRows[0].duvod : null,
+  };
+
   document.getElementById("btnExportPdfHistory").addEventListener("click", () => {
     const note = document.getElementById("pdfNoteHistory").value.trim();
     const includeStats = document.getElementById("pdfIncludeStatsHistory").checked;
-    exportCalculationPdf({
-      calculation_key: calculationKey, load_key: loadKey,
-      createdAt, rows: rowsNoTotal, celkem: found || {},
-      inputRows: mappedInputRows,
-      warnings: [], pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev,
-      oteviraci_doba: branch?.oteviraci_doba, refVersionId,
-    }, { note, includeStats });
+    exportCalculationPdf(calcResult, { note, includeStats });
   });
   document.getElementById("btnToggleStatus").addEventListener("click", () => {
     setCalculationStatus(calculationKey, status === "potvrzena" ? "rozpracovana" : "potvrzena");
     showHistoryDetail(calculationKey, loadKey);
   });
 
-  renderLayoutSection("historyLayoutArea", rowsNoTotal,
-    { calculation_key: calculationKey, pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev, stats });
+  renderLayoutSection("historyLayoutArea", rowsNoTotal, {
+    calculation_key: calculationKey, pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev, stats,
+    calcResult, pdfNoteId: "pdfNoteHistory", pdfStatsId: "pdfIncludeStatsHistory",
+  });
 
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
