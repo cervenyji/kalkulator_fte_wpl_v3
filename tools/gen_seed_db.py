@@ -25,7 +25,8 @@ def main():
     CREATE TABLE absence (
         segment TEXT PRIMARY KEY,
         nepritomnost REAL,
-        homeoffice REAL
+        homeoffice REAL,
+        ref_version_id INTEGER
     )
     """)
 
@@ -37,7 +38,8 @@ def main():
         service_zone REAL,
         meeting_zone REAL,
         backoffice_zone REAL,
-        office_room REAL
+        office_room REAL,
+        ref_version_id INTEGER
     )
     """)
 

@@ -110,6 +110,19 @@ kalkulace i v historii kalkulací tak najdete rozbalovací odkaz „Referenční
 data použitá při této kalkulaci“, který ukáže přesné hodnoty absence a
 časových dotací platné v okamžiku výpočtu — i zpětně, po dalších úpravách.
 
+#### Sloupec „Verze“ u jednotlivých řádků
+
+Obě tabulky referenčních dat mají navíc informativní (needitovatelný) sloupec
+**„Verze“**, který u každého řádku ukazuje, ve **které verzi referenčních dat
+řádek naposledy vznikl nebo se změnil** (sloupec `ref_version_id` v tabulkách
+`absence` a `casove_dotace`). Při uložení se stamp posune jen u řádků, které se
+skutečně změnily — nedotčené řádky si ponechají svou původní verzi, takže je
+hned vidět, co se v které verzi měnilo. Uložení beze změny nevytvoří novou verzi
+ani neposune žádný stamp.
+
+U databází uložených starší verzí aplikace se řádky při připojení označí verzí
+platnou v tom okamžiku (její snapshot tyto hodnoty skutečně obsahuje).
+
 ## Historie kalkulací
 
 Záložka „Historie kalkulací“ je dvouúrovňová: nejprve uvidíte přehled poboček,
@@ -141,6 +154,27 @@ automaticky dopočítají, takže se do benchmarku započítá i starší histor
 Zaškrtávacím políčkem „Zahrnout klíčové ukazatele a benchmark do PDF“ (nad
 tlačítkem exportu) lze tuto sekci do PDF přidat, nebo z něj vynechat —
 souhrnná tabulka a doporučení formátu/fasttracků/židlí v PDF zůstávají vždy.
+
+## Kopírování výsledku do schránky (MS Teams, Outlook, Word)
+
+Tlačítkem **„📋 Kopírovat výsledek do schránky“** (u výsledku kalkulace i
+v detailu v historii) se výsledek zkopíruje jako **formátovaná tabulka**.
+Vložením přes Ctrl+V do MS Teams, Outlooku, Wordu nebo Excelu se vloží včetně
+formátování — rámečků, barevného záhlaví, barev segmentů a zvýrazněného řádku
+„Celkem“ — plus tabulka klíčových ukazatelů.
+
+Do schránky se zapisují dva formáty současně:
+
+- **`text/html`** — formátovaná tabulka. Styly jsou napsané **inline v atributu
+  `style`**, protože Teams (a Outlook/Word) při vložení zahodí CSS ze stránky
+  a nechá si jen inline styly.
+- **`text/plain`** — tabulátory oddělená varianta jako záloha pro aplikace,
+  které HTML nepřijímají (vložením do Excelu se rozpadne do sloupců).
+
+Použije se asynchronní Clipboard API; pokud ho prohlížeč v daném kontextu
+nepovoluje, aplikace se automaticky přepne na záložní cestu přes
+`document.execCommand("copy")` s dočasným výběrem, která formátování zachová
+také.
 
 ## Sestavení layoutu
 
@@ -177,9 +211,10 @@ Platná pravidla:
 | Service zone | Fast track (stolek a židle) | všechny | doporučený počet fasttracků na hale |
 | Service zone | Čekací zóna (židle) | small, medium economy | doporučený počet židlí v čekací zóně |
 | Service zone | Čekací zóna (obývák) | medium, flagship | doporučený počet židlí v čekací zóně |
-| Service zone | Lenka vítací | small, medium economy | vždy (dle potřeby WPL, min. 1) |
-| Service zone | Theke - nízká | medium | vždy (dle potřeby WPL, min. 1) |
-| Service zone | Theke - vysoká | flagship | vždy (dle potřeby WPL, min. 1) |
+| Service zone | Lenka vítací (vítací pracoviště) | small, medium economy | vždy **právě 1 ks** |
+| Service zone | Theke - nízká (vítací pracoviště) | medium | vždy **právě 1 ks** |
+| Service zone | Theke - vysoká (vítací pracoviště) | flagship | vždy **právě 1 ks** |
+| Service zone | Lenka | všechny | zbytek potřeby WPL nad vítací pracoviště, zaokrouhlený nahoru (3,4 → 3 ks) |
 | Backoffice zone | Interní zasedací místnost - malá | medium economy | 1 ks |
 | Backoffice zone | Interní zasedací místnost - velká | medium, flagship | 1 ks |
 | Meeting zone | Jednací místnost | všechny | celá potřeba WPL (5 → 5 ks) |
@@ -239,6 +274,31 @@ jako **jedna jednotná tabulka**:
 - Za každým segmentem je součtový řádek („Celkem <segment>“) a na konci celkový
   součet za pobočku.
 - Prvky, které nepřispívají k WPL, mají ve sloupci „WPL / kus“ pomlčku.
+
+### Nábytek připadající na druh zaměstnance
+
+Pod analýzou je další rozbalovací tabulka, která ukazuje, **kolik kterého nábytku
+připadá na jeden druh zaměstnance** (pozici z checklistu — např. „osobní bankéř
+- medior“):
+
+| Segment | Pozice (druh zaměstnance) | Zóna | Nábytkový prvek | Připadá ks | z toho na 1 FTE |
+
+Výpočet: pro každou pozici se spočítá její WPL po zónách úplně stejným postupem
+jako v samotné kalkulaci (FTE × vytížení × (1 − absence − homeoffice), rozdělené
+procenty časové dotace) a nábytek přiřazený do dané zóny se pak rozdělí mezi
+pozice **podle jejich podílu na potřebě WPL té zóny**. Počty kusů jsou proto
+zlomkové — jde o podíl, který na danou pozici připadá (např. 2 jednací místnosti
+se mezi dvě pozice rozdělí jako 1,47 a 0,53). Sloupec „z toho na 1 FTE“ dělí
+podíl počtem FTE dané pozice.
+
+Referenční data se berou ze **snapshotu verze, se kterou byla kalkulace
+spočítána**, takže pozdější úpravy referenčních dat rozpočet zpětně nezkreslí.
+
+Řádky **„Nerozpočítáno“** obsahují nábytek v zónách, kde kalkulace nevyžaduje
+žádné WPL (typicky vítací pracoviště, fasttracky nebo čekací zóna doplněné podle
+pravidel či ručně). Na pozice je rozdělit nelze — v takové zóně žádná pozice WPL
+negeneruje, takže neexistuje podíl, kterým by se dělil. Vykazují se proto zvlášť,
+aby součty odpovídaly skutečnému obsahu layoutu a žádný prvek „nezmizel“.
 
 ### Generovat celou sestavu (kalkulace + layout v jednom PDF)
 

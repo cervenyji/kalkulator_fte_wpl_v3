@@ -16,7 +16,8 @@ const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS absence (
   segment TEXT PRIMARY KEY,
   nepritomnost REAL,
-  homeoffice REAL
+  homeoffice REAL,
+  ref_version_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS casove_dotace (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,7 +26,8 @@ CREATE TABLE IF NOT EXISTS casove_dotace (
   service_zone REAL,
   meeting_zone REAL,
   backoffice_zone REAL,
-  office_room REAL
+  office_room REAL,
+  ref_version_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS excel_loads (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,6 +115,9 @@ function migrateSchema(dbi) {
   try { dbi.run("ALTER TABLE calculations ADD COLUMN status TEXT"); } catch (e) { /* sloupec už existuje */ }
   dbi.run("UPDATE calculations SET status = 'rozpracovana' WHERE status IS NULL");
   try { dbi.run("ALTER TABLE calculations ADD COLUMN duvod TEXT"); } catch (e) { /* sloupec už existuje */ }
+  // Verze referenčních dat, ve které daný řádek naposledy vznikl nebo se změnil.
+  try { dbi.run("ALTER TABLE absence ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
+  try { dbi.run("ALTER TABLE casove_dotace ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
   const furnitureCount = dbAll("SELECT COUNT(*) AS n FROM furniture_to_zone", [], dbi)[0].n;
   if (furnitureCount === 0) {
     const ins = dbi.prepare("INSERT INTO furniture_to_zone (segment, furniture, zone, wpl_counter) VALUES (?, ?, ?, ?)");
@@ -825,7 +830,10 @@ function createNewDatabase() {
   const insSegments = db.prepare("INSERT INTO segments (segment_key, nazev, sort_order, color, icon) VALUES (?, ?, ?, ?, ?)");
   SEED_SEGMENTS.forEach((r) => { insSegments.run(r); });
   insSegments.free();
-  ensureRefVersionUpToDate("Založení nové databáze");
+  const versionId = ensureRefVersionUpToDate("Založení nové databáze");
+  // Výchozí referenční data patří do první verze.
+  dbRun("UPDATE absence SET ref_version_id = ?", [versionId]);
+  dbRun("UPDATE casove_dotace SET ref_version_id = ?", [versionId]);
   refreshSegmentMetaCache();
 }
 
@@ -833,7 +841,13 @@ function loadDatabaseFromBytes(bytes) {
   const candidate = new SQL.Database(new Uint8Array(bytes));
   migrateSchema(candidate); // doplní chybějící tabulky/sloupce ze starších verzí aplikace, zbytek dat zachová
   db = candidate;
-  ensureRefVersionUpToDate("Stav při připojení databáze");
+  const versionId = ensureRefVersionUpToDate("Stav při připojení databáze");
+  // Řádky referenčních dat z databází uložených před zavedením evidence verzí
+  // u jednotlivých řádků dostanou verzi platnou při připojení — její snapshot
+  // tyto hodnoty skutečně obsahuje, takže je zařazení správné. Další úpravy už
+  // stamp posunou jen u řádků, které se opravdu změní.
+  dbRun("UPDATE absence SET ref_version_id = ? WHERE ref_version_id IS NULL", [versionId]);
+  dbRun("UPDATE casove_dotace SET ref_version_id = ? WHERE ref_version_id IS NULL", [versionId]);
   backfillCalculationStats(); // dopočítá ukazatele pro kalkulace uložené před zavedením benchmarku
   refreshSegmentMetaCache();
 }
@@ -1469,7 +1483,10 @@ function renderResults(result) {
     ${renderStatsSection(stats, "pdfIncludeStats")}
     <div class="row" style="margin-top:14px;">
       <button class="btn secondary" id="btnExportPdf">Exportovat PDF s přehledem WPL</button>
+      <button class="btn secondary" id="btnCopyResult">📋 Kopírovat výsledek do schránky</button>
     </div>
+    <p class="muted" style="margin-top:6px;">Zkopíruje se jako formátovaná tabulka — vložením (Ctrl+V) do MS Teams,
+      Outlooku nebo Wordu se vloží včetně formátování.</p>
     <div style="margin-top:10px; max-width:480px;">
       <label class="muted" for="pdfNote">Poznámka do PDF (nepovinné):</label>
       <textarea id="pdfNote" rows="2"></textarea>
@@ -1479,6 +1496,7 @@ function renderResults(result) {
     const includeStats = document.getElementById("pdfIncludeStats").checked;
     exportCalculationPdf(result, { note, includeStats });
   });
+  document.getElementById("btnCopyResult").addEventListener("click", () => copyResultToClipboard(result, stats));
   document.getElementById("btnToggleStatus").addEventListener("click", () => {
     setCalculationStatus(result.calculation_key, status === "potvrzena" ? "rozpracovana" : "potvrzena");
     renderResults(result);
@@ -1491,6 +1509,124 @@ function renderResults(result) {
     // Data kalkulace pro "Generovat celou sestavu" (kalkulace + layout v jednom PDF)
     calcResult: result, pdfNoteId: "pdfNote", pdfStatsId: "pdfIncludeStats",
   });
+}
+
+/* ------------- Kopírování výsledku do schránky (MS Teams apod.) ------------- */
+// MS Teams (a Outlook, Word, Excel…) při vložení ze schránky čte flavour
+// "text/html" — a protože si nechává jen inline styly (class/CSS ze stránky
+// zahodí), sestavuje se tabulka s barvami a rámečky napsanými přímo v atributu
+// style. Do schránky se vkládá i "text/plain" (tabulátory) jako záloha pro
+// aplikace, které HTML neberou.
+function buildResultClipboardHtml(result, stats) {
+  const TD = "border:1px solid #c9d2de; padding:5px 9px; font-size:12px;";
+  const TH = `${TD} background:#2770f0; color:#ffffff; font-weight:700; text-align:left;`;
+  const num = "text-align:right; white-space:nowrap;";
+
+  const headers = ["Segment", "FTE celkem", "Service zone", "Meeting zone", "Backoffice zone", "Office room"];
+  const headHtml = headers.map((h, i) => `<th style="${TH}${i ? num : ""}">${esc(h)}</th>`).join("");
+
+  const rowHtml = (r, isTotal) => {
+    const base = isTotal ? `${TD} background:#eafcef; font-weight:700;` : TD;
+    const color = isTotal ? null : getSegmentMeta(r.segment).color;
+    const first = isTotal
+      ? `<td style="${base}">${esc(r.segment)}</td>`
+      : `<td style="${base} color:${color}; font-weight:700;">${esc(r.segment)}</td>`;
+    return `<tr>${first}` + [r.total_positions, r.service_zone, r.meeting_zone, r.backoffice_zone, r.office_room]
+      .map((v) => `<td style="${base}${num}">${fmt1(v)}</td>`).join("") + `</tr>`;
+  };
+
+  const infoLine = [
+    `<strong>${esc(result.pobocka_nazev || "")}</strong> (ID ${esc(result.pobocka_id || "")})`,
+    result.duvod ? `důvod: ${esc(result.duvod)}` : null,
+    `otevírací doba ${esc(result.oteviraci_doba)} h/týden`,
+    `${new Date(result.createdAt).toLocaleString("cs-CZ")}`,
+  ].filter(Boolean).join(" · ");
+
+  const kpi = [
+    ["Stanovený formát pobočky", esc(stats.formatTyp)],
+    ["Doporučený počet fasttracků na hale", String(stats.recommendedFasttracks)],
+    ["Doporučený počet židlí v čekací zóně", String(stats.recommendedChairs)],
+    ["Potřebná plocha (WPL × 25 m²)", `${stats.requiredAreaM2.toFixed(1)} m²`],
+    ["Poměr WPL / FTE", stats.wplFteRatio === null ? "—" : `${stats.wplFteRatio.toFixed(1)} %`],
+    ["Podíl Backoffice zóny", stats.backofficePct === null ? "—" : `${stats.backofficePct.toFixed(1)} %`],
+    ["Podíl míst pro jednání s klientem", stats.meetingPct === null ? "—" : `${stats.meetingPct.toFixed(1)} %`],
+  ].map(([k, v]) => `<tr><td style="${TD}">${k}</td><td style="${TD}${num}">${v}</td></tr>`).join("");
+
+  return `<div style="font-family:Segoe UI,Arial,sans-serif; color:#1c2530;">
+    <p style="font-size:15px; font-weight:700; margin:0 0 4px;">Kalkulace FTE → WPL</p>
+    <p style="font-size:12px; margin:0 0 10px;">${infoLine}</p>
+    <table style="border-collapse:collapse;" cellspacing="0" cellpadding="0">
+      <thead><tr>${headHtml}</tr></thead>
+      <tbody>${result.rows.map((r) => rowHtml(r, false)).join("")}${rowHtml(result.celkem, true)}</tbody>
+    </table>
+    <p style="font-size:13px; font-weight:700; margin:14px 0 4px;">Klíčové ukazatele</p>
+    <table style="border-collapse:collapse;" cellspacing="0" cellpadding="0"><tbody>${kpi}</tbody></table>
+  </div>`;
+}
+
+function buildResultClipboardText(result, stats) {
+  const line = (cells) => cells.join("\t");
+  const out = [
+    "Kalkulace FTE → WPL",
+    `${result.pobocka_nazev || ""} (ID ${result.pobocka_id || ""})${result.duvod ? ` · důvod: ${result.duvod}` : ""}`,
+    "",
+    line(["Segment", "FTE celkem", "Service zone", "Meeting zone", "Backoffice zone", "Office room"]),
+  ];
+  [...result.rows, result.celkem].forEach((r) => out.push(line([r.segment, fmt1(r.total_positions),
+    fmt1(r.service_zone), fmt1(r.meeting_zone), fmt1(r.backoffice_zone), fmt1(r.office_room)])));
+  out.push("", "Klíčové ukazatele");
+  out.push(line(["Stanovený formát pobočky", stats.formatTyp]));
+  out.push(line(["Doporučený počet fasttracků na hale", String(stats.recommendedFasttracks)]));
+  out.push(line(["Doporučený počet židlí v čekací zóně", String(stats.recommendedChairs)]));
+  out.push(line(["Potřebná plocha (WPL × 25 m²)", `${stats.requiredAreaM2.toFixed(1)} m²`]));
+  if (stats.wplFteRatio !== null) out.push(line(["Poměr WPL / FTE", `${stats.wplFteRatio.toFixed(1)} %`]));
+  if (stats.backofficePct !== null) out.push(line(["Podíl Backoffice zóny", `${stats.backofficePct.toFixed(1)} %`]));
+  if (stats.meetingPct !== null) out.push(line(["Podíl míst pro jednání s klientem", `${stats.meetingPct.toFixed(1)} %`]));
+  return out.join("\n");
+}
+
+async function copyResultToClipboard(result, stats) {
+  const html = buildResultClipboardHtml(result, stats);
+  const text = buildResultClipboardText(result, stats);
+
+  // Preferovaná cesta: asynchronní Clipboard API s oběma formáty současně.
+  try {
+    if (navigator.clipboard && typeof window.ClipboardItem === "function") {
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/html": new Blob([html], { type: "text/html" }),
+        "text/plain": new Blob([text], { type: "text/plain" }),
+      })]);
+      toast("Výsledek zkopírován — vložte do Teams přes Ctrl+V.", "ok");
+      return true;
+    }
+  } catch (e) {
+    console.warn("Clipboard API selhalo, zkouším execCommand:", e);
+  }
+
+  // Záloha pro prohlížeče/kontexty bez Clipboard API: vybere skrytý prvek
+  // s HTML obsahem a nechá ho zkopírovat přes execCommand („copy“ vybraného
+  // HTML zachová formátování).
+  try {
+    const holder = document.createElement("div");
+    holder.setAttribute("contenteditable", "true");
+    holder.style.cssText = "position:fixed; left:-9999px; top:0; white-space:normal;";
+    holder.innerHTML = html;
+    document.body.appendChild(holder);
+    const range = document.createRange();
+    range.selectNodeContents(holder);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const ok = document.execCommand("copy");
+    sel.removeAllRanges();
+    holder.remove();
+    if (ok) { toast("Výsledek zkopírován — vložte do Teams přes Ctrl+V.", "ok"); return true; }
+    throw new Error("execCommand('copy') vrátil false");
+  } catch (e) {
+    console.error(e);
+    toast("Kopírování do schránky se nezdařilo: " + e.message, "err");
+    return false;
+  }
 }
 
 // Zobrazí formát pobočky, doporučení pro layout a poměrové ukazatele (WPL/FTE,
@@ -2007,18 +2143,27 @@ const LAYOUT_RULES = [
   },
   {
     zone: "service_zone", furniture: "Lenka vítací", formats: ["small", "medium economy"],
-    qty: ({ required }) => Math.max(1, Math.round(required)),
-    text: "Servisní místo <strong>Lenka vítací</strong> — vždy předvyplněné (v počtu dle potřeby WPL service zone, minimálně 1).",
+    qty: () => 1,
+    text: "Vítací pracoviště <strong>Lenka vítací</strong> — vždy právě 1 ks, i když je potřeba WPL vyšší.",
   },
   {
     zone: "service_zone", furniture: "Theke - nízká", formats: ["medium"],
-    qty: ({ required }) => Math.max(1, Math.round(required)),
-    text: "Servisní místo <strong>Theke - nízká</strong> — vždy předvyplněné (v počtu dle potřeby WPL service zone, minimálně 1).",
+    qty: () => 1,
+    text: "Vítací pracoviště <strong>Theke - nízká</strong> — vždy právě 1 ks, i když je potřeba WPL vyšší.",
   },
   {
     zone: "service_zone", furniture: "Theke - vysoká", formats: ["flagship"],
-    qty: ({ required }) => Math.max(1, Math.round(required)),
-    text: "Servisní místo <strong>Theke - vysoká</strong> — vždy předvyplněné (v počtu dle potřeby WPL service zone, minimálně 1).",
+    qty: () => 1,
+    text: "Vítací pracoviště <strong>Theke - vysoká</strong> — vždy právě 1 ks, i když je potřeba WPL vyšší.",
+  },
+  {
+    // Vítací pracoviště pokrývá 1 WPL; co ze potřeby service zone zbyde, jde na
+    // pracoviště „Lenka“. Zaokrouhluje se nahoru — jakýkoliv zbytek dostane
+    // vlastní pracoviště, aby potřeba WPL nezůstala nepokrytá.
+    zone: "service_zone", furniture: "Lenka", formats: null,
+    qty: ({ required }) => (required > 1 ? Math.ceil(required - 1) : 0),
+    text: "Zbytek potřeby WPL v Service zone nad rámec vítacího pracoviště se přiřadí na pracoviště " +
+      "<strong>Lenka</strong> (potřeba 3,4 → 1 ks vítacího + 3 ks Lenka; jakýkoliv zbytek se zaokrouhlí nahoru).",
   },
   {
     zone: "backoffice_zone", furniture: "Interní zasedací místnost - malá", formats: ["medium economy"],
@@ -2367,6 +2512,166 @@ function renderZoneAnalysisHtml(overview, layoutRows) {
   </details>`;
 }
 
+/* ---------------- Nábytek připadající na druh zaměstnance ------------------ */
+// Rozpočítá nábytek ze sestaveného layoutu na jednotlivé druhy zaměstnanců
+// (pozice z checklistu). Postup: pro každou pozici se spočítá její WPL po zónách
+// úplně stejným výpočtem jako v runCalculation() (FTE × vytížení × (1 − absence
+// − homeoffice), rozdělené procenty časové dotace), a nábytek přiřazený do dané
+// zóny se pak rozdělí mezi pozice podle jejich podílu na WPL té zóny. Výsledný
+// počet kusů je proto zlomkový — jde o podíl, který na danou pozici připadá.
+//
+// Referenční data se berou ze snapshotu verze, se kterou byla kalkulace
+// spočítána (aby pozdější úpravy referenčních dat výsledek nezkreslily); pokud
+// verze není známá, použije se aktuální stav tabulek.
+function computePositionFurniture(calcResult, layoutRows) {
+  const version = calcResult && calcResult.refVersionId ? getRefVersionById(calcResult.refVersionId) : null;
+  const absenceMap = {}, dotaceMap = {};
+  if (version) {
+    version.absence.forEach(([seg, nep, ho]) => { absenceMap[seg] = [(nep || 0) / 100, (ho || 0) / 100]; });
+    version.dotace.forEach(([seg, poz, s, m, b, o]) => {
+      dotaceMap[`${seg} ${poz}`] = { service_zone: s, meeting_zone: m, backoffice_zone: b, office_room: o };
+    });
+  } else {
+    dbAll("SELECT segment, nepritomnost, homeoffice FROM absence")
+      .forEach((r) => { absenceMap[r.segment] = [(r.nepritomnost || 0) / 100, (r.homeoffice || 0) / 100]; });
+    dbAll("SELECT segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room FROM casove_dotace")
+      .forEach((r) => { dotaceMap[`${r.segment} ${r.pozice}`] = r; });
+  }
+
+  const oteviraci = calcResult.oteviraci_doba || 40;
+  const positions = {};   // "segment||pozice" -> { segment, pozice, fte, zones }
+  const zoneTotals = {};  // "segment||zóna"   -> celkové WPL zóny
+  (calcResult.inputRows || []).forEach((r) => {
+    if (!r.fte || r.fte <= 0) return;
+    const dotace = dotaceMap[`${r.segment} ${r.pozice}`];
+    if (!dotace) return; // pozice bez časové dotace se do kalkulace nedostala
+    const wplLoad = (r.wpl_load === null || r.wpl_load === undefined) ? oteviraci : r.wpl_load;
+    const [nep, ho] = absenceMap[r.segment] || [0, 0];
+    const vypocet = r.fte * wplLoad * (1 - nep - ho);
+    const key = `${r.segment}||${r.pozice}`;
+    if (!positions[key]) positions[key] = { segment: r.segment, pozice: r.pozice, fte: 0, zones: {} };
+    positions[key].fte += r.fte;
+    ZONES.forEach((z) => {
+      const hodiny = (vypocet * (dotace[z] || 0)) / 100 / oteviraci;
+      positions[key].zones[z] = (positions[key].zones[z] || 0) + hodiny;
+      zoneTotals[`${r.segment}||${z}`] = (zoneTotals[`${r.segment}||${z}`] || 0) + hodiny;
+    });
+  });
+
+  const furnitureByZone = {};
+  (layoutRows || []).forEach((r) => {
+    (furnitureByZone[`${r.segment}||${r.zone}`] = furnitureByZone[`${r.segment}||${r.zone}`] || []).push(r);
+  });
+
+  const result = Object.values(positions).map((p) => {
+    const items = {};
+    let wplTotal = 0;
+    ZONES.forEach((z) => {
+      const wpl = p.zones[z] || 0;
+      wplTotal += wpl;
+      const zoneTotal = zoneTotals[`${p.segment}||${z}`] || 0;
+      if (wpl <= 0 || zoneTotal <= 0) return;
+      const share = wpl / zoneTotal;
+      (furnitureByZone[`${p.segment}||${z}`] || []).forEach((f) => {
+        const k = `${z}||${f.furniture}`;
+        if (!items[k]) items[k] = { zone: z, furniture: f.furniture, pieces: 0, wpl: 0 };
+        items[k].pieces += (f.piece_count || 0) * share;
+        items[k].wpl += (f.wpl_assigned || 0) * share;
+      });
+    });
+    return {
+      ...p, wplTotal, items: Object.values(items),
+      piecesTotal: Object.values(items).reduce((s, it) => s + it.pieces, 0),
+    };
+  }).filter((p) => p.items.length > 0)
+    .sort((a, b) => a.segment.localeCompare(b.segment) || b.wplTotal - a.wplTotal);
+
+  // Nábytek v zónách, kde kalkulace nevyžaduje žádné WPL (typicky prvky doplněné
+  // podle pravidel nebo ručně — vítací pracoviště, fasttracky, čekací zóna),
+  // nelze na pozice rozpočítat: žádná pozice v takové zóně WPL negeneruje, takže
+  // neexistuje podíl, kterým by se dělil. Vykazuje se proto zvlášť, aby součty
+  // odpovídaly skutečnému obsahu layoutu a nic „nezmizelo“.
+  const unallocated = [];
+  Object.keys(furnitureByZone).forEach((key) => {
+    if ((zoneTotals[key] || 0) > 0) return;
+    const [segment, zone] = key.split("||");
+    furnitureByZone[key].forEach((f) => {
+      unallocated.push({ segment, zone, furniture: f.furniture, pieces: f.piece_count || 0 });
+    });
+  });
+
+  return { positions: result, unallocated };
+}
+
+function renderPositionFurnitureHtml(calcResult, layoutRows) {
+  if (!calcResult) return "";
+  const { positions, unallocated } = computePositionFurniture(calcResult, layoutRows);
+  if (!positions.length && !unallocated.length) {
+    return `<details class="analysis-wrap" style="margin-top:16px;">
+      <summary><strong>Nábytek připadající na druh zaměstnance</strong></summary>
+      <p class="muted" style="margin-top:10px;">Zatím není co rozpočítat — do layoutu nebyl přiřazen žádný nábytek
+        v zónách, které některá pozice využívá.</p>
+    </details>`;
+  }
+
+  const frac = (n) => n.toFixed(2).replace(/\.00$/, "");
+  const bodyRows = [];
+  positions.forEach((p) => {
+    p.items.forEach((it, i) => {
+      let html = "<tr>";
+      if (i === 0) {
+        html += `<td rowspan="${p.items.length}" class="analysis-seg-cell">${segmentBadgeHtml(p.segment)}</td>
+          <td rowspan="${p.items.length}" class="analysis-zone-cell">${esc(p.pozice)}
+            <span class="muted">FTE ${fmt1(p.fte)} · WPL ${fmt1(p.wplTotal)}</span></td>`;
+      }
+      html += `<td>${ZONE_LABELS[it.zone]}</td>
+        <td>${esc(it.furniture)}</td>
+        <td class="num">${frac(it.pieces)}</td>
+        <td class="num">${p.fte > 0 ? frac(it.pieces / p.fte) : "—"}</td>`;
+      bodyRows.push(html + "</tr>");
+    });
+    bodyRows.push(`<tr class="analysis-subtotal">
+      <td colspan="4">Celkem ${esc(p.pozice)}</td>
+      <td class="num">${frac(p.piecesTotal)}</td>
+      <td class="num">${p.fte > 0 ? frac(p.piecesTotal / p.fte) : "—"}</td></tr>`);
+  });
+
+  // Nerozpočítaný nábytek (zóny bez potřeby WPL) — vykazuje se zvlášť.
+  if (unallocated.length) {
+    unallocated.forEach((u, i) => {
+      let html = "<tr>";
+      if (i === 0) {
+        html += `<td rowspan="${unallocated.length}" class="analysis-seg-cell muted">—</td>
+          <td rowspan="${unallocated.length}" class="analysis-zone-cell">Nerozpočítáno
+            <span class="muted">zóna bez potřeby WPL</span></td>`;
+      }
+      html += `<td>${segmentBadgeHtml(u.segment)} ${ZONE_LABELS[u.zone]}</td>
+        <td>${esc(u.furniture)}</td>
+        <td class="num">${frac(u.pieces)}</td>
+        <td class="num">—</td>`;
+      bodyRows.push(html + "</tr>");
+    });
+    bodyRows.push(`<tr class="analysis-subtotal">
+      <td colspan="4">Celkem nerozpočítáno</td>
+      <td class="num">${frac(unallocated.reduce((s, u) => s + u.pieces, 0))}</td>
+      <td class="num">—</td></tr>`);
+  }
+
+  return `<details class="analysis-wrap" style="margin-top:16px;">
+    <summary><strong>Nábytek připadající na druh zaměstnance</strong>
+      <span class="muted">(rozbalte pro detailní tabulku)</span></summary>
+    <div class="table-wrap" style="margin-top:10px;"><table class="analysis-table">
+      <thead><tr><th>Segment</th><th>Pozice (druh zaměstnance)</th><th>Zóna</th><th>Nábytkový prvek</th>
+        <th class="num">Připadá ks</th><th class="num">z toho na 1 FTE</th></tr></thead>
+      <tbody>${bodyRows.join("")}</tbody>
+    </table></div>
+    <p class="muted" style="margin-top:8px;">Nábytek přiřazený do zóny je rozpočítaný mezi pozice podle jejich podílu
+      na potřebě WPL dané zóny, proto jsou počty kusů zlomkové — jde o podíl, který na danou pozici připadá.
+      Prvky, které nepřispívají k WPL (např. fasttracky), se rozpočítávají stejným podílem.
+      ${unallocated.length ? 'Řádky <strong>„Nerozpočítáno“</strong> jsou prvky v zónách, kde kalkulace nevyžaduje žádné WPL (typicky vítací pracoviště, fasttracky nebo čekací zóna doplněné podle pravidel či ručně) — na pozice je nelze rozdělit, protože v takové zóně žádná pozice WPL negeneruje.' : ""}</p>
+  </details>`;
+}
+
 function renderLayoutReadonly(container, rows, meta, segmentRows) {
   const bySegZone = {};
   const order = [];
@@ -2390,6 +2695,7 @@ function renderLayoutReadonly(container, rows, meta, segmentRows) {
     <div class="layout-group">${renderWplOverviewHtml(overview)}</div>
     ${groupsHtml}
     ${renderZoneAnalysisHtml(overview, rows)}
+    ${renderPositionFurnitureHtml(meta.calcResult, rows)}
     <div class="row" style="margin-top:14px;">
       <button class="btn" id="btnExportFullReport">Generovat celou sestavu (kalkulace + layout)</button>
       <button class="btn secondary" id="btnExportLayoutPdf">Exportovat PDF layoutu</button>
@@ -2666,6 +2972,7 @@ function showHistoryDetail(calculationKey, loadKey) {
     ${renderStatsSection(stats, "pdfIncludeStatsHistory")}
     <div class="row" style="margin-top:12px;">
       <button class="btn secondary" id="btnExportPdfHistory">Exportovat PDF s přehledem WPL</button>
+      <button class="btn secondary" id="btnCopyResultHistory">📋 Kopírovat výsledek do schránky</button>
     </div>
     <div style="margin-top:10px; max-width:480px;">
       <label class="muted" for="pdfNoteHistory">Poznámka do PDF (nepovinné):</label>
@@ -2690,6 +2997,7 @@ function showHistoryDetail(calculationKey, loadKey) {
     const includeStats = document.getElementById("pdfIncludeStatsHistory").checked;
     exportCalculationPdf(calcResult, { note, includeStats });
   });
+  document.getElementById("btnCopyResultHistory").addEventListener("click", () => copyResultToClipboard(calcResult, stats));
   document.getElementById("btnToggleStatus").addEventListener("click", () => {
     setCalculationStatus(calculationKey, status === "potvrzena" ? "rozpracovana" : "potvrzena");
     showHistoryDetail(calculationKey, loadKey);
@@ -2795,20 +3103,30 @@ function showRefVersionDetail(id) {
 function renderAbsenceTable() {
   const el = document.getElementById("absenceTable");
   if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
-  const rows = dbAll("SELECT segment, nepritomnost, homeoffice FROM absence ORDER BY segment");
+  const rows = dbAll("SELECT segment, nepritomnost, homeoffice, ref_version_id FROM absence ORDER BY segment");
   el.innerHTML = `<div class="table-wrap"><table>
-    <thead><tr><th>Segment</th><th>Nepřítomnost (%)</th><th>Homeoffice (%)</th><th></th></tr></thead>
+    <thead><tr><th>Segment</th><th>Nepřítomnost (%)</th><th>Homeoffice (%)</th>
+      <th title="Verze referenčních dat, ve které řádek naposledy vznikl nebo se změnil">Verze</th><th></th></tr></thead>
     <tbody id="absenceTbody">
       ${rows.map(absenceRowHtml).join("")}
     </tbody></table></div>`;
   wireDeleteButtons("absenceTbody");
 }
 
+// Sloupec „Verze“ je jen informativní (needitovatelný) — stamp se přepočítává
+// při uložení podle toho, jestli se řádek skutečně změnil.
+function refVersionCellHtml(refVersionId) {
+  return `<td class="ref-version-cell">${refVersionId
+    ? `<span class="badge ok">#${refVersionId}</span>`
+    : '<span class="muted" title="Řádek je z doby před zavedením evidence verzí u jednotlivých řádků">—</span>'}</td>`;
+}
+
 function absenceRowHtml(r) {
-  return `<tr>
+  return `<tr data-ref-version="${r.ref_version_id ?? ""}">
     <td><input type="text" value="${esc(r.segment)}" data-field="segment"></td>
     <td><input type="number" step="0.1" value="${r.nepritomnost ?? ""}" data-field="nepritomnost"></td>
     <td><input type="number" step="0.1" value="${r.homeoffice ?? ""}" data-field="homeoffice"></td>
+    ${refVersionCellHtml(r.ref_version_id)}
     <td><button class="btn secondary small btn-del">✕</button></td>
   </tr>`;
 }
@@ -2830,11 +3148,26 @@ function saveAbsenceTable() {
     const homeoffice = toNumberOrNull(tr.querySelector('[data-field="homeoffice"]').value);
     data.push([segment, nepritomnost ?? 0, homeoffice ?? 0]);
   }
+
+  // Pro evidenci verzí u jednotlivých řádků si nejdřív zapamatujeme původní stav:
+  // nezměněné řádky si ponechají svůj původní stamp, změněné a nové dostanou až
+  // po uložení číslo nově vzniklé verze.
+  const old = {};
+  dbAll("SELECT segment, nepritomnost, homeoffice, ref_version_id FROM absence")
+    .forEach((r) => { old[r.segment] = r; });
+  const changed = data.filter(([segment, nep, ho]) => {
+    const o = old[segment];
+    return !o || o.nepritomnost !== nep || o.homeoffice !== ho;
+  }).map(([segment]) => segment);
+
   dbRun("DELETE FROM absence");
-  const ins = db.prepare("INSERT INTO absence (segment, nepritomnost, homeoffice) VALUES (?, ?, ?)");
-  data.forEach((r) => ins.run(r));
+  const ins = db.prepare("INSERT INTO absence (segment, nepritomnost, homeoffice, ref_version_id) VALUES (?, ?, ?, ?)");
+  data.forEach((r) => ins.run([...r, old[r[0]] ? old[r[0]].ref_version_id : null]));
   ins.free();
-  ensureRefVersionUpToDate("Úprava: absence po segmentech");
+
+  const versionId = ensureRefVersionUpToDate("Úprava: absence po segmentech");
+  changed.forEach((segment) => dbRun("UPDATE absence SET ref_version_id = ? WHERE segment = ?", [versionId, segment]));
+
   persistDatabase(true);
   renderAbsenceTable();
   renderRefVersionsList();
@@ -2850,9 +3183,13 @@ function dotaceRowHtml(r) {
     <td><input type="number" step="1" value="${f(r.meeting_zone)}" data-field="meeting_zone"></td>
     <td><input type="number" step="1" value="${f(r.backoffice_zone)}" data-field="backoffice_zone"></td>
     <td><input type="number" step="1" value="${f(r.office_room)}" data-field="office_room"></td>
+    ${refVersionCellHtml(r.ref_version_id)}
     <td><button class="btn secondary small btn-del">✕</button></td>
   </tr>`;
 }
+
+// Klíč identity řádku časové dotace (segment + pozice) pro porovnání změn.
+function dotaceKey(segment, pozice) { return `${segment}||${pozice}`; }
 
 // Tabulka časových dotací pozic se zobrazuje na dvou místech (záložka
 // "Referenční data" a nový modul "Struktura checklistu") nad stejnou tabulkou
@@ -2865,12 +3202,13 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
     const el = document.getElementById(tableId);
     if (!el) return;
     if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
-    const rows = dbAll("SELECT id, segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room FROM casove_dotace ORDER BY segment, pozice");
+    const rows = dbAll("SELECT id, segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room, ref_version_id FROM casove_dotace ORDER BY segment, pozice");
     const filtered = filterText
       ? rows.filter((r) => `${r.segment} ${r.pozice}`.toLowerCase().includes(filterText))
       : rows;
     el.innerHTML = `<div class="table-wrap"><table>
-      <thead><tr><th>Segment</th><th>Pozice</th><th>ServiceZ %</th><th>MeetingZ %</th><th>BackofficeZ %</th><th>OfficeRoom %</th><th></th></tr></thead>
+      <thead><tr><th>Segment</th><th>Pozice</th><th>ServiceZ %</th><th>MeetingZ %</th><th>BackofficeZ %</th><th>OfficeRoom %</th>
+        <th title="Verze referenčních dat, ve které řádek naposledy vznikl nebo se změnil">Verze</th><th></th></tr></thead>
       <tbody id="${tbodyId}">
         ${filtered.map(dotaceRowHtml).join("")}
       </tbody></table></div>
@@ -2900,12 +3238,30 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
     const hidden = JSON.parse(document.getElementById(tableId).dataset.hiddenRows || "[]");
     hidden.forEach((r) => data.push([r.segment, r.pozice, r.service_zone, r.meeting_zone, r.backoffice_zone, r.office_room]));
 
+    // Evidence verze u jednotlivých řádků — viz saveAbsenceTable(): nezměněné
+    // řádky si ponechají původní stamp, změněné a nové dostanou číslo nové verze.
+    const old = {};
+    dbAll(`SELECT segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room, ref_version_id
+      FROM casove_dotace`).forEach((r) => { old[dotaceKey(r.segment, r.pozice)] = r; });
+    const changed = data.filter(([segment, pozice, s, m, b, o]) => {
+      const prev = old[dotaceKey(segment, pozice)];
+      return !prev || prev.service_zone !== s || prev.meeting_zone !== m
+        || prev.backoffice_zone !== b || prev.office_room !== o;
+    }).map(([segment, pozice]) => [segment, pozice]);
+
     dbRun("DELETE FROM casove_dotace");
     const ins = db.prepare(`INSERT INTO casove_dotace
-      (segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room) VALUES (?, ?, ?, ?, ?, ?)`);
-    data.forEach((r) => ins.run(r));
+      (segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room, ref_version_id) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    data.forEach((r) => {
+      const prev = old[dotaceKey(r[0], r[1])];
+      ins.run([...r, prev ? prev.ref_version_id : null]);
+    });
     ins.free();
-    ensureRefVersionUpToDate("Úprava: časové dotace pozic");
+
+    const versionId = ensureRefVersionUpToDate("Úprava: časové dotace pozic");
+    changed.forEach(([segment, pozice]) => dbRun(
+      "UPDATE casove_dotace SET ref_version_id = ? WHERE segment = ? AND pozice = ?", [versionId, segment, pozice]));
+
     persistDatabase(true);
     filterText = "";
     const filterInput = document.getElementById(filterId);
