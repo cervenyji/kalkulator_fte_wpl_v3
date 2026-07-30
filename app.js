@@ -3385,147 +3385,493 @@ function saveFurnitureTable() {
   renderFurnitureTable();
   toast("Tabulka nábytku byla uložena.", "ok");
 }
-
-// Vygeneruje .xlsx šablonu checklistu (listy CHL + VSTUPY) z aktuálního stavu
-// segmentů/pozic/nábytku v databázi — ve stejném vztahu jako vzorový checklist:
-// **CHL je list, do kterého pobočka skutečně vyplňuje data** (FTE po pozicích,
-// případně vytížení WPL u segmentu CESTOVNÍ), **VSTUPY je list, který si tyto
-// hodnoty vzorci jen stahuje z CHL** do podoby, kterou čte parseVstupySheet()
-// (C1–C4 + řádky od 6, sloupce A–D). Aplikace samotná parsuje výhradně list
-// VSTUPY — beze změny stávajícího parseru. Díky vzorcům funguje načítání dat
-// z Excelu stejně jako u originální šablony: jakmile pobočka vyplní CHL a
-// soubor uloží (Excel vzorce přepočítá), VSTUPY už obsahuje aktuální hodnoty.
-// Nová/upravená pozice nebo nábytek se při dalším vygenerování šablony
-// automaticky promítne do obou listů.
+/* ------------- Generování .xlsx šablony checklistu (CHL + VSTUPY) ---------- */
+// Šablona se sestavuje tak, aby vypadala i fungovala jako vzorový checklist:
 //
-// Poznámka k designu: vendorovaná knihovna SheetJS (komunitní edice) umí
-// barevné formátování buněk při čtení, ale při zápisu (XLSX.write) ho úplně
-// zahazuje — ověřeno přímým testem zápisu buňky se zadaným `s.fill`/`s.font`
-// a zpětného přečtení výsledku (i pro čerstvě vytvořený sešit). Aby byla
-// vygenerovaná šablona opravdu naformátovaná stejně jako vzorový checklist
-// (a ne jen strukturně shodná), sestavuje se přímo přes `xlsx_writer.js` —
-// vlastní minimalistický zapisovač .xlsx (OOXML), který barvy výplně, tučné
-// písmo i ohraničení do souboru skutečně zapíše.
-function hexToArgb(hex) {
-  const h = String(hex || "#6b7684").replace("#", "");
-  const n = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
-  return "FF" + n.toUpperCase();
-}
+// * **CHL** je list, do kterého vyplňuje pobočka — detaily pobočky, počty FTE
+//   po pozicích (aktuálně / výhled), volný blok cestovních pozic, SAZO,
+//   nábytek BUSINESS ZONE / BACK OFFICE, vybavení a poznámky. Obsah pozic
+//   a nábytku pochází z databáze aplikace (tabulky `segments`, `casove_dotace`
+//   a `furniture_to_zone`), takže nová pozice nebo nábytkový prvek se
+//   automaticky objeví i tady.
+// * **VSTUPY** je list, který si vyplněné hodnoty z CHL jen **stahuje vzorci**
+//   (`=CHL!H10`, `=$C$4`, u cestovních `=IF(CHL!B80=0,"",…)`) do podoby, kterou
+//   čte parseVstupySheet() — C1–C4 a od řádku 6 sloupce A–D. Aplikace parsuje
+//   výhradně tento list, takže po vyplnění CHL a uložení v Excelu (kdy se
+//   vzorce přepočítají) jde soubor bez úprav načíst zpět.
+//
+// Vendorovaná knihovna SheetJS (komunitní edice) při zápisu zahazuje veškeré
+// formátování buněk (ověřeno přímým testem), proto se soubor sestavuje přes
+// vlastní zapisovač `xlsx_writer.js`, který barvy, fonty, ohraničení, sloučené
+// buňky, šířky sloupců i výšky řádků skutečně zapíše.
+
+// Barvy a rozměry odečtené ze vzorového checklistu.
+const CHL_C = {
+  title: "FF2770F1",     // modrá — titulek, svislé popisky FRONT/BACK OFFICE
+  section: "FF235377",   // tmavě modrá — hlavičky sekcí
+  segment: "FF00A4A2",   // tyrkysová — popisek segmentu, velká čísla hodin
+  sum: "FF00A4A3",       // tyrkysová — hodnoty součtů
+  zone: "FFE7E6E6",      // světle šedá — popisek zóny
+  input: "FF0070C0",     // barva písma vyplňovaných buněk
+};
+const CHL_COL_WIDTHS = [
+  { index: 1, width: 11.7109375 }, { index: 2, width: 14.28515625 }, { index: 3, width: 14.42578125 },
+  { index: 4, width: 9.28515625 }, { index: 5, width: 8.7109375 }, { index: 6, width: 19.42578125 },
+  { index: 7, width: 20.5703125 }, { index: 9, width: 25.140625 }, { index: 10, width: 4.7109375 },
+  { index: 11, width: 91.140625 },
+];
+const VSTUPY_COL_WIDTHS = [
+  { index: 1, width: 11.42578125 }, { index: 2, width: 57.140625 },
+  { index: 3, width: 17.5703125 }, { index: 4, width: 14.5703125 },
+];
+const CHL_CESTOVNI_ROWS = 9; // volných řádků pro cestovní pozice (jako ve vzoru)
+
+// Statické bloky, které pobočka vyplňuje, ale nejsou v databázi aplikace —
+// přebírají se ze vzoru, aby šablona byla kompletní.
+const CHL_SAZO = ["Výběrový", "Vkladový", "Recyklační", "Transakční", "Příprava"];
+const CHL_VYBAVENI = [
+  ["BANKOVNÍ TECHNIKA", ["ARP", "TT", "Počítačka mincí", "Počítačka bankovek",
+    "Bezpečnostní schránky", "Noční trezor", "Trezor"]],
+  ["OSTATNÍ VYBAVENÍ", ["Směrová hudba", "Frontmatic (systém řízení fronty)"]],
+  ["NÁHRADNÍ PROVOZ", ["Mobilní bankéř", "Přesun do okolních poboček",
+    "Uzavření pobočky po dobu rekonstrukce", "Mobilní pobočka", "Pouze ATM", "Ostatní"]],
+];
 
 function generateChecklistTemplate() {
   if (!requireDb()) return;
+
   const segments = dbAll("SELECT segment_key FROM segments ORDER BY sort_order, segment_key").map((r) => r.segment_key);
   const segOrder = {};
   segments.forEach((s, i) => { segOrder[s] = i; });
+  const bySegOrder = (a, b) => {
+    const oa = segOrder[a] ?? 999, ob = segOrder[b] ?? 999;
+    return oa !== ob ? oa - ob : String(a).localeCompare(b);
+  };
+  const isCestovni = (s) => String(s).trim().toUpperCase().startsWith("CESTOVNÍ");
 
-  const dotaceRows = dbAll("SELECT segment, pozice FROM casove_dotace ORDER BY segment, pozice");
-  const orderedPositions = [...dotaceRows].sort((a, b) => {
-    const oa = segOrder[a.segment] ?? 999, ob = segOrder[b.segment] ?? 999;
-    if (oa !== ob) return oa - ob;
-    if (a.segment !== b.segment) return a.segment.localeCompare(b.segment);
-    return a.pozice.localeCompare(b.pozice);
+  // Pozice po segmentech; segment CESTOVNÍ má v CHL vlastní volný blok, takže
+  // se do běžných bloků nezařazuje.
+  // Pořadí uvnitř segmentu se drží podle `id`, tj. podle pořadí, v jakém byly
+  // pozice zavedené — to odpovídá pořadí ve vzorovém checklistu (abecední
+  // řazení by ho rozhodilo).
+  const dotaceRows = dbAll("SELECT segment, pozice FROM casove_dotace ORDER BY id");
+  const positionsBySegment = {};
+  dotaceRows.forEach((r) => {
+    if (isCestovni(r.segment)) return;
+    (positionsBySegment[r.segment] = positionsBySegment[r.segment] || []).push(r.pozice);
   });
+  const positionSegments = Object.keys(positionsBySegment).sort(bySegOrder);
+
+  // Nábytek: FRONT OFFICE = service + meeting zone, BACK OFFICE = backoffice
+  // zone + office room (stejné rozdělení jako ve vzorovém checklistu).
   const furnitureRows = dbAll("SELECT segment, zone, furniture, wpl_counter FROM furniture_to_zone ORDER BY segment, zone, id");
-  const orderedFurniture = [...furnitureRows].sort((a, b) => {
-    const oa = segOrder[a.segment] ?? 999, ob = segOrder[b.segment] ?? 999;
-    if (oa !== ob) return oa - ob;
-    return a.segment.localeCompare(b.segment);
-  });
+  const ZONE_TITLES = {
+    service_zone: "SERVICE ZONE", meeting_zone: "MEETING ZONE",
+    backoffice_zone: "BACKOFFICE ZONE", office_room: "OFFICE ROOM",
+  };
+  function furnitureSection(zoneList) {
+    // -> [{ segment, zones: [{ zone, items: [furniture...] }] }]
+    const bySeg = {};
+    furnitureRows.forEach((r) => {
+      if (!zoneList.includes(r.zone)) return;
+      const seg = (bySeg[r.segment] = bySeg[r.segment] || {});
+      (seg[r.zone] = seg[r.zone] || []).push(r.furniture);
+    });
+    return Object.keys(bySeg).sort(bySegOrder).map((segment) => ({
+      segment,
+      zones: zoneList.filter((z) => bySeg[segment][z] && bySeg[segment][z].length)
+        .map((z) => ({ zone: z, items: bySeg[segment][z] })),
+    }));
+  }
+  const frontOffice = furnitureSection(["service_zone", "meeting_zone"]);
+  const backOffice = furnitureSection(["backoffice_zone", "office_room"]);
 
+  /* ------------------------------- styly ---------------------------------- */
   const sb = createStyleBook();
-  const stTitle = sb.addStyle({ bold: true, size: 14 });
-  const stSection = sb.addStyle({ bold: true, size: 11, color: "FFFFFFFF", fill: "FF2770F0", border: true, align: "left" });
-  const stTableHeader = sb.addStyle({ bold: true, size: 10, fill: "FFD9E2F3", border: true, align: "center" });
-  const stLabel = sb.addStyle({ bold: true, size: 10 });
-  const stSeg = sb.addStyle({ bold: true, fill: "FFD0CECE", border: true });
-  const stData = sb.addStyle({ border: true });
-  const stInput = sb.addStyle({ fill: "FFFFF8E6", border: true });
-  const stInputCenter = sb.addStyle({ fill: "FFFFF8E6", border: true, align: "center" });
-
-  const str = (v, s) => ({ t: "str", v: v ?? "", s });
-  const num = (v, s) => ({ v: v ?? 0, s });
-  const formula = (f, v, s, isStr) => ({ f, v: v ?? (isStr ? "" : 0), t: isStr ? "str" : undefined, s });
-
-  // --- CHL: skutečný vstupní list pro pobočku (formátovaný stejně jako vzor) ---
-  const chl = {};
-  chl.A1 = str("CHECKLIST", stTitle);
-  chl.F1 = str("ID pobočky:", stLabel);
-  chl.G1 = str("", stInput);
-  chl.A3 = str("DETAILY POBOČKY", stSection);
-  for (const c of ["B3", "C3", "D3", "E3", "F3", "G3", "H3", "I3"]) chl[c] = str("", stSection);
-  chl.A4 = str("Název pobočky:", stLabel);
-  chl.C4 = str("", stInput);
-  chl.A5 = str("Otevírací doba pobočky (h/týden):", stLabel);
-  chl.C5 = num(40, stInputCenter);
-  chl.A6 = str("Doba vytěžení WPL (h/týden):", stLabel);
-  chl.C6 = num(40, stInputCenter);
-  chl.A8 = str("OBSAZENOST POBOČKY", stSection);
-  for (const c of ["B8", "C8", "D8", "E8", "F8"]) chl[c] = str("", stSection);
-  chl.G8 = str("Vytížení WPL (jen CESTOVNÍ)", stTableHeader);
-  chl.H8 = str("Počet FTE", stTableHeader);
-  chl.I8 = str("Poznámka", stTableHeader);
-
-  const CHL_DATA_START = 9; // řádek první pozice v CHL
-  const VSTUPY_DATA_START = 6; // řádek první pozice ve VSTUPY (dáno parseVstupySheet())
-  const rowOffset = CHL_DATA_START - VSTUPY_DATA_START;
-
-  orderedPositions.forEach((row, i) => {
-    const chlRow = CHL_DATA_START + i;
-    chl[`A${chlRow}`] = str(row.segment, stSeg);
-    chl[`B${chlRow}`] = str(row.pozice, stData);
-    chl[`G${chlRow}`] = row.segment.trim().toUpperCase() === "CESTOVNÍ" ? num(0, stInputCenter) : num(0, stData);
-    chl[`H${chlRow}`] = num(0, stInputCenter);
-    chl[`I${chlRow}`] = str("", stData);
-  });
-  const chlPosEnd = CHL_DATA_START + orderedPositions.length - 1;
-
-  let fr = chlPosEnd + 3;
-  chl[`A${fr}`] = str("NÁBYTEK PRO SESTAVENÍ LAYOUTU", stSection);
-  for (const col of ["B", "C", "D", "E"]) chl[`${col}${fr}`] = str("", stSection);
-  fr += 1;
-  chl[`A${fr}`] = str("Segment", stTableHeader); chl[`B${fr}`] = str("Zóna", stTableHeader);
-  chl[`C${fr}`] = str("Nábytek", stTableHeader); chl[`D${fr}`] = str("WPL / kus", stTableHeader);
-  chl[`E${fr}`] = str("Počet kusů (vyplní pobočka)", stTableHeader);
-  fr += 1;
-  orderedFurniture.forEach((f) => {
-    chl[`A${fr}`] = str(f.segment, stSeg);
-    chl[`B${fr}`] = str(ZONE_LABELS[f.zone] || f.zone, stData);
-    chl[`C${fr}`] = str(f.furniture, stData);
-    chl[`D${fr}`] = num(f.wpl_counter || 0, stData);
-    chl[`E${fr}`] = num(0, stInputCenter);
-    fr += 1;
-  });
-
-  const chlSheet = {
-    name: "CHL",
-    cells: chl,
-    cols: [{ index: 1, width: 16 }, { index: 2, width: 56 }, { index: 3, width: 12 }, { index: 4, width: 12 },
-      { index: 5, width: 10 }, { index: 6, width: 10 }, { index: 7, width: 28 }, { index: 8, width: 14 }, { index: 9, width: 28 }],
-    merges: ["A3:I3", "A8:F8", `A${fr - orderedFurniture.length - 1}:E${fr - orderedFurniture.length - 1}`],
+  const A = (size, bold, color) => ({ name: "Arial", size, bold: !!bold, color: color || null });
+  const st = {
+    title: sb.style({ font: A(12, true), fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } }),
+    titleCtr: sb.style({ font: A(12, true), fill: CHL_C.title, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
+    titleCtrN: sb.style({ font: A(12), fill: CHL_C.title, border: "lrtb", alignment: { h: "center", v: "center" } }),
+    // „Vygenerováno“ je ve vzoru Calibri a bez levého rámečku (navazuje na H1)
+    genLabel: sb.style({ font: { name: "Calibri", size: 12, bold: true }, fill: CHL_C.title, border: "rtb", alignment: { h: "center", v: "center" } }),
+    sectionCtrNW: sb.style({ font: A(9), fill: CHL_C.section, border: "lrtb", alignment: { h: "center", v: "center" } }),
+    noteHead: sb.style({ font: { name: "Aptos Display", size: 18 }, fill: CHL_C.title, border: "lrtb", alignment: { v: "center" } }),
+    noteSide: sb.style({ font: { name: "Aptos Display", size: 10 }, border: "lr", alignment: { h: "center", v: "center", wrap: true } }),
+    section: sb.style({ font: A(9, true), fill: CHL_C.section, border: "lrtb", alignment: { h: "left", v: "center" } }),
+    sectionCtr: sb.style({ font: A(9), fill: CHL_C.section, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
+    sectionCtrB: sb.style({ font: A(9, true), fill: CHL_C.section, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
+    sumBlank: sb.style({ font: A(9, true), fill: CHL_C.section, border: "lrtb", alignment: { h: "center", v: "center" } }),
+    label: sb.style({ font: A(9, true), border: "lrtb", alignment: { h: "left", v: "center" } }),
+    value: sb.style({ font: A(9, true, CHL_C.title), border: "lrtb", alignment: { h: "center", v: "center" } }),
+    bigNum: sb.style({ font: A(20, true, CHL_C.segment), border: "lrtb", alignment: { h: "center", v: "center" } }),
+    segment: sb.style({ font: A(9, true), fill: CHL_C.segment, border: "lrtb", alignment: { h: "center", v: "center" } }),
+    zone: sb.style({ font: A(8, true), fill: CHL_C.zone, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
+    sideLabel: sb.style({ font: A(9, true), fill: CHL_C.title, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
+    subLabel: sb.style({ font: A(9, true), border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
+    item: sb.style({ font: A(9), border: "lrtb", alignment: { h: "left", v: "center" } }),
+    input: sb.style({ font: A(9, true, CHL_C.input), border: "lrtb", alignment: { h: "center", v: "center" } }),
+    sumVal: sb.style({ font: A(9, true), fill: CHL_C.sum, border: "lrtb", alignment: { h: "center", v: "center" } }),
+    plain: sb.style({ border: "lrtb" }),
+    noteArea: sb.style({ font: A(9), border: "lrtb", alignment: { h: "left", v: "top", wrap: true } }),
   };
 
-  // --- VSTUPY: hodnoty se stahují vzorcem z CHL (parseVstupySheet() čte jen tento list) ---
-  const ws = {};
-  ws.A1 = str("ID pobočky", stLabel); ws.C1 = formula("CHL!G1", "", stInput, true);
-  ws.A2 = str("Název pobočky", stLabel); ws.C2 = formula("CHL!C4", "", stInput, true);
-  ws.A3 = str("Otevírací doba pobočky (h/týden)", stLabel); ws.C3 = formula("CHL!C5", 40, stInputCenter);
-  ws.A4 = str("Doba vytěžení WPL (h/týden)", stLabel); ws.C4 = formula("CHL!C6", 40, stInputCenter);
-  ws.A5 = str("Segment", stTableHeader); ws.B5 = str("Pozice", stTableHeader);
-  ws.C5 = str("Počet FTE", stTableHeader); ws.D5 = str("Vytěžení WPL", stTableHeader);
-  orderedPositions.forEach((row, i) => {
-    const vRow = VSTUPY_DATA_START + i;
-    const chlRow = vRow + rowOffset;
-    ws[`A${vRow}`] = str(row.segment, stSeg);
-    ws[`B${vRow}`] = str(row.pozice, stData);
-    ws[`C${vRow}`] = formula(`CHL!H${chlRow}`, 0, stData);
-    ws[`D${vRow}`] = row.segment.trim().toUpperCase() === "CESTOVNÍ"
-      ? formula(`CHL!G${chlRow}`, 0, stData)
-      : formula("$C$4", 40, stData);
+  const chl = {};
+  const merges = [];
+  const rowHeights = {};
+  const COLS = "ABCDEFGHIJK";
+  const put = (col, row, cell) => { chl[`${col}${row}`] = cell; };
+  const str = (v, s) => ({ t: "str", v: v ?? "", s });
+  const num = (v, s) => ({ v: v === null || v === undefined ? "" : v, s });
+  const fml = (f, s) => ({ f, v: "", s });
+  const merge = (c1, r1, c2, r2) => { if (c1 !== c2 || r1 !== r2) merges.push(`${c1}${r1}:${c2}${r2}`); };
+  // Sloučená buňka musí mít nastylované i zakryté buňky, jinak Excel nevykreslí
+  // ohraničení a výplň přes celou šířku sloučení.
+  const fillRange = (c1, c2, row, s, firstCell) => {
+    const i1 = COLS.indexOf(c1), i2 = COLS.indexOf(c2);
+    for (let i = i1; i <= i2; i++) put(COLS[i], row, i === i1 && firstCell ? firstCell : str("", s));
+    merge(c1, row, c2, row);
+  };
+
+  /* ----------------------------- CHL: hlavička ----------------------------- */
+  rowHeights[1] = 39.75;
+  fillRange("A", "F", 1, st.title, str("CHECKLIST", st.title));
+  put("G", 1, str("", st.titleCtr));
+  put("H", 1, str("WPL celkem:", st.titleCtrN));
+  put("I", 1, str("Vygenerováno", st.genLabel));
+  put("J", 1, str("ROZŠÍŘENÉ POZNÁMKY    ▼", st.noteSide));
+  merge("J", 1, "J", 9);
+  for (let r = 2; r <= 9; r++) put("J", r, str("", st.noteSide));
+  put("K", 1, str("Rozšířené poznámky", st.noteHead));
+
+  rowHeights[2] = 17.1;
+  fillRange("A", "H", 2, st.section, str("DETAILY POBOČKY", st.section));
+  put("I", 2, str("POČET HODIN ZA TÝDEN", st.sectionCtrNW));
+  put("K", 2, str("", st.plain));
+
+  for (let r = 3; r <= 8; r++) rowHeights[r] = 20.1;
+  const detailRows = [
+    ["Název pobočky:", 3], ["Datum zpracování:", 4], ["Cílový formát:", 5], ["Typ akce:", 6],
+  ];
+  detailRows.forEach(([label, r]) => {
+    put("A", r, str(label, st.label)); put("B", r, str("", st.label)); merge("A", r, "B", r);
+    put("C", r, str("", st.value)); put("D", r, str("", st.value)); merge("C", r, "D", r);
   });
+  // "Režim obsluhy klientů:" je ve vzoru sloučený přes dva řádky (7-8)
+  put("A", 7, str("Režim obsluhy klientů:", st.label)); put("B", 7, str("", st.label));
+  put("A", 8, str("", st.label)); put("B", 8, str("", st.label));
+  merges.push("A7:B8");
+  put("C", 7, str("", st.value)); put("D", 7, str("", st.value));
+  put("C", 8, str("", st.value)); put("D", 8, str("", st.value));
+  merges.push("C7:D8");
+  // Otevírací doba (E3:H5 / I3:I5) a doba vytěžení WPL (E6:H8 / I6:I8)
+  [["Otevírací doba pobočky:", 3, 5], ["Doba vytěžení WPL:", 6, 8]].forEach(([label, r1, r2]) => {
+    for (let r = r1; r <= r2; r++) for (const c of "EFGH") put(c, r, str("", st.label));
+    put("E", r1, str(label, st.label));
+    merges.push(`E${r1}:H${r2}`);
+    for (let r = r1; r <= r2; r++) put("I", r, num("", st.bigNum));
+    put("I", r1, num(40, st.bigNum));
+    merges.push(`I${r1}:I${r2}`);
+  });
+  for (let r = 3; r <= 9; r++) put("K", r, str("", st.plain));
+
+  /* --------------------- CHL: obsazenost pobočky (pozice) ------------------ */
+  rowHeights[9] = 17.1;
+  fillRange("A", "F", 9, st.section, str("OBSAZENOST POBOČKY", st.section));
+  put("G", 9, str("POČET FTE AKTUÁLNĚ", st.sectionCtr));
+  put("H", 9, str("POČET FTE VÝHLED", st.sectionCtr));
+  put("I", 9, str("POZNÁMKA", st.sectionCtr));
+
+  let row = 10;
+  const positionRowMap = {};      // "segment||pozice" -> řádek v CHL
+  const segmentSumRows = [];      // řádky se součtem za segment (pro "Suma FTE bez CEST:")
+  positionSegments.forEach((segment) => {
+    const items = positionsBySegment[segment];
+    const first = row;
+    items.forEach((pozice) => {
+      rowHeights[row] = 17.1;
+      put("A", row, str(row === first ? segment : "", st.segment));
+      fillRange("B", "F", row, st.item, str(pozice, st.item));
+      put("G", row, num("", st.input));
+      put("H", row, num("", st.input));
+      put("I", row, str("", st.input));
+      put("K", row, str("", st.plain));
+      positionRowMap[`${segment}||${pozice}`] = row;
+      row++;
+    });
+    merge("A", first, "A", row - 1);
+
+    rowHeights[row] = 17.1;
+    fillRange("A", "E", row, st.sumBlank);
+    put("F", row, str("Suma FTE:", st.sectionCtrB));
+    put("G", row, fml(`SUM(G${first}:G${row - 1})`, st.sumVal));
+    put("H", row, fml(`SUM(H${first}:H${row - 1})`, st.sumVal));
+    put("I", row, str("POZNÁMKA", st.sectionCtr));
+    put("K", row, str("", st.plain));
+    segmentSumRows.push(row);
+    row++;
+  });
+
+  // Suma FTE bez cestovních
+  rowHeights[row] = 17.1;
+  fillRange("A", "E", row, st.sectionCtr);
+  put("F", row, str("Suma FTE bez CEST:", st.sectionCtrB));
+  const sumNoCest = segmentSumRows.length ? segmentSumRows.map((r) => `G${r}`).join("+") : "0";
+  const sumNoCestH = segmentSumRows.length ? segmentSumRows.map((r) => `H${r}`).join("+") : "0";
+  put("G", row, fml(sumNoCest, st.sumVal));
+  put("H", row, fml(sumNoCestH, st.sumVal));
+  put("I", row, str("", st.sectionCtr));
+  put("K", row, str("", st.plain));
+  const rowSumNoCest = row;
+  row++;
+
+  // Hlavička cestovních pozic
+  rowHeights[row] = 30;
+  fillRange("A", "F", row, st.sumBlank);
+  put("G", row, str("DOBA VYUŽITÍ WPL V HODINÁCH TÝDNĚ", st.sectionCtr));
+  put("H", row, str("POČET FTE", st.sectionCtr));
+  put("I", row, str("POZNÁMKA", st.sectionCtr));
+  put("K", row, str("", st.plain));
+  row++;
+
+  // Volný blok cestovních pozic — pobočka vypisuje pozici do B, hodiny do G, FTE do H
+  const cestFirst = row;
+  for (let i = 0; i < CHL_CESTOVNI_ROWS; i++) {
+    rowHeights[row] = 17.1;
+    put("A", row, str(row === cestFirst ? "CESTOVNÍ POZICE" : "", st.segment));
+    fillRange("B", "F", row, st.item);
+    put("G", row, num("", st.input));
+    put("H", row, num("", st.input));
+    put("I", row, str("", st.input));
+    put("K", row, str("", st.plain));
+    row++;
+  }
+  const cestLast = row - 1;
+  merge("A", cestFirst, "A", cestLast);
+
+  rowHeights[row] = 17.1;
+  fillRange("A", "D", row, st.sumBlank);
+  put("E", row, str("Suma FTE s CEST:", st.sectionCtrB));
+  put("F", row, str("", st.sectionCtrB));
+  merge("E", row, "F", row);
+  put("G", row, str("", st.sectionCtrB));
+  put("H", row, fml(`IFERROR(SUM(G${cestFirst}:G${cestLast})/I3+H${rowSumNoCest},"ŽÁDNÁ CESTOVNÍ POZICE")`, st.sumVal));
+  put("I", row, str("", st.sectionCtr));
+  put("K", row, str("", st.plain));
+  row++;
+
+  /* ------------------------------- CHL: SAZO ------------------------------- */
+  rowHeights[row] = 17.1;
+  fillRange("A", "F", row, st.section, str("SAZO", st.section));
+  put("G", row, str("POČET", st.sectionCtr));
+  put("H", row, str("POZNÁMKA", st.sectionCtr));
+  put("I", row, str("", st.sectionCtr));
+  merge("H", row, "I", row);
+  put("K", row, str("", st.plain));
+  row++;
+  const sazoFirst = row;
+  CHL_SAZO.forEach((name, i) => {
+    rowHeights[row] = 17.1;
+    put("A", row, str(i === 0 ? "SAZO" : "", st.subLabel));
+    put("B", row, str(i === 0 ? "ATM" : "", st.subLabel));
+    fillRange("C", "F", row, st.item, str(name, st.item));
+    put("G", row, num("", st.input));
+    put("H", row, str("", st.input));
+    put("I", row, str("", st.input));
+    merge("H", row, "I", row);
+    put("K", row, str("", st.plain));
+    row++;
+  });
+  merge("A", sazoFirst, "A", row - 1);
+  merge("B", sazoFirst, "B", row - 1);
+  const sazoLast = row - 1;
+
+  /* -------------------- CHL: nábytek (BUSINESS ZONE / BACK OFFICE) --------- */
+  // Vrátí { first, last } řádků s nábytkem dané sekce.
+  //
+  // `zoneLabel` kopíruje vzor: v BUSINESS ZONE má každá zóna segmentu vlastní
+  // popisek ve sloupci C (SERVICE ZONE / MEETING ZONE), zatímco BACK OFFICE má
+  // jediný popisek „BACKOFFICE ZONE“ sloučený přes celou sekci.
+  function writeFurnitureSection(title, sideLabel, blocks, zoneLabel) {
+    rowHeights[row] = 17.1;
+    fillRange("A", "F", row, st.section, str(title, st.section));
+    put("G", row, str("POČET", st.sectionCtr));
+    put("H", row, str("WPL", st.sectionCtr));
+    put("I", row, str("POZNÁMKA", st.sectionCtr));
+    put("K", row, str("", st.plain));
+    row++;
+
+    const first = row;
+    blocks.forEach((block) => {
+      const segFirst = row;
+      block.zones.forEach((zoneBlock) => {
+        const zoneFirst = row;
+        zoneBlock.items.forEach((furniture) => {
+          rowHeights[row] = 17.1;
+          put("A", row, str(row === first ? sideLabel : "", st.sideLabel));
+          put("B", row, str(row === segFirst ? block.segment : "", st.subLabel));
+          put("C", row, str(zoneLabel
+            ? (row === first ? zoneLabel : "")
+            : (row === zoneFirst ? (ZONE_TITLES[zoneBlock.zone] || zoneBlock.zone) : ""), st.zone));
+          fillRange("D", "F", row, st.item, str(furniture, st.item));
+          put("G", row, num("", st.input));
+          put("H", row, num("", st.input));
+          put("I", row, str("", st.input));
+          put("K", row, str("", st.plain));
+          row++;
+        });
+        if (!zoneLabel) merge("C", zoneFirst, "C", row - 1);
+      });
+      merge("B", segFirst, "B", row - 1);
+    });
+    const last = row - 1;
+    if (last >= first) {
+      merge("A", first, "A", last);
+      if (zoneLabel) merge("C", first, "C", last);
+    }
+    return { first, last };
+  }
+
+  const bz = writeFurnitureSection("BUSINESS ZONE", "FRONT OFFICE", frontOffice, null);
+  const bo = writeFurnitureSection("BACK OFFICE", "BACK OFFICE", backOffice, "BACKOFFICE ZONE");
+
+  /* ----------------------------- CHL: SUMMARY ----------------------------- */
+  rowHeights[row] = 17.1;
+  fillRange("A", "F", row, st.section, str("SUMMARY", st.section));
+  put("G", row, str("POČET", st.sectionCtr));
+  put("H", row, str("", st.sectionCtr));
+  put("I", row, str("", st.sectionCtr));
+  merge("G", row, "I", row);
+  put("K", row, str("", st.plain));
+  row++;
+  const summaryLines = [
+    ["Počet strojů ATM:", `SUM(G${sazoFirst}:G${sazoLast})`],
+    ["Celkem WPL BUSINESS ZONE:", `SUM(H${bz.first}:H${bz.last})`],
+    ["Celkem WPL BACK OFFICE:", `SUM(H${bo.first}:H${bo.last})`],
+  ];
+  const summaryRows = [];
+  summaryLines.forEach(([label, formula]) => {
+    rowHeights[row] = 17.1;
+    fillRange("A", "F", row, st.label, str(label, st.label));
+    put("G", row, fml(formula, st.sumVal));
+    put("H", row, str("", st.sumVal));
+    put("I", row, str("", st.sumVal));
+    merge("G", row, "I", row);
+    put("K", row, str("", st.plain));
+    summaryRows.push(row);
+    row++;
+  });
+  rowHeights[row] = 17.1;
+  fillRange("A", "F", row, st.label, str("Počet WPL celkem:", st.label));
+  put("G", row, fml(`G${summaryRows[1]}+G${summaryRows[2]}`, st.sumVal));
+  put("H", row, str("", st.sumVal));
+  put("I", row, str("", st.sumVal));
+  merge("G", row, "I", row);
+  put("K", row, str("", st.plain));
+  const rowWplTotal = row;
+  row++;
+  // Titulek v A1/H1 odkazuje na celkový počet WPL a název pobočky
+  chl.A1 = { f: `_xlfn.CONCAT("CHECKLIST"," - ",C3)`, v: "CHECKLIST", t: "str", s: st.title };
+  chl.H1 = { f: `CONCATENATE("WPL celkem: ",G${rowWplTotal})`, v: "WPL celkem: 0", t: "str", s: st.titleCtrN };
+
+  /* ---------------------------- CHL: vybavení ----------------------------- */
+  rowHeights[row] = 17.1;
+  fillRange("A", "F", row, st.section, str("VYBAVENÍ", st.section));
+  put("G", row, str("POČET", st.sectionCtr));
+  put("H", row, str("POZNÁMKA", st.sectionCtr));
+  put("I", row, str("", st.sectionCtr));
+  merge("H", row, "I", row);
+  put("K", row, str("", st.plain));
+  row++;
+  CHL_VYBAVENI.forEach(([groupName, items]) => {
+    const groupFirst = row;
+    items.forEach((item, i) => {
+      rowHeights[row] = 17.1;
+      put("A", row, str(i === 0 ? groupName : "", st.sideLabel));
+      fillRange("B", "F", row, st.item, str(item, st.item));
+      put("G", row, num("", st.input));
+      put("H", row, str("", st.input));
+      put("I", row, str("", st.input));
+      merge("H", row, "I", row);
+      put("K", row, str("", st.plain));
+      row++;
+    });
+    merge("A", groupFirst, "A", row - 1);
+  });
+
+  /* -------------------- CHL: doplňující informace + klíče ----------------- */
+  rowHeights[row] = 17.1;
+  fillRange("A", "I", row, st.section, str("DOPLŇUJÍCÍ INFORMACE K CHECKLISTU  ▼", st.section));
+  put("K", row, str("", st.plain));
+  row++;
+  const noteFirst = row;
+  for (let i = 0; i < 8; i++) {
+    rowHeights[row] = 17.1;
+    for (const c of "ABCDEFGHI") put(c, row, str("", st.noteArea));
+    put("K", row, str("", st.plain));
+    row++;
+  }
+  merges.push(`A${noteFirst}:I${row - 1}`);
+
+  [["Load key:", ""], ["Calculation key:", ""], ["Vygenerováno:", ""], ["Odkaz na sharepoint item:", ""]]
+    .forEach(([label, value]) => {
+      rowHeights[row] = 17.1;
+      put("A", row, str(label, st.label));
+      put("B", row, str("", st.label));
+      merge("A", row, "B", row);
+      fillRange("C", "I", row, st.item, str(value, st.item));
+      put("K", row, str("", st.plain));
+      row++;
+    });
+
+  /* ------------------------------- VSTUPY --------------------------------- */
+  // Hodnoty se stahují vzorci z CHL; parseVstupySheet() čte C1–C4 a od řádku 6
+  // sloupce A–D, takže rozvržení tohoto listu musí zůstat přesně takto.
+  const vs = {};
+  const vstupyHeader = sb.style({ font: { name: "Arial", size: 10 }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
+  const vstupyHeaderB = sb.style({ font: { name: "Arial", size: 10, bold: true }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
+  const vstupyCell = sb.style({ border: "lrtb", alignment: { h: "left", v: "center" } });
+
+  [["ID pobočky", "CHL!G1"], ["Název pobočky", "CHL!C3"],
+    ["Otevírací doba pobočky (hodin týdně)", "CHL!I3"], ["Doba vytěžení zaměstnanců (hodin týdně)", "CHL!I6"]]
+    .forEach(([label, formula], i) => {
+      const r = i + 1;
+      vs[`A${r}`] = str(label, vstupyHeader);
+      vs[`B${r}`] = str("", vstupyHeader);
+      vs[`C${r}`] = { f: formula, v: "", s: vstupyCell };
+      vs[`D${r}`] = str("", vstupyCell);
+    });
+  ["Segment", "Pozice", "Počet FTE", "Vytěžení WPL"].forEach((h, i) => {
+    vs[`${"ABCD"[i]}5`] = str(h, vstupyHeaderB);
+  });
+
+  let vr = 6;
+  positionSegments.forEach((segment) => {
+    positionsBySegment[segment].forEach((pozice) => {
+      const chlRow = positionRowMap[`${segment}||${pozice}`];
+      vs[`A${vr}`] = str(segment, vstupyCell);
+      vs[`B${vr}`] = str(pozice, vstupyCell);
+      vs[`C${vr}`] = { f: `CHL!H${chlRow}`, v: "", s: vstupyCell };
+      vs[`D${vr}`] = { f: "$C$4", v: "", s: vstupyCell };
+      vr++;
+    });
+  });
+  // Cestovní blok — pozice, FTE i vytížení se tahají z volných řádků CHL.
+  for (let i = 0; i < CHL_CESTOVNI_ROWS; i++) {
+    const cr = cestFirst + i;
+    vs[`A${vr}`] = { f: `IF(CHL!B${cr}=0,"","CESTOVNÍ")`, v: "", t: "str", s: vstupyCell };
+    vs[`B${vr}`] = { f: `IF(CHL!B${cr}=0,"",CHL!B${cr})`, v: "", t: "str", s: vstupyCell };
+    vs[`C${vr}`] = { f: `IF(CHL!B${cr}=0,"",CHL!H${cr})`, v: "", t: "str", s: vstupyCell };
+    vs[`D${vr}`] = { f: `IF(CHL!B${cr}=0,"",CHL!G${cr})`, v: "", t: "str", s: vstupyCell };
+    vr++;
+  }
+
+  const chlSheet = {
+    name: "CHL", cells: chl, cols: CHL_COL_WIDTHS, merges,
+    rowHeights, defaultRowHeight: 15, freezeRows: 9,
+  };
   const vstupySheet = {
-    name: "VSTUPY",
-    cells: ws,
-    cols: [{ index: 1, width: 16 }, { index: 2, width: 56 }, { index: 3, width: 14 }, { index: 4, width: 16 }],
+    name: "VSTUPY", cells: vs, cols: VSTUPY_COL_WIDTHS, defaultRowHeight: 15, freezeRows: 5,
   };
 
   const out = buildXlsxWorkbook([chlSheet, vstupySheet], sb);
@@ -3535,7 +3881,12 @@ function generateChecklistTemplate() {
   a.href = url; a.download = "checklist_sablona.xlsx";
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
-  toast(`Excel šablona vygenerována (${orderedPositions.length} pozic, ${orderedFurniture.length} nábytkových prvků). Pobočka vyplňuje list CHL, do listu VSTUPY se hodnoty stahují automaticky.`, "ok");
+
+  const positionCount = positionSegments.reduce((n, s) => n + positionsBySegment[s].length, 0);
+  const furnitureCount = frontOffice.concat(backOffice)
+    .reduce((n, b) => n + b.zones.reduce((m, z) => m + z.items.length, 0), 0);
+  toast(`Excel šablona vygenerována (${positionCount} pozic, ${furnitureCount} nábytkových prvků). ` +
+    `Pobočka vyplňuje list CHL, do listu VSTUPY se hodnoty stahují automaticky.`, "ok");
 }
 
 /* --------------------------------- Tabs ------------------------------------ */

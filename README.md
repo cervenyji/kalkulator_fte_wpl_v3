@@ -337,29 +337,46 @@ Excel checklist i celá kalkulace:
   `furniture_to_zone`), nyní přímo editovatelné (dosud jen needitovatelná seedovaná data).
 
 Tlačítkem **„Generovat Excel šablonu“** se z aktuálního obsahu těchto tří tabulek vygeneruje
-`.xlsx` se dvěma listy, ve stejném vztahu jako u vzorového checklistu:
+`.xlsx`, který **vypadá i funguje stejně jako vzorový checklist** — se dvěma listy:
 
-- **`CHL`** — list, do kterého pobočka skutečně vyplňuje data: sekce „DETAILY POBOČKY“ (ID, název,
-  otevírací doba, doba vytěžení WPL) a sekce „OBSAZENOST POBOČKY“ se sloupcem „Počet FTE“ pro
-  každou pozici (a sloupcem „Vytížení WPL“ navíc u segmentu CESTOVNÍ), plus přehled nábytku pro
-  sestavení layoutu se sloupcem pro počet kusů.
-- **`VSTUPY`** — list, který si hodnoty z CHL jen **stahuje vzorci** (`=CHL!G1`, `=CHL!H9` apod.) do
-  přesně té podoby, kterou čte `parseVstupySheet()` (C1–C4 + řádky od 6, sloupce A–D). Aplikace
-  parsuje výhradně tento list — mechanismus je stejný jako u originální šablony, takže po vyplnění
-  CHL a uložení souboru v Excelu (kdy se vzorce přepočítají) obsahuje VSTUPY aktuální hodnoty.
+- **`CHL`** — list, do kterého vyplňuje pobočka. Obsahuje kompletní rozvržení vzoru:
+  - hlavičku s titulkem (`=_xlfn.CONCAT("CHECKLIST"," - ",C3)`) a polem pro celkový počet WPL,
+  - sekci **DETAILY POBOČKY** (název, datum zpracování, cílový formát, typ akce, režim obsluhy
+    klientů) a vpravo velká pole **otevírací doby** a **doby vytěžení WPL**,
+  - sekci **OBSAZENOST POBOČKY** — pozice po segmentech se sloupci „POČET FTE AKTUÁLNĚ“,
+    „POČET FTE VÝHLED“ a „POZNÁMKA“, s součtovým řádkem „Suma FTE:“ za každým segmentem
+    a řádkem „Suma FTE bez CEST:“,
+  - volný blok **CESTOVNÍ POZICE** (9 řádků) se sloupcem „DOBA VYUŽITÍ WPL V HODINÁCH TÝDNĚ“
+    a řádkem „Suma FTE s CEST:“,
+  - sekce **SAZO**, **BUSINESS ZONE** (FRONT OFFICE — service a meeting zone) a **BACK OFFICE**
+    s nábytkem po segmentech a zónách, sloupci „POČET“ / „WPL“ / „POZNÁMKA“,
+  - **SUMMARY** s dopočtem počtu ATM a WPL, sekci **VYBAVENÍ** (bankovní technika, ostatní
+    vybavení, náhradní provoz), blok doplňujících informací a řádky Load key / Calculation key.
+- **`VSTUPY`** — list, který si hodnoty z CHL jen **stahuje vzorci** (`=CHL!G1`, `=CHL!C3`,
+  `=CHL!I3`, `=CHL!H10`, `=$C$4`, u cestovních `=IF(CHL!B80=0,"",…)`) do přesně té podoby, kterou
+  čte `parseVstupySheet()` (C1–C4 + řádky od 6, sloupce A–D). Aplikace parsuje výhradně tento list
+  — mechanismus je stejný jako u originální šablony, takže po vyplnění CHL a uložení souboru
+  v Excelu (kdy se vzorce přepočítají) obsahuje VSTUPY aktuální hodnoty.
 
-Nově přidaná pozice nebo nábytkový prvek se tak při dalším vygenerování šablony automaticky objeví
-v obou listech se správně provázanými vzorci, a takto vygenerovaný a vyplněný soubor lze po uložení
-v Excelu bez úprav znovu načíst zpět do aplikace (záložka „Nový výpočet“ → „Nahrát Excel checklist“)
-— parser čte pozice dynamicky řádek po řádku z listu VSTUPY, není závislý na pevném počtu ani pořadí.
+Obsah pozic a nábytku pochází z databáze aplikace, takže nově přidaná pozice nebo nábytkový prvek se
+při dalším vygenerování šablony automaticky objeví v obou listech se správně provázanými vzorci.
+Pořadí uvnitř segmentu se drží podle pořadí zavedení (sloupec `id`), což odpovídá pořadí ve vzoru;
+pořadí segmentů řídí sloupec „Pořadí“ v tabulce segmentů. Takto vygenerovaný a vyplněný soubor lze
+bez úprav znovu načíst zpět do aplikace (záložka „Nový výpočet“ → „Nahrát Excel checklist“).
 
-Šablona je **skutečně naformátovaná** — tučné a barevné nadpisy sekcí, šedě podbarvené buňky se
-segmentem, žlutě zvýrazněné vstupní buňky (kam pobočka píše), ohraničené tabulky a nastavené šířky
-sloupců. Vendorovaná knihovna SheetJS (komunitní edice) umí formátování buněk sice přečíst, ale při
-zápisu (`XLSX.write`) ho vždy zahazuje (ověřeno přímým testem) — proto se šablona nesestavuje přes
-SheetJS, ale přes vlastní minimalistický zapisovač `.xlsx` (`xlsx_writer.js`), který .xlsx (ZIP +
-OOXML XML) sestaví přímo a formátování do souboru skutečně zapíše. Ověřeno jak knihovnou `openpyxl`
-(barvy výplně, tučné písmo, ohraničení, sloučené buňky), tak zpětným načtením do samotné aplikace.
+Šablona je **skutečně naformátovaná** podle vzoru — barevné nadpisy sekcí (tmavě modrá `#235377`),
+tyrkysové popisky segmentů a součtů, šedé popisky zón, modré písmo vyplňovaných buněk, velká
+tyrkysová čísla u hodin, sloučené buňky, šířky sloupců i výšky řádků. Vendorovaná knihovna SheetJS
+(komunitní edice) umí formátování buněk sice přečíst, ale při zápisu (`XLSX.write`) ho vždy zahazuje
+(ověřeno přímým testem) — proto se šablona nesestavuje přes SheetJS, ale přes vlastní minimalistický
+zapisovač `.xlsx` (`xlsx_writer.js`), který .xlsx (ZIP + OOXML XML) sestaví přímo. Shoda se vzorem je
+ověřená porovnáním obou souborů knihovnou `openpyxl` (výplně, fonty, ohraničení po stranách,
+zarovnání, sloučené buňky, šířky sloupců, výšky řádků) i zpětným načtením vyplněné šablony do
+aplikace.
+
+Jediné pole, které se ve vzoru dopočítává a v šabloně ho vyplňuje uživatel, je **ID pobočky**
+(buňka `G1` na listu CHL) — ve vzoru ho hledá `VLOOKUP` v interní tabulce poboček, která součástí
+šablony není.
 
 ## Formát vstupního Excelu
 

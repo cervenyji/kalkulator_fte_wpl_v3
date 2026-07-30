@@ -1,24 +1,22 @@
 'use strict';
 
 /* =========================================================================
-   Minimal, závislostí prostý zapisovač .xlsx (OOXML) souborů.
+   Minimální, na závislostech nezávislý zapisovač .xlsx (OOXML).
 
    Důvod existence: vendorovaná knihovna SheetJS (vendor/xlsx.full.min.js,
    komunitní edice) umí formátování buněk při čtení přečíst, ale při zápisu
    (XLSX.write) ho vždy zahodí — ověřeno přímým testem (zápis buňky se
    zadaným fill/font a zpětné přečtení vždy vrátí "bez formátování", i pro
-   nově vytvořený sešit). Pro modul "Struktura checklistu", kde má být
-   vygenerovaná šablona formátovaná stejně jako vzorový checklist, proto
-   tento soubor sestavuje .xlsx přímo — .xlsx je jen ZIP archiv s XML
-   soubory (OOXML SpreadsheetML), takže stačí vlastní jednoduchý ZIP writer
-   (bez komprese — metoda "stored" je pro ZIP formát plně validní) a ručně
-   sestavené XML pro list/styly/workbook.
+   nově vytvořený sešit). Modul „Struktura checklistu“ přitom potřebuje
+   vygenerovat šablonu, která vypadá stejně jako vzorový checklist, proto se
+   .xlsx sestavuje přímo: je to ZIP archiv s XML soubory (OOXML
+   SpreadsheetML), takže stačí vlastní jednoduchý ZIP writer (bez komprese —
+   metoda „stored“ je pro ZIP plně validní) a ručně sestavené XML.
 
-   Podporuje jen to, co šablona checklistu skutečně potřebuje: řetězce
-   (inline, bez sdílené tabulky řetězců), čísla, jednoduché vzorce
-   s přímým odkazem na buňku, sloupcová šířka, sloučené buňky a sadu
-   pojmenovaných stylů (výplň, tučné písmo, barva textu, ohraničení,
-   zarovnání).
+   Podporuje: řetězce (inline), čísla, vzorce, pojmenované styly (font
+   name/size/bold/barva, výplň, ohraničení po jednotlivých stranách,
+   zarovnání + zalamování), šířky sloupců, výšky řádků, sloučené buňky
+   a zamrznuté řádky.
    ========================================================================= */
 
 /* ------------------------------- ZIP (stored) ------------------------------ */
@@ -39,7 +37,6 @@ function crc32(bytes) {
 }
 
 function buildZip(files) {
-  // files: [{ name: string, data: Uint8Array }]
   const encoder = new TextEncoder();
   const localChunks = [];
   const centralChunks = [];
@@ -52,25 +49,25 @@ function buildZip(files) {
 
     const local = new Uint8Array(30 + nameBytes.length);
     const lv = new DataView(local.buffer);
-    lv.setUint32(0, 0x04034b50, true); // local file header signature
-    lv.setUint16(4, 20, true);         // version needed to extract
+    lv.setUint32(0, 0x04034b50, true); // local file header
+    lv.setUint16(4, 20, true);         // version needed
     lv.setUint16(6, 0, true);          // flags
     lv.setUint16(8, 0, true);          // compression: stored
     lv.setUint16(10, 0, true);         // mod time
     lv.setUint16(12, 0x21, true);      // mod date (1980-01-01)
     lv.setUint32(14, crc, true);
-    lv.setUint32(18, size, true);      // compressed size
-    lv.setUint32(22, size, true);      // uncompressed size
+    lv.setUint32(18, size, true);
+    lv.setUint32(22, size, true);
     lv.setUint16(26, nameBytes.length, true);
-    lv.setUint16(28, 0, true);         // extra field length
+    lv.setUint16(28, 0, true);
     local.set(nameBytes, 30);
     localChunks.push(local, data);
 
     const central = new Uint8Array(46 + nameBytes.length);
     const cv = new DataView(central.buffer);
-    cv.setUint32(0, 0x02014b50, true); // central directory signature
-    cv.setUint16(4, 20, true);         // version made by
-    cv.setUint16(6, 20, true);         // version needed
+    cv.setUint32(0, 0x02014b50, true); // central directory
+    cv.setUint16(4, 20, true);
+    cv.setUint16(6, 20, true);
     cv.setUint16(8, 0, true);
     cv.setUint16(10, 0, true);
     cv.setUint16(12, 0, true);
@@ -79,12 +76,12 @@ function buildZip(files) {
     cv.setUint32(20, size, true);
     cv.setUint32(24, size, true);
     cv.setUint16(28, nameBytes.length, true);
-    cv.setUint16(30, 0, true); // extra length
-    cv.setUint16(32, 0, true); // comment length
-    cv.setUint16(34, 0, true); // disk number start
-    cv.setUint16(36, 0, true); // internal attrs
-    cv.setUint32(38, 0, true); // external attrs
-    cv.setUint32(42, offset, true); // local header offset
+    cv.setUint16(30, 0, true);
+    cv.setUint16(32, 0, true);
+    cv.setUint16(34, 0, true);
+    cv.setUint16(36, 0, true);
+    cv.setUint32(38, 0, true);
+    cv.setUint32(42, offset, true);
     central.set(nameBytes, 46);
     centralChunks.push(central);
 
@@ -105,8 +102,7 @@ function buildZip(files) {
   ev.setUint32(16, centralStart, true);
   ev.setUint16(20, 0, true);
 
-  const total = offset + centralSize + eocd.length;
-  const out = new Uint8Array(total);
+  const out = new Uint8Array(offset + centralSize + eocd.length);
   let p = 0;
   [...localChunks, ...centralChunks, eocd].forEach((chunk) => { out.set(chunk, p); p += chunk.length; });
   return out;
@@ -121,7 +117,6 @@ function xmlEsc(s) {
 }
 
 function colLetters(n) {
-  // 1-based column index -> "A", "B", ..., "Z", "AA", ...
   let s = "";
   while (n > 0) {
     const rem = (n - 1) % 26;
@@ -140,13 +135,18 @@ function parseCellAddr(addr) {
 
 /* -------------------------------- Style book -------------------------------- */
 
-// Spravuje deduplikované fonty/výplně/ohraničení/formáty a vydává indexy do
-// cellXfs, které se pak používají jako atribut `s` na jednotlivých buňkách.
+// Spravuje deduplikované fonty/výplně/ohraničení a vydává indexy do cellXfs,
+// které se pak používají jako atribut `s` na jednotlivých buňkách.
+//
+// style({ font: { name, size, bold, color }, fill: "FFRRGGBB",
+//         border: "lrtb" | "lr" | "b" | ... (+ borderStyle, borderColor),
+//         alignment: { h, v, wrap } })
 function createStyleBook() {
-  const fonts = [{ sz: 11, name: "Calibri" }]; // index 0 = výchozí
-  const fills = [{ patternType: "none" }, { patternType: "gray125" }]; // 0,1 vyhrazené OOXML výchozí hodnoty
-  const borders = [{}]; // index 0 = bez ohraničení
-  const cellXfs = [{ fontId: 0, fillId: 0, borderId: 0, align: null }]; // index 0 = výchozí
+  const DEFAULT_FONT = { name: "Calibri", size: 11, bold: false, color: null };
+  const fonts = [{ ...DEFAULT_FONT }];
+  const fills = [{ pattern: "none" }, { pattern: "gray125" }]; // 0 a 1 jsou v OOXML vyhrazené
+  const borders = [{ sides: "", style: "thin", color: null }];
+  const xfs = [{ fontId: 0, fillId: 0, borderId: 0, alignment: null }];
 
   function dedupe(arr, item) {
     const key = JSON.stringify(item);
@@ -156,45 +156,79 @@ function createStyleBook() {
     return arr.length - 1;
   }
 
-  function addStyle({ bold, size, color, fill, border, align } = {}) {
-    const fontId = dedupe(fonts, { sz: size || 11, name: "Calibri", bold: !!bold, color: color || null });
-    const fillId = fill ? dedupe(fills, { patternType: "solid", fgColor: fill }) : 0;
-    const borderId = border ? dedupe(borders, { thin: true }) : 0;
-    return dedupe(cellXfs, { fontId, fillId, borderId, align: align || null });
+  function style(spec = {}) {
+    const f = spec.font || {};
+    const fontId = dedupe(fonts, {
+      name: f.name || DEFAULT_FONT.name,
+      size: f.size || DEFAULT_FONT.size,
+      bold: !!f.bold,
+      color: f.color || null,
+    });
+    const fillId = spec.fill ? dedupe(fills, { pattern: "solid", fg: spec.fill }) : 0;
+    const borderId = spec.border
+      ? dedupe(borders, { sides: spec.border, style: spec.borderStyle || "thin", color: spec.borderColor || null })
+      : 0;
+    const a = spec.alignment;
+    const alignment = a ? { h: a.h || null, v: a.v || null, wrap: !!a.wrap } : null;
+    return dedupe(xfs, { fontId, fillId, borderId, alignment });
   }
 
   function toXml() {
-    const fontsXml = fonts.map((f) => `<font><sz val="${f.sz}"/>${f.bold ? "<b/>" : ""}${f.color ? `<color rgb="${f.color}"/>` : ""}<name val="${f.name}"/></font>`).join("");
-    const fillsXml = fills.map((f) => f.patternType === "solid"
-      ? `<fill><patternFill patternType="solid"><fgColor rgb="${f.fgColor}"/><bgColor indexed="64"/></patternFill></fill>`
-      : `<fill><patternFill patternType="${f.patternType}"/></fill>`).join("");
-    const borderSide = () => `<left style="thin"><color rgb="FFB0B0B0"/></left><right style="thin"><color rgb="FFB0B0B0"/></right><top style="thin"><color rgb="FFB0B0B0"/></top><bottom style="thin"><color rgb="FFB0B0B0"/></bottom>`;
-    const bordersXml = borders.map((b) => b.thin ? `<border>${borderSide()}</border>` : `<border><left/><right/><top/><bottom/></border>`).join("");
-    const xfsXml = cellXfs.map((xf) => {
-      const alignXml = xf.align ? `<alignment horizontal="${xf.align}" vertical="center" wrapText="1"/>` : "";
-      return `<xf numFmtId="0" fontId="${xf.fontId}" fillId="${xf.fillId}" borderId="${xf.borderId}" xfId="0"` +
-        `${xf.fillId ? ' applyFill="1"' : ""}${xf.borderId ? ' applyBorder="1"' : ""}${xf.fontId ? ' applyFont="1"' : ""}${alignXml ? ' applyAlignment="1"' : ""}>${alignXml}</xf>`;
+    const fontsXml = fonts.map((f) =>
+      `<font><sz val="${f.size}"/>${f.bold ? "<b/>" : ""}` +
+      `${f.color ? `<color rgb="${f.color}"/>` : `<color theme="1"/>`}` +
+      `<name val="${xmlEsc(f.name)}"/><family val="2"/><charset val="238"/></font>`).join("");
+
+    const fillsXml = fills.map((f) => f.pattern === "solid"
+      ? `<fill><patternFill patternType="solid"><fgColor rgb="${f.fg}"/><bgColor indexed="64"/></patternFill></fill>`
+      : `<fill><patternFill patternType="${f.pattern}"/></fill>`).join("");
+
+    const SIDES = { l: "left", r: "right", t: "top", b: "bottom" };
+    const bordersXml = borders.map((b) => {
+      // Strany se musí vypsat v pořadí left, right, top, bottom (schéma OOXML).
+      const parts = ["l", "r", "t", "b"].map((k) => {
+        const tag = SIDES[k];
+        if (!b.sides.includes(k)) return `<${tag}/>`;
+        const col = b.color ? `<color rgb="${b.color}"/>` : `<color indexed="64"/>`;
+        return `<${tag} style="${b.style}">${col}</${tag}>`;
+      }).join("");
+      return `<border>${parts}<diagonal/></border>`;
     }).join("");
+
+    const xfsXml = xfs.map((xf) => {
+      const a = xf.alignment;
+      const alignXml = a
+        ? `<alignment${a.h ? ` horizontal="${a.h}"` : ""}${a.v ? ` vertical="${a.v}"` : ""}${a.wrap ? ` wrapText="1"` : ""}/>`
+        : "";
+      return `<xf numFmtId="0" fontId="${xf.fontId}" fillId="${xf.fillId}" borderId="${xf.borderId}" xfId="0"` +
+        `${xf.fontId ? ' applyFont="1"' : ""}${xf.fillId ? ' applyFill="1"' : ""}` +
+        `${xf.borderId ? ' applyBorder="1"' : ""}${alignXml ? ' applyAlignment="1"' : ""}>` +
+        `${alignXml}</xf>`;
+    }).join("");
+
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
       `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
       `<fonts count="${fonts.length}">${fontsXml}</fonts>` +
       `<fills count="${fills.length}">${fillsXml}</fills>` +
       `<borders count="${borders.length}">${bordersXml}</borders>` +
       `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
-      `<cellXfs count="${cellXfs.length}">${xfsXml}</cellXfs>` +
+      `<cellXfs count="${xfs.length}">${xfsXml}</cellXfs>` +
       `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>` +
       `</styleSheet>`;
   }
 
-  return { addStyle, toXml };
+  return { style, toXml };
 }
 
 /* --------------------------------- Sheet XML -------------------------------- */
 
-// cells: { "A1": { v, t: 'str'|'n'|undefined, f: 'formula, no leading =', s: styleIndex } }
-// cols: [{ index (1-based), width }]
-// merges: ["A1:B1", ...]
-function sheetXml(cells, { cols, merges, freeze } = {}) {
+// cells:  { "A1": { v, t: "str"|undefined, f: "vzorec bez =", s: styleIndex } }
+// cols:   [{ index (1-based), width }]
+// merges: ["A1:F1", ...]
+// rowHeights: { 1: 39.75, ... }
+// freezeRows: počet zamrznutých řádků odshora
+function sheetXml(sheet) {
+  const { cells, cols, merges, rowHeights, freezeRows, defaultRowHeight } = sheet;
   const byRow = {};
   Object.keys(cells).forEach((addr) => {
     const { row } = parseCellAddr(addr);
@@ -213,15 +247,19 @@ function sheetXml(cells, { cols, merges, freeze } = {}) {
       const sAttr = cell.s ? ` s="${cell.s}"` : "";
       if (cell.f !== undefined) {
         const tAttr = cell.t === "str" ? ' t="str"' : "";
-        const vXml = cell.v !== undefined && cell.v !== "" ? `<v>${xmlEsc(cell.v)}</v>` : "";
+        const vXml = (cell.v !== undefined && cell.v !== "") ? `<v>${xmlEsc(cell.v)}</v>` : "";
         return `<c r="${addr}"${sAttr}${tAttr}><f>${xmlEsc(cell.f)}</f>${vXml}</c>`;
       }
       if (cell.t === "str") {
+        if (cell.v === "" || cell.v === undefined || cell.v === null) return `<c r="${addr}"${sAttr}/>`;
         return `<c r="${addr}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(cell.v)}</t></is></c>`;
       }
-      return `<c r="${addr}"${sAttr}><v>${cell.v === undefined || cell.v === "" ? 0 : cell.v}</v></c>`;
+      if (cell.v === undefined || cell.v === null || cell.v === "") return `<c r="${addr}"${sAttr}/>`;
+      return `<c r="${addr}"${sAttr}><v>${cell.v}</v></c>`;
     }).join("");
-    return `<row r="${r}">${cellsXml}</row>`;
+    const h = rowHeights && rowHeights[r];
+    const hAttr = h ? ` ht="${h}" customHeight="1"` : "";
+    return `<row r="${r}"${hAttr}>${cellsXml}</row>`;
   }).join("");
 
   const colsXml = (cols && cols.length)
@@ -230,15 +268,15 @@ function sheetXml(cells, { cols, merges, freeze } = {}) {
   const mergesXml = (merges && merges.length)
     ? `<mergeCells count="${merges.length}">${merges.map((m) => `<mergeCell ref="${m}"/>`).join("")}</mergeCells>`
     : "";
-  const paneXml = freeze
-    ? `<sheetViews><sheetView workbookViewId="0"><pane ${freeze}/></sheetView></sheetViews>`
+  const paneXml = freezeRows
+    ? `<sheetViews><sheetView workbookViewId="0"><pane ySplit="${freezeRows}" topLeftCell="A${freezeRows + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
     : `<sheetViews><sheetView workbookViewId="0"/></sheetViews>`;
+  const fmtXml = `<sheetFormatPr defaultRowHeight="${defaultRowHeight || 15}"/>`;
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
     `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
     `<dimension ref="A1:${colLetters(maxCol)}${maxRow}"/>` +
-    paneXml +
-    colsXml +
+    paneXml + fmtXml + colsXml +
     `<sheetData>${rowsXml}</sheetData>` +
     mergesXml +
     `</worksheet>`;
@@ -246,8 +284,7 @@ function sheetXml(cells, { cols, merges, freeze } = {}) {
 
 /* -------------------------------- Workbook ---------------------------------- */
 
-// sheets: [{ name, cells, cols, merges, freeze }]
-// Vrátí Uint8Array s obsahem hotového .xlsx souboru.
+// sheets: [{ name, cells, cols, merges, rowHeights, freezeRows, defaultRowHeight }]
 function buildXlsxWorkbook(sheets, styleBook) {
   const encoder = new TextEncoder();
   const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
@@ -281,7 +318,7 @@ function buildXlsxWorkbook(sheets, styleBook) {
     { name: "xl/workbook.xml", data: encoder.encode(workbookXml) },
     { name: "xl/_rels/workbook.xml.rels", data: encoder.encode(workbookRels) },
     { name: "xl/styles.xml", data: encoder.encode(styleBook.toXml()) },
-    ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: encoder.encode(sheetXml(s.cells, s)) })),
+    ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: encoder.encode(sheetXml(s)) })),
   ];
   return buildZip(files);
 }
