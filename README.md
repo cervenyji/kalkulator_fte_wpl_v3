@@ -227,10 +227,18 @@ Stejná tabulka je i v PDF exportu layoutu (a tedy i ve spojené sestavě).
 
 ### Analýza segmentů, zón a jejich prvků
 
-Pod seznamem nábytku je **rozbalovací analýza**: po rozbalení se zobrazí každý
-segment jako samostatná rozbalovací sekce (s FTE, potřebou a přiřazeným WPL a
-počtem kusů) a v ní jednotlivé zóny s výpisem konkrétních nábytkových prvků,
-jejich počtu kusů a přiřazeného WPL.
+Pod seznamem nábytku je **rozbalovací analýza**, která se po rozbalení zobrazí
+jako **jedna jednotná tabulka**:
+
+| Segment | Zóna | Nábytkový prvek | Počet ks | WPL / kus | WPL přiřazeno |
+
+- Každý nábytkový prvek má vlastní řádek. Buňky se segmentem a zónou jsou
+  vertikálně sloučené (`rowspan`) přes všechny své řádky, takže se celá analýza
+  čte jako jedna tabulka, ne jako vnořené bloky.
+- U segmentu je uvedeno FTE a celková potřeba WPL, u zóny potřeba a přiřazené WPL.
+- Za každým segmentem je součtový řádek („Celkem <segment>“) a na konci celkový
+  součet za pobočku.
+- Prvky, které nepřispívají k WPL, mají ve sloupci „WPL / kus“ pomlčku.
 
 ### Generovat celou sestavu (kalkulace + layout v jednom PDF)
 

@@ -242,16 +242,20 @@
   .wpl-over{color:var(--accent-dark); font-weight:600;}
   .wpl-ok{color:var(--ok); font-weight:600;}
 
-  /* --- Rozbalovací analýza segmentů, zón a prvků --- */
+  /* --- Rozbalovací analýza segmentů, zón a prvků (jedna tabulka) --- */
   .analysis-wrap{border:1px solid var(--border); border-radius:8px; padding:12px 14px; background:#fafcff;}
   .analysis-wrap > summary{cursor:pointer;}
-  .analysis-segment{border:1px solid var(--border); border-radius:7px; margin-bottom:8px; background:#fff;}
-  .analysis-segment > summary{cursor:pointer; padding:9px 12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
-  .analysis-zone{border-top:1px solid var(--border); padding:9px 12px 9px 26px;}
-  .analysis-zone-head{display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; margin-bottom:4px;}
-  .analysis-zone ul{margin:0; padding-left:18px;}
-  .analysis-zone li{margin-bottom:3px;}
-  .analysis-zone p{margin:0;}
+  .analysis-table{font-size:12.5px; background:#fff;}
+  .analysis-table th{font-size:11.5px;}
+  .analysis-table td{vertical-align:middle;}
+  /* Zarovnání číselných buněk řeší class="num" — kvůli rowspan by :nth-child
+     na sloučených řádcích ukazoval na jiný logický sloupec. */
+  .analysis-table .num{text-align:right; white-space:nowrap;}
+  .analysis-seg-cell, .analysis-zone-cell{white-space:nowrap;}
+  .analysis-seg-cell{background:#f7fafd;}
+  .analysis-zone-cell{background:#fcfdfe; font-weight:600;}
+  .analysis-seg-cell .muted, .analysis-zone-cell .muted{display:block; font-weight:400; font-size:11px; margin-top:2px;}
+  .analysis-table tr.analysis-subtotal td{background:#eef3fb; font-weight:700;}
 </style>
 </head>
 <body>

@@ -2289,38 +2289,81 @@ function renderWplOverviewHtml(overview) {
       Sloupec <strong>WPL / FTE</strong> udává, na kolik FTE dané WPL vychází — celkem i za každý segment zvlášť.</p>`;
 }
 
-// Rozbalovací analýza: segment -> zóny -> jednotlivé nábytkové prvky.
+// Rozbalovací analýza segmentů, zón a jejich prvků — jedna jednotná tabulka.
+// Každý nábytkový prvek má vlastní řádek; buňky segmentu a zóny se slučují přes
+// rowspan, takže se celá analýza čte jako jedna tabulka, a ne jako vnořené bloky.
+// Pozn.: kvůli rowspan nelze zarovnávat sloupce přes :nth-child (na řádcích, kde
+// je buňka sloučená, se indexy posunou) — číselné buňky proto nesou class="num".
 function renderZoneAnalysisHtml(overview, layoutRows) {
   const byKey = {};
   (layoutRows || []).forEach((r) => { (byKey[`${r.segment}||${r.zone}`] = byKey[`${r.segment}||${r.zone}`] || []).push(r); });
 
-  const segmentsHtml = overview.rows.map((r) => {
-    const zonesHtml = ZONES.map((z) => {
-      const items = byKey[`${r.segment}||${z}`] || [];
-      const req = r.zones[z], asg = r.assignedZones[z];
-      if (!items.length && req <= 0) return "";
-      const itemsHtml = items.length
-        ? `<ul>${items.map((it) => `<li>${esc(it.furniture)} — <strong>${fmtPieces(it.piece_count)} ks</strong>
-            ${it.wpl_assigned > 0 ? `(WPL: ${fmt1(it.wpl_assigned)})` : '<span class="muted">(nepočítá se jako WPL)</span>'}</li>`).join("")}</ul>`
-        : `<p class="muted">Do této zóny nebyl přiřazen žádný nábytek.</p>`;
-      return `<div class="analysis-zone">
-        <div class="analysis-zone-head"><strong>${ZONE_LABELS[z]}</strong>
-          <span class="muted">potřeba WPL ${fmt1(req)} · přiřazeno ${fmt1(asg)} · ${fmtPieces(r.pieces[z])} ks</span></div>
-        ${itemsHtml}
-      </div>`;
-    }).join("");
-    return `<details class="analysis-segment">
-      <summary>${segmentBadgeHtml(r.segment)}
-        <span class="muted">FTE ${fmt1(r.fte)} · potřeba WPL ${fmt1(r.wplTotal)} · přiřazeno ${fmt1(r.assignedTotal)}
-        · ${fmtPieces(r.piecesTotal)} ks nábytku</span></summary>
-      ${zonesHtml || '<p class="muted">Pro tento segment nevyšla potřeba WPL v žádné zóně.</p>'}
+  const bodyRows = [];
+  overview.rows.forEach((segRow) => {
+    // Zóny, do kterých se něco přiřadilo, nebo u kterých kalkulace vyžaduje WPL.
+    const zones = ZONES.filter((z) => (byKey[`${segRow.segment}||${z}`] || []).length > 0 || segRow.zones[z] > 0);
+    if (!zones.length) return;
+
+    // Buňka segmentu se slučuje přes všechny jeho řádky (prázdná zóna = 1 řádek).
+    const segSpan = zones.reduce((n, z) => n + Math.max(1, (byKey[`${segRow.segment}||${z}`] || []).length), 0);
+    let segCellEmitted = false;
+
+    zones.forEach((z) => {
+      const items = byKey[`${segRow.segment}||${z}`] || [];
+      const rowsForZone = items.length ? items : [null];
+      rowsForZone.forEach((it, i) => {
+        let html = "<tr>";
+        if (!segCellEmitted) {
+          html += `<td rowspan="${segSpan}" class="analysis-seg-cell">${segmentBadgeHtml(segRow.segment)}
+            <span class="muted">FTE ${fmt1(segRow.fte)} · WPL ${fmt1(segRow.wplTotal)}</span></td>`;
+          segCellEmitted = true;
+        }
+        if (i === 0) {
+          html += `<td rowspan="${rowsForZone.length}" class="analysis-zone-cell">${ZONE_LABELS[z]}
+            <span class="muted">potřeba WPL ${fmt1(segRow.zones[z])} · přiřazeno ${fmt1(segRow.assignedZones[z])}</span></td>`;
+        }
+        if (it) {
+          const perPiece = it.piece_count > 0 ? it.wpl_assigned / it.piece_count : 0;
+          html += `<td>${esc(it.furniture)}</td>
+            <td class="num">${fmtPieces(it.piece_count)}</td>
+            <td class="num">${perPiece > 0 ? fmt1(perPiece) : '<span class="muted">—</span>'}</td>
+            <td class="num">${fmt1(it.wpl_assigned)}</td>`;
+        } else {
+          html += `<td colspan="3" class="muted">Do této zóny nebyl přiřazen žádný nábytek.</td>
+            <td class="num">0.0</td>`;
+        }
+        bodyRows.push(html + "</tr>");
+      });
+    });
+
+    bodyRows.push(`<tr class="analysis-subtotal">
+      <td colspan="3">Celkem ${esc(segRow.segment)}</td>
+      <td class="num">${fmtPieces(segRow.piecesTotal)}</td>
+      <td class="num"></td>
+      <td class="num">${fmt1(segRow.assignedTotal)}</td></tr>`);
+  });
+
+  if (!bodyRows.length) {
+    return `<details class="analysis-wrap" style="margin-top:16px;">
+      <summary><strong>Analýza segmentů, zón a jejich prvků</strong></summary>
+      <p class="muted" style="margin-top:10px;">Zatím není co analyzovat — nevyšla potřeba WPL v žádné zóně.</p>
     </details>`;
-  }).join("");
+  }
+
+  bodyRows.push(`<tr class="total-row">
+    <td colspan="3">Celkem za pobočku</td>
+    <td class="num">${fmtPieces(overview.total.piecesTotal)}</td>
+    <td class="num"></td>
+    <td class="num">${fmt1(overview.total.assignedTotal)}</td></tr>`);
 
   return `<details class="analysis-wrap" style="margin-top:16px;">
     <summary><strong>Analýza segmentů, zón a jejich prvků</strong>
-      <span class="muted">(rozbalte pro detail po segmentech)</span></summary>
-    <div style="margin-top:10px;">${segmentsHtml}</div>
+      <span class="muted">(rozbalte pro detailní tabulku)</span></summary>
+    <div class="table-wrap" style="margin-top:10px;"><table class="analysis-table">
+      <thead><tr><th>Segment</th><th>Zóna</th><th>Nábytkový prvek</th>
+        <th class="num">Počet ks</th><th class="num">WPL / kus</th><th class="num">WPL přiřazeno</th></tr></thead>
+      <tbody>${bodyRows.join("")}</tbody>
+    </table></div>
   </details>`;
 }
 
