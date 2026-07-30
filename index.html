@@ -259,6 +259,31 @@
 
   /* --- Sloupec s verzí referenčních dat (jen informativní, needitovatelný) --- */
   .ref-version-cell{text-align:center; white-space:nowrap; background:#fafbfd;}
+
+  /* --- Návštěvnost a doporučení prostor --- */
+  .visitor-section{margin-top:18px; border:1px solid var(--border); border-radius:10px; padding:14px 16px; background:#fafcff;}
+  .visitor-section h3{margin-top:0;}
+  .visitor-section h4{margin:16px 0 6px; font-size:14px;}
+  .visitor-cards{display:flex; flex-wrap:wrap; gap:10px; margin:10px 0 14px;}
+  .vcard{flex:1 1 170px; background:#fff; border:1px solid var(--border); border-radius:8px; padding:8px 12px;}
+  .vcard-l{font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.03em;}
+  .vcard-v{font-size:24px; font-weight:800; line-height:1.25;}
+  .vcard-s{font-size:11px; color:var(--muted);}
+  .visitor-table{font-size:12.5px; background:#fff;}
+  .visitor-table th{font-size:11.5px;}
+  .visitor-table .num{text-align:right; white-space:nowrap;}
+  .visitor-table tr.visitor-peak td{background:#eef3fb; font-weight:600;}
+  .visitor-bar-cell{width:120px; padding:0 8px;}
+  .visitor-bar{display:block; height:9px; border-radius:5px; background:var(--accent); min-width:1px;}
+  .visitor-details{margin-top:14px; border:1px solid var(--border); border-radius:8px; padding:10px 12px; background:#fff;}
+  .visitor-details > summary{cursor:pointer; font-weight:600;}
+  /* Teplota čísla: čím vyšší vytížení / pravděpodobnost přetížení, tím výraznější. */
+  .visitor-hot{color:var(--err); font-weight:700;}
+  .visitor-warm{color:var(--warn); font-weight:600;}
+  .visitor-cool{color:var(--ok); font-weight:600;}
+  .visitor-neutral{color:var(--accent-dark); font-weight:600;}
+  #visitorList tr.visitor-row{cursor:pointer;}
+  #visitorList tr.visitor-row:hover td{background:#eef3fb;}
 </style>
 </head>
 <body>
@@ -279,6 +304,7 @@
   <button class="tabbtn active" data-tab="new">Nový výpočet</button>
   <button class="tabbtn" data-tab="history">Historie kalkulací</button>
   <button class="tabbtn" data-tab="ref">Referenční data</button>
+  <button class="tabbtn" data-tab="visitor">Návštěvnost</button>
   <button class="tabbtn" data-tab="admin">Struktura checklistu</button>
 </nav>
 
@@ -447,6 +473,34 @@
     referenčních dat byla spočítána — zpětně tak dohledáte přesné nastavení.</p>
     <div id="refVersionsList"></div>
     <div id="refVersionDetail" style="display:none; margin-top:14px;"></div>
+  </div>
+</section>
+
+<section class="tab" id="tab-visitor">
+  <div class="panel">
+    <h2>Report návštěvnosti</h2>
+    <p class="muted">Nahrajte HTML report návštěvnosti („Analýza návštěvnosti“). Aplikace si z něj pro každou
+      pobočku uloží <strong>doporučení prostor</strong> (zasedací místnosti a servisní místa),
+      <strong>detail návštěv po hodinách</strong> a <strong>Monte Carlo model</strong> průměrného dne.
+      Tato data se pak zobrazují u zpracované kalkulace dané pobočky (a v jejím PDF) jako druhý pohled
+      na potřebu míst — vedle potřeby WPL spočítané z FTE.</p>
+    <p class="muted">Report se načítá celý v prohlížeči, nikam se neodesílá. Nový import přepíše data poboček,
+      které report obsahuje; už spočítané kalkulace si drží snapshot dat z doby svého vzniku.</p>
+    <div class="row">
+      <button class="btn" id="btnPickVisitorReport">Nahrát HTML report návštěvnosti</button>
+      <input type="file" id="visitorReportInput" accept=".html,.htm" style="display:none;">
+    </div>
+    <div id="visitorImportStatus" style="margin-top:10px;"></div>
+  </div>
+  <div class="panel">
+    <h2>Pobočky v reportu</h2>
+    <p class="muted">Klikněte na pobočku pro detail návštěvnosti, doporučení prostor a Monte Carlo model.</p>
+    <div class="filterbox"><input type="text" id="visitorFilter" placeholder="Filtrovat dle názvu nebo ID pobočky…"></div>
+    <div id="visitorList"></div>
+  </div>
+  <div class="panel" id="visitorDetailPanel" style="display:none;">
+    <h2>Detail návštěvnosti pobočky</h2>
+    <div id="visitorDetail"></div>
   </div>
 </section>
 

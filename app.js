@@ -106,6 +106,25 @@ CREATE TABLE IF NOT EXISTS segments (
   color TEXT,
   icon TEXT
 );
+CREATE TABLE IF NOT EXISTS visitor_data (
+  pobocka_id TEXT PRIMARY KEY,
+  nazev TEXT,
+  imported_at TEXT,
+  source TEXT,
+  report_title TEXT,
+  consts_json TEXT,
+  payload TEXT
+);
+CREATE TABLE IF NOT EXISTS calculation_visitor (
+  calculation_key TEXT PRIMARY KEY,
+  pobocka_id TEXT,
+  nazev TEXT,
+  imported_at TEXT,
+  source TEXT,
+  report_title TEXT,
+  consts_json TEXT,
+  payload TEXT
+);
 `;
 
 // Doplní chybějící tabulky/sloupce v databázích vytvořených starší verzí aplikace.
@@ -1446,6 +1465,10 @@ function runCalculation() {
   const stats = computeCalculationStats({ rows: resultRows, celkem: celkemRow, inputRows });
   persistCalculationStats(calculation_key, load_key, stats, createdAt);
 
+  // Data z reportu návštěvnosti se ke kalkulaci uloží jako snapshot — kalkulace
+  // tak zůstane reprodukovatelná i po importu novějšího reportu.
+  saveVisitorSnapshot(calculation_key, getVisitorData(pendingLoad.pobocka_id, pendingLoad.pobocka_nazev));
+
   persistDatabase();
 
   renderResults({ calculation_key, load_key, createdAt, rows: resultRows, celkem: celkemRow, warnings, inputRows,
@@ -1466,6 +1489,7 @@ function renderResults(result) {
   const rowsHtml = result.rows.map((r) => resultRowHtml(r)).join("") + resultRowHtml(result.celkem, true);
   const stats = computeCalculationStats(result);
   const status = getCalculationStatus(result.calculation_key);
+  const visitor = getVisitorForCalculation(result.calculation_key, result.pobocka_id, result.pobocka_nazev);
 
   document.getElementById("resultsArea").innerHTML = `
     ${warnHtml}
@@ -1481,6 +1505,8 @@ function renderResults(result) {
     </div>
     ${refVersionDetailsHtml(result.refVersionId)}
     ${renderStatsSection(stats, "pdfIncludeStats")}
+    ${visitor ? renderVisitorSectionHtml(visitor, { stats, checkboxId: "pdfIncludeVisitor" })
+      : renderVisitorMissingHtml(result.pobocka_nazev, result.pobocka_id)}
     <div class="row" style="margin-top:14px;">
       <button class="btn secondary" id="btnExportPdf">Exportovat PDF s přehledem WPL</button>
       <button class="btn secondary" id="btnCopyResult">📋 Kopírovat výsledek do schránky</button>
@@ -1494,7 +1520,8 @@ function renderResults(result) {
   document.getElementById("btnExportPdf").addEventListener("click", () => {
     const note = document.getElementById("pdfNote").value.trim();
     const includeStats = document.getElementById("pdfIncludeStats").checked;
-    exportCalculationPdf(result, { note, includeStats });
+    const visitorBox = document.getElementById("pdfIncludeVisitor");
+    exportCalculationPdf(result, { note, includeStats, includeVisitor: visitorBox ? visitorBox.checked : false });
   });
   document.getElementById("btnCopyResult").addEventListener("click", () => copyResultToClipboard(result, stats));
   document.getElementById("btnToggleStatus").addEventListener("click", () => {
@@ -1507,7 +1534,7 @@ function renderResults(result) {
   renderLayoutSection("layoutArea", result.rows, {
     calculation_key: result.calculation_key, pobocka_id: result.pobocka_id, pobocka_nazev: result.pobocka_nazev, stats,
     // Data kalkulace pro "Generovat celou sestavu" (kalkulace + layout v jednom PDF)
-    calcResult: result, pdfNoteId: "pdfNote", pdfStatsId: "pdfIncludeStats",
+    calcResult: result, pdfNoteId: "pdfNote", pdfStatsId: "pdfIncludeStats", pdfVisitorId: "pdfIncludeVisitor",
   });
 }
 
@@ -1542,6 +1569,11 @@ function buildResultClipboardHtml(result, stats) {
     `${new Date(result.createdAt).toLocaleString("cs-CZ")}`,
   ].filter(Boolean).join(" · ");
 
+  // Doporučení prostor z reportu návštěvnosti se do schránky přidá jen tehdy,
+  // když jsou pro pobočku data k dispozici.
+  const visitor = getVisitorForCalculation(result.calculation_key, result.pobocka_id, result.pobocka_nazev);
+  const visitorRooms = visitor ? computeVisitorMetrics(visitor).rooms : null;
+
   const kpi = [
     ["Stanovený formát pobočky", esc(stats.formatTyp)],
     ["Doporučený počet fasttracků na hale", String(stats.recommendedFasttracks)],
@@ -1550,6 +1582,10 @@ function buildResultClipboardHtml(result, stats) {
     ["Poměr WPL / FTE", stats.wplFteRatio === null ? "—" : `${stats.wplFteRatio.toFixed(1)} %`],
     ["Podíl Backoffice zóny", stats.backofficePct === null ? "—" : `${stats.backofficePct.toFixed(1)} %`],
     ["Podíl míst pro jednání s klientem", stats.meetingPct === null ? "—" : `${stats.meetingPct.toFixed(1)} %`],
+    ...(visitorRooms ? [
+      ["Doporučené zasedací místnosti (návštěvnost, P95)", String(visitorRooms.meeting_rooms)],
+      ["Doporučená servisní místa (návštěvnost, P95)", String(visitorRooms.service_desks)],
+    ] : []),
   ].map(([k, v]) => `<tr><td style="${TD}">${k}</td><td style="${TD}${num}">${v}</td></tr>`).join("");
 
   return `<div style="font-family:Segoe UI,Arial,sans-serif; color:#1c2530;">
@@ -1754,6 +1790,10 @@ function computeCalculationStats(result) {
     recommendedChairs: Math.ceil(combinedTotal * 0.50),
     celkemFte,
     celkemWpl,
+    serviceZoneWpl: serviceZone,
+    meetingZoneWpl: meetingZoneTotal,
+    backofficeZoneWpl: backofficeZone,
+    officeRoomWpl: officeRoom,
     requiredAreaM2: celkemWpl * 25,
     wplFteRatio: celkemFte > 0 ? (celkemWpl / celkemFte) * 100 : null,
     backofficePct: celkemWpl > 0 ? (backofficeZone / celkemWpl) * 100 : null,
@@ -1846,7 +1886,7 @@ function exportCalculationPdf(result, options) {
 // stejný obsah použít jak pro samostatný export kalkulace, tak pro spojenou
 // sestavu (kalkulace + layout v jednom PDF).
 function drawCalculationPdf(pdf, startY, result, options) {
-  const { note = "", includeStats = true } = options || {};
+  const { note = "", includeStats = true, includeVisitor = true } = options || {};
   const marginX = 14;
   let y = startY;
   const pageBottom = 280;
@@ -2005,7 +2045,18 @@ function drawCalculationPdf(pdf, startY, result, options) {
     y += 8;
   }
 
+  // Návštěvnost a doporučení prostor z reportu návštěvnosti (pokud jsou pro
+  // pobočku k dispozici a uživatel je nevypnul zaškrtávátkem).
+  if (includeVisitor) {
+    const visitor = getVisitorForCalculation(result.calculation_key, result.pobocka_id, result.pobocka_nazev);
+    if (visitor) {
+      if (y > pageBottom - 40) { pdf.addPage(); y = 18; }
+      y = drawVisitorPdf(pdf, y, visitor, marginX, pageBottom, stats);
+    }
+  }
+
   if (result.warnings.length) {
+    if (y > pageBottom - 20) { pdf.addPage(); y = 18; }
     pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
     pdf.text("Upozornění:", marginX, y); y += 6;
     pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(9);
@@ -2017,10 +2068,698 @@ function drawCalculationPdf(pdf, startY, result, options) {
   }
 
   if (note) {
+    if (y > pageBottom - 20) { pdf.addPage(); y = 18; }
     pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
     pdf.text("Poznámka:", marginX, y); y += 6;
     pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(9);
     pdf.splitTextToSize(note, 180).forEach((line) => { pdf.text(line, marginX, y); y += 5; });
+  }
+
+  return y;
+}
+
+/* ==================== Návštěvnost a doporučení prostor ===================== */
+// Data pocházejí z HTML reportu návštěvnosti („Analýza návštěvnosti“), který má
+// všechna čísla vložená přímo v sobě jako JS objekt `const DATA = {…}` (klíčem
+// je ID pobočky) a konstanty modelu jako `const C = {…}`. Import report načte
+// v prohlížeči, vytáhne z něj obě struktury a uloží si pro každou pobočku tu
+// část, kterou kalkulace používá: doporučení prostor, návštěvy po hodinách a
+// Monte Carlo model. Při spočítání kalkulace se data pobočky uloží i jako
+// snapshot ke kalkulaci (tabulka calculation_visitor), aby zůstala kalkulace
+// zpětně reprodukovatelná i po importu novějšího reportu.
+
+const VISITOR_CONSTS_DEFAULT = {
+  MEETING_MINS: 45,
+  WALKIN_AVG_MINS: 15,
+  ABSENCE_RATE: 0.229,
+  MC_ITERATIONS: 1000,
+  WORK_MINS_DAY: 450,
+};
+
+// Řady Monte Carla mají 16 hodnot a pokrývají hodiny 6–21 (v reportu je graf
+// „P95 FTE poptávka po hodinách (6h–21h)“); by_hour má 24 hodnot (index = hodina).
+const VISITOR_MC_HOUR_FROM = 6;
+const VISITOR_MC_HOURS = 16;
+
+// Typy návštěv v reportu. Do doporučení prostor vstupují stejné dvě skupiny
+// jako v reportu: schůzky (online + fyzická) → zasedací místnosti,
+// bezhotovostní obsluha (walk-in) → servisní místa.
+const VISITOR_TYPES = [
+  { key: "fyzicka", label: "Fyzická schůzka", color: "#2770f0" },
+  { key: "online", label: "Online schůzka", color: "#7c3aed" },
+  { key: "bezhot", label: "Bezhotovostní obsluha", color: "#0891b2" },
+  { key: "hotovost", label: "Hotovostní obsluha", color: "#d97706" },
+];
+
+// Pole z reportu, která si aplikace ukládá — ostatní (heatmapy, měsíční a denní
+// řady, prodeje, benchmark) kalkulace nepotřebuje a jen by nadouvala databázi.
+const VISITOR_KEEP_KEYS = ["name", "fte", "bankers", "svc_fte", "has_svc", "cashier_fte", "has_cash",
+  "poc_kli", "total", "by_type", "by_hour", "n_days", "has_time", "annual_open_days", "ph_tyden",
+  "branch_format", "rooms", "mc", "mc_boost"];
+
+/* ----------------------------- Import reportu ------------------------------ */
+
+// Najde v textu deklaraci `const <name> = {` a vrátí naparsovaný objektový
+// literál (v reportu je to čisté JSON). Závorky se párují s ohledem na
+// řetězce, aby import neskončil na apostrofu nebo závorce v názvu pobočky.
+function extractJsObjectLiteral(text, name) {
+  const decl = new RegExp(`(?:const|let|var)\\s+${name}\\s*=\\s*\\{`);
+  const m = decl.exec(text);
+  if (!m) return null;
+  const start = text.indexOf("{", m.index);
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return JSON.parse(text.slice(start, i + 1));
+    }
+  }
+  throw new Error(`Deklaraci „${name}“ v reportu nešlo dočíst — chybí uzavírací závorka.`);
+}
+
+function parseVisitorReport(text) {
+  const data = extractJsObjectLiteral(text, "DATA");
+  if (!data) throw new Error("Tohle není report návštěvnosti — nenašel jsem v souboru data (const DATA).");
+  const consts = extractJsObjectLiteral(text, "C") || VISITOR_CONSTS_DEFAULT;
+  const titleMatch = /<title>([^<]*)<\/title>/i.exec(text);
+  const branches = Object.entries(data).map(([id, d]) => {
+    const payload = {};
+    VISITOR_KEEP_KEYS.forEach((k) => { if (d[k] !== undefined) payload[k] = d[k]; });
+    return { pobocka_id: String(id), nazev: d.name || "", payload };
+  });
+  return { title: titleMatch ? titleMatch[1].trim() : "Report návštěvnosti", consts, branches };
+}
+
+async function handleVisitorReportFile(file) {
+  const statusEl = document.getElementById("visitorImportStatus");
+  if (!db) { toast("Nejprve otevřete nebo vytvořte databázi.", "err"); return; }
+  statusEl.innerHTML = `<div class="msg">Načítám report ${esc(file.name)}…</div>`;
+  try {
+    const text = await file.text();
+    const parsed = parseVisitorReport(text);
+    if (!parsed.branches.length) throw new Error("Report neobsahuje žádnou pobočku.");
+    const importedAt = nowIso();
+    const constsJson = JSON.stringify(parsed.consts);
+    const ins = db.prepare(`INSERT OR REPLACE INTO visitor_data
+      (pobocka_id, nazev, imported_at, source, report_title, consts_json, payload)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    parsed.branches.forEach((b) => {
+      ins.run([b.pobocka_id, b.nazev, importedAt, file.name, parsed.title, constsJson, JSON.stringify(b.payload)]);
+    });
+    ins.free();
+    await persistDatabase();
+    const fromReport = parsed.branches.filter((b) => b.payload.rooms).length;
+    statusEl.innerHTML = `<div class="msg ok">Report <strong>${esc(parsed.title)}</strong>
+      (${esc(file.name)}) načten: <strong>${parsed.branches.length}</strong> poboček,
+      z toho ${fromReport} s doporučením prostor přímo z reportu — u ostatních se doporučení dopočítá
+      z návštěv po hodinách stejným vzorcem.</div>`;
+    renderVisitorList();
+    toast(`Načteno ${parsed.branches.length} poboček z reportu návštěvnosti.`, "ok");
+  } catch (e) {
+    console.error(e);
+    statusEl.innerHTML = `<div class="msg err">Report se nepodařilo načíst: ${esc(e.message)}</div>`;
+  }
+}
+
+/* --------------------- Přístup k datům + snapshot ke kalkulaci -------------- */
+
+function decodeVisitorRow(row) {
+  if (!row) return null;
+  try {
+    return {
+      pobocka_id: row.pobocka_id,
+      nazev: row.nazev,
+      imported_at: row.imported_at,
+      source: row.source,
+      report_title: row.report_title,
+      consts: row.consts_json ? JSON.parse(row.consts_json) : VISITOR_CONSTS_DEFAULT,
+      d: JSON.parse(row.payload),
+    };
+  } catch (e) {
+    console.warn("Data návštěvnosti nešlo přečíst:", e);
+    return null;
+  }
+}
+
+// Data návštěvnosti pobočky z posledního importovaného reportu. Pobočka se
+// hledá primárně podle ID (klíč v reportu), jako záloha podle názvu.
+function getVisitorData(pobockaId, pobockaNazev) {
+  if (!db) return null;
+  let row = null;
+  if (pobockaId !== null && pobockaId !== undefined && String(pobockaId) !== "") {
+    row = dbAll("SELECT * FROM visitor_data WHERE pobocka_id = ?", [String(pobockaId)])[0] || null;
+  }
+  if (!row && pobockaNazev) {
+    row = dbAll("SELECT * FROM visitor_data WHERE nazev = ?", [String(pobockaNazev)])[0] || null;
+  }
+  return decodeVisitorRow(row);
+}
+
+function saveVisitorSnapshot(calculationKey, visitor) {
+  if (!visitor) return;
+  dbRun(`INSERT OR REPLACE INTO calculation_visitor
+    (calculation_key, pobocka_id, nazev, imported_at, source, report_title, consts_json, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [calculationKey, visitor.pobocka_id, visitor.nazev, visitor.imported_at, visitor.source,
+      visitor.report_title, JSON.stringify(visitor.consts), JSON.stringify(visitor.d)]);
+}
+
+// Data návštěvnosti pro konkrétní kalkulaci: nejdřív snapshot uložený při jejím
+// spočítání (aby se kalkulace neměnila pod rukama), jinak aktuálně importovaná
+// data pobočky — tak se doporučení prostor objeví i u kalkulací spočítaných
+// ještě před importem reportu.
+function getVisitorForCalculation(calculationKey, pobockaId, pobockaNazev) {
+  if (!db) return null;
+  const snap = calculationKey
+    ? decodeVisitorRow(dbAll("SELECT * FROM calculation_visitor WHERE calculation_key = ?", [calculationKey])[0])
+    : null;
+  if (snap) return { ...snap, isSnapshot: true };
+  const live = getVisitorData(pobockaId, pobockaNazev);
+  return live ? { ...live, isSnapshot: false } : null;
+}
+
+/* --------------------------- Odvozené ukazatele ---------------------------- */
+
+// Doporučení prostor stejným vzorcem jako report: λ = průměrné příchody
+// v nejfrekventovanější hodině, P95 = λ + 1.645·√λ, počet míst = ⌈P95 × obsluha
+// v minutách ÷ 60⌉. Použije se u poboček, u kterých report doporučení neuvádí
+// (nemají v datech blok `rooms`) — u ostatních se bere hodnota z reportu.
+function computeRoomsFromHours(byHour, consts) {
+  const online = (byHour && byHour.online) || [];
+  const fyzicka = (byHour && byHour.fyzicka) || [];
+  const bezhot = (byHour && byHour.bezhot) || [];
+  let peakMtg = 0;
+  let peakBez = 0;
+  for (let h = 0; h < 24; h++) {
+    peakMtg = Math.max(peakMtg, (online[h] || 0) + (fyzicka[h] || 0));
+    peakBez = Math.max(peakBez, bezhot[h] || 0);
+  }
+  const p95 = (lam) => lam + 1.645 * Math.sqrt(lam);
+  const mtgMins = consts.MEETING_MINS ?? VISITOR_CONSTS_DEFAULT.MEETING_MINS;
+  const walkMins = consts.WALKIN_AVG_MINS ?? VISITOR_CONSTS_DEFAULT.WALKIN_AVG_MINS;
+  return {
+    meeting_rooms: Math.ceil((p95(peakMtg) * mtgMins) / 60),
+    service_desks: Math.ceil((p95(peakBez) * walkMins) / 60),
+    peak_mtg_lam: peakMtg, p95_mtg: p95(peakMtg), delta_mtg: p95(peakMtg) - peakMtg,
+    peak_bezhot_lam: peakBez, p95_bezhot: p95(peakBez), delta_bezhot: p95(peakBez) - peakBez,
+    derived: true,
+  };
+}
+
+function summarizeVisitorMc(mc, consts) {
+  const rows = [];
+  const len = Math.max((mc.p95_util || []).length, (mc.overload_prob || []).length, VISITOR_MC_HOURS);
+  for (let i = 0; i < len; i++) {
+    rows.push({
+      hour: VISITOR_MC_HOUR_FROM + i,
+      lamOnline: (mc.lam_online || [])[i] || 0,
+      lamFyzicka: (mc.lam_fyzicka || [])[i] || 0,
+      lamBezhot: (mc.lam_bezhot || [])[i] || 0,
+      p50Util: (mc.p50_util || [])[i] || 0,
+      p95Util: (mc.p95_util || [])[i] || 0,
+      overloadProb: (mc.overload_prob || [])[i] || 0,
+      p95ObFte: (mc.p95_ob_fte || [])[i] || 0,
+      p95SvcFte: (mc.p95_svc_fte || [])[i] || 0,
+    });
+  }
+  return {
+    rows,
+    // Součet pravděpodobností přetížení po hodinách = průměrný počet hodin za
+    // den, kdy poptávka přeteče kapacitu (stejný ukazatel jako v reportu).
+    overloadHours: (mc.overload_prob || []).reduce((a, b) => a + b, 0) / 100,
+    nIter: mc.n_iter || consts.MC_ITERATIONS || VISITOR_CONSTS_DEFAULT.MC_ITERATIONS,
+    coveragePct: mc.coverage_pct,
+    bankersFor95: mc.bankers_for_95,
+    currentBankers: mc.current_bankers,
+    svcFte: mc.svc_fte,
+    peakP95Ob: (mc.p95_ob_fte || []).reduce((a, b) => Math.max(a, b), 0),
+    peakP95Svc: (mc.p95_svc_fte || []).reduce((a, b) => Math.max(a, b), 0),
+    obCapFte: mc.ob_cap_fte, svcCapFte: mc.svc_cap_fte,
+    obCapDay: mc.ob_cap_day, obP95Day: mc.ob_p95_day,
+    svcCapDay: mc.svc_cap_day, svcP95Day: mc.svc_p95_day,
+    presencePct: (1 - (consts.ABSENCE_RATE ?? VISITOR_CONSTS_DEFAULT.ABSENCE_RATE)) * 100,
+  };
+}
+
+function computeVisitorMetrics(visitor) {
+  const d = visitor.d || {};
+  const consts = visitor.consts || VISITOR_CONSTS_DEFAULT;
+  const byHour = d.by_hour || {};
+  const rooms = d.rooms ? { ...d.rooms, derived: false } : computeRoomsFromHours(byHour, consts);
+  const hours = [];
+  let peakHour = null;
+  for (let h = VISITOR_MC_HOUR_FROM; h < VISITOR_MC_HOUR_FROM + VISITOR_MC_HOURS; h++) {
+    const row = { hour: h, mcIndex: h - VISITOR_MC_HOUR_FROM };
+    VISITOR_TYPES.forEach((t) => { row[t.key] = (byHour[t.key] || [])[h] || 0; });
+    row.meetings = row.fyzicka + row.online;
+    row.walkins = row.bezhot + row.hotovost;
+    row.total = row.meetings + row.walkins;
+    hours.push(row);
+    if (!peakHour || row.total > peakHour.total) peakHour = row;
+  }
+  const dayTotal = hours.reduce((a, r) => a + r.total, 0);
+  return {
+    consts, rooms, hours, dayTotal,
+    peakHour: peakHour && peakHour.total > 0 ? peakHour : null,
+    maxHourTotal: hours.reduce((a, r) => Math.max(a, r.total), 0),
+    visitsPerDay: d.n_days ? d.total / d.n_days : null,
+    mc: d.mc ? summarizeVisitorMc(d.mc, consts) : null,
+    mcBoost: d.mc_boost ? summarizeVisitorMc(d.mc_boost, consts) : null,
+    d,
+  };
+}
+
+/* --------------------------- Zobrazení v aplikaci -------------------------- */
+
+function visitorHourLabel(h) { return `${h}:00–${h + 1}:00`; }
+function vFmt2(n) { return (n === null || n === undefined || Number.isNaN(n)) ? "—" : Number(n).toFixed(2); }
+function vFmt1(n) { return (n === null || n === undefined || Number.isNaN(n)) ? "—" : Number(n).toFixed(1); }
+function vFmtInt(n) { return (n === null || n === undefined || Number.isNaN(n)) ? "—" : Math.round(n).toLocaleString("cs-CZ"); }
+
+// Sekce „Návštěvnost a doporučení prostor“ — doporučené zasedací místnosti a
+// servisní místa (včetně mezivýpočtu λ / P95), srovnání s kalkulací, detail
+// návštěv po hodinách a Monte Carlo model. `options.stats` (klíčové ukazatele
+// kalkulace) zapne srovnávací tabulku, `options.checkboxId` přepínač do PDF.
+function renderVisitorSectionHtml(visitor, options = {}) {
+  const { stats = null, checkboxId = null } = options;
+  const m = computeVisitorMetrics(visitor);
+  const d = m.d;
+  const rooms = m.rooms;
+
+  const infoParts = [
+    `Zdroj: <strong>${esc(visitor.report_title || "report návštěvnosti")}</strong>`,
+    visitor.source ? `soubor ${esc(visitor.source)}` : null,
+    visitor.imported_at ? `import ${new Date(visitor.imported_at).toLocaleString("cs-CZ")}` : null,
+    visitor.isSnapshot ? "snapshot uložený ke kalkulaci" : "aktuálně importovaná data",
+  ].filter(Boolean);
+  const branchParts = [
+    `pobočka <strong>${esc(visitor.nazev || "")}</strong> (ID ${esc(visitor.pobocka_id)})`,
+    d.total !== undefined ? `${vFmtInt(d.total)} návštěv` : null,
+    d.n_days ? `${vFmtInt(d.n_days)} dnů` : null,
+    m.visitsPerDay !== null ? `${vFmt1(m.visitsPerDay)} návštěv/den` : null,
+    d.branch_format ? `formát dle reportu: ${esc(d.branch_format)}` : null,
+    d.bankers !== undefined ? `${vFmt1(d.bankers)} bankéřů OB` : null,
+    d.has_svc ? `servisní zóna ${vFmt1(d.svc_fte)} FTE` : "bez servisní zóny",
+  ].filter(Boolean);
+
+  const cards = `<div class="visitor-cards">
+    <div class="vcard"><div class="vcard-l">Doporučené zasedací místnosti</div>
+      <div class="vcard-v" style="color:#1d4ed8;">${vFmtInt(rooms.meeting_rooms)}</div>
+      <div class="vcard-s">P95 schůzek ve špičce</div></div>
+    <div class="vcard"><div class="vcard-l">Doporučená servisní místa</div>
+      <div class="vcard-v" style="color:#0891b2;">${vFmtInt(rooms.service_desks)}</div>
+      <div class="vcard-s">P95 walk-inů ve špičce</div></div>
+    <div class="vcard"><div class="vcard-l">Nejsilnější hodina</div>
+      <div class="vcard-v">${m.peakHour ? esc(visitorHourLabel(m.peakHour.hour)) : "—"}</div>
+      <div class="vcard-s">${m.peakHour ? `${vFmt1(m.peakHour.total)} návštěv/hod` : "bez dat o časech"}</div></div>
+    ${m.mc ? `<div class="vcard"><div class="vcard-l">Přetížení (Monte Carlo)</div>
+      <div class="vcard-v" style="color:${m.mc.overloadHours < 0.5 ? "#15803d" : m.mc.overloadHours < 2 ? "#b45309" : "#b91c1c"};">${vFmt1(m.mc.overloadHours)} h</div>
+      <div class="vcard-s">/ den průměrně</div></div>` : ""}
+  </div>`;
+
+  const mtgMins = m.consts.MEETING_MINS ?? VISITOR_CONSTS_DEFAULT.MEETING_MINS;
+  const walkMins = m.consts.WALKIN_AVG_MINS ?? VISITOR_CONSTS_DEFAULT.WALKIN_AVG_MINS;
+  const roomsTable = `<div class="table-wrap"><table class="visitor-table">
+    <thead><tr><th>Skupina návštěv</th><th>λ špičkové hodiny</th><th>+1.645·√λ</th><th>P95</th>
+      <th>Obsluha</th><th>Potřeba míst</th></tr></thead>
+    <tbody>
+      <tr><td>Schůzky (fyzická + online) → zasedací místnosti</td>
+        <td class="num">${vFmt2(rooms.peak_mtg_lam)}</td><td class="num">${vFmt2(rooms.delta_mtg)}</td>
+        <td class="num">${vFmt2(rooms.p95_mtg)}</td><td class="num">${mtgMins} min</td>
+        <td class="num"><strong>${vFmtInt(rooms.meeting_rooms)}</strong>
+          <span class="muted">(⌈${vFmt2((rooms.p95_mtg * mtgMins) / 60)}⌉)</span></td></tr>
+      <tr><td>Bezhotovostní obsluha (walk-in) → servisní místa</td>
+        <td class="num">${vFmt2(rooms.peak_bezhot_lam)}</td><td class="num">${vFmt2(rooms.delta_bezhot)}</td>
+        <td class="num">${vFmt2(rooms.p95_bezhot)}</td><td class="num">${walkMins} min</td>
+        <td class="num"><strong>${vFmtInt(rooms.service_desks)}</strong>
+          <span class="muted">(⌈${vFmt2((rooms.p95_bezhot * walkMins) / 60)}⌉)</span></td></tr>
+    </tbody></table></div>
+    <p class="muted">λ = průměrné příchody v nejfrekventovanější hodině · P95 = λ + 1.645·√λ ·
+      počet míst = ⌈P95 × minuty obsluhy ÷ 60⌉.
+      ${rooms.derived ? "Report u této pobočky doporučení neuvádí — hodnoty jsou dopočítané v aplikaci stejným vzorcem z návštěv po hodinách."
+        : "Hodnoty jsou přebrané přímo z reportu."}</p>`;
+
+  const compare = stats ? renderVisitorCompareHtml(rooms, stats) : "";
+
+  const hoursRows = m.hours.map((r) => {
+    const width = m.maxHourTotal > 0 ? (r.total / m.maxHourTotal) * 100 : 0;
+    return `<tr class="${m.peakHour && r.hour === m.peakHour.hour ? "visitor-peak" : ""}">
+      <td>${esc(visitorHourLabel(r.hour))}</td>
+      ${VISITOR_TYPES.map((t) => `<td class="num">${vFmt2(r[t.key])}</td>`).join("")}
+      <td class="num">${vFmt2(r.meetings)}</td><td class="num">${vFmt2(r.walkins)}</td>
+      <td class="num"><strong>${vFmt2(r.total)}</strong></td>
+      <td class="visitor-bar-cell"><span class="visitor-bar" style="width:${width.toFixed(1)}%;"></span></td>
+    </tr>`;
+  }).join("");
+  const hoursDetail = `<details class="visitor-details"><summary>Detail návštěv po hodinách (průměr na otevírací den)</summary>
+    <div class="table-wrap"><table class="visitor-table">
+      <thead><tr><th>Hodina</th>${VISITOR_TYPES.map((t) => `<th>${esc(t.label)}</th>`).join("")}
+        <th>Schůzky</th><th>Walk-in</th><th>Celkem</th><th></th></tr></thead>
+      <tbody>${hoursRows}</tbody>
+      <tfoot><tr class="total-row"><td>Celkem 6–21 h</td>
+        ${VISITOR_TYPES.map((t) => `<td class="num">${vFmt2(m.hours.reduce((a, r) => a + r[t.key], 0))}</td>`).join("")}
+        <td class="num">${vFmt2(m.hours.reduce((a, r) => a + r.meetings, 0))}</td>
+        <td class="num">${vFmt2(m.hours.reduce((a, r) => a + r.walkins, 0))}</td>
+        <td class="num"><strong>${vFmt2(m.dayTotal)}</strong></td><td></td></tr></tfoot>
+    </table></div>
+    <p class="muted">Hodnoty jsou průměrné počty návštěv v dané hodině na jeden otevírací den
+      (${vFmtInt(d.n_days)} dnů v reportu). Zvýrazněná je nejsilnější hodina, ze které vychází doporučení prostor.</p>
+  </details>`;
+
+  const mcDetail = m.mc ? renderVisitorMcHtml(m) : `<p class="muted">Report u této pobočky Monte Carlo model neuvádí.</p>`;
+
+  const checkbox = checkboxId
+    ? `<label class="muted"><input type="checkbox" id="${checkboxId}" checked>
+        Zahrnout návštěvnost a doporučení prostor do PDF</label>`
+    : "";
+
+  return `<div class="visitor-section">
+    <h3>Návštěvnost a doporučení prostor</h3>
+    <p class="muted">${infoParts.join(" · ")}</p>
+    <p class="muted">${branchParts.join(" · ")}</p>
+    ${cards}
+    ${roomsTable}
+    ${compare}
+    ${hoursDetail}
+    ${mcDetail}
+    ${checkbox}
+  </div>`;
+}
+
+// Zástupný text, pokud pro pobočku nejsou naimportovaná data návštěvnosti.
+function renderVisitorMissingHtml(pobockaNazev, pobockaId) {
+  const imported = db ? dbAll("SELECT COUNT(*) AS n FROM visitor_data")[0].n : 0;
+  return `<div class="visitor-section">
+    <h3>Návštěvnost a doporučení prostor</h3>
+    <p class="muted">${imported
+      ? `Naimportovaný report návštěvnosti neobsahuje pobočku „${esc(pobockaNazev || "")}“ (ID ${esc(pobockaId || "")}).`
+      : "Zatím není naimportovaný žádný report návštěvnosti."}
+      Doporučení prostor (zasedací místnosti a servisní místa), návštěvy po hodinách a Monte Carlo model
+      se do kalkulace doplní po nahrání HTML reportu návštěvnosti v záložce <strong>„Návštěvnost“</strong>.</p>
+  </div>`;
+}
+
+// Srovnání doporučení z reálné návštěvnosti s potřebou WPL, která vyšla
+// z kalkulace podle FTE — dvě nezávislé cesty ke stejné otázce „kolik míst“.
+function renderVisitorCompareHtml(rooms, stats) {
+  const row = (label, calcValue, reportValue, hint) => {
+    const diff = reportValue - calcValue;
+    // Kladný rozdíl (report chce víc míst než kalkulace) je riziko kapacity →
+    // oranžově; záporný je jen informace o rezervě → modře.
+    const cls = Math.abs(diff) < 0.5 ? "visitor-cool" : diff > 0 ? "visitor-warm" : "visitor-neutral";
+    return `<tr><td>${esc(label)}</td><td class="num">${vFmt1(calcValue)}</td>
+      <td class="num">${vFmtInt(reportValue)}</td>
+      <td class="num ${cls}">${diff >= 0 ? "+" : ""}${vFmt1(diff)}</td>
+      <td class="muted">${esc(hint)}</td></tr>`;
+  };
+  return `<h4>Srovnání s kalkulací</h4>
+    <div class="table-wrap"><table class="visitor-table">
+      <thead><tr><th>Prostor</th><th>Kalkulace (WPL z FTE)</th><th>Report (P95 návštěvnosti)</th>
+        <th>Rozdíl</th><th></th></tr></thead>
+      <tbody>
+        ${row("Místa pro jednání s klientem (meeting zone)", stats.meetingZoneWpl, rooms.meeting_rooms,
+          "kalkulace vychází z časových dotací pozic, report ze špičky schůzek")}
+        ${row("Servisní místa (service zone)", stats.serviceZoneWpl, rooms.service_desks,
+          "kalkulace vychází z časových dotací pozic, report ze špičky walk-inů")}
+      </tbody></table></div>
+    <p class="muted">Kladný rozdíl znamená, že reálná návštěvnost ve špičce potřebuje víc míst, než vychází
+      z kalkulace FTE → WPL; záporný naopak. Doporučení prostor z reportu kalkulaci nepřepisuje — slouží
+      jako druhý pohled při sestavování layoutu.</p>`;
+}
+
+function renderVisitorMcHtml(m) {
+  const mc = m.mc;
+  const utilCls = (v) => (v >= 100 ? "visitor-hot" : v >= 85 ? "visitor-warm" : "visitor-cool");
+  const overloadCls = (v) => (v >= 50 ? "visitor-hot" : v > 0 ? "visitor-warm" : "visitor-cool");
+  const summaryRow = (label, base, boost) => `<tr><td>${esc(label)}</td><td class="num">${base}</td>
+    ${m.mcBoost ? `<td class="num">${boost}</td>` : ""}</tr>`;
+  const sum = (x) => [
+    ["Pravděpodobné hodiny přetížení / den", `${vFmt1(x.overloadHours)} h`],
+    ["Pokrytí poptávky (podíl simulací bez přetížení)", x.coveragePct === null || x.coveragePct === undefined ? "—" : `${vFmt1(x.coveragePct)} %`],
+    ["Bankéřů OB pro 95% pokrytí", x.bankersFor95 === null || x.bankersFor95 === undefined ? "> +3" : vFmt1(x.bankersFor95)],
+    ["Bankéřů OB dnes", vFmt1(x.currentBankers)],
+    ["Špičková P95 poptávka OB", `${vFmt1(x.peakP95Ob)} FTE/hod`],
+    ["Kapacita OB", `${vFmt1(x.obCapFte)} FTE/hod · ${vFmt1(x.obCapDay)} h/den`],
+    ["P95 denní poptávka OB", `${vFmt1(x.obP95Day)} h/den`],
+    ["Servisní zóna (BKP)", x.svcFte ? `${vFmt1(x.svcFte)} FTE · kapacita ${vFmt1(x.svcCapDay)} h/den · P95 ${vFmt1(x.svcP95Day)} h/den` : "—"],
+  ];
+  const baseSum = sum(mc);
+  const boostSum = m.mcBoost ? sum(m.mcBoost) : null;
+  const summary = baseSum.map(([label, v], i) => summaryRow(label, v, boostSum ? boostSum[i][1] : "")).join("");
+
+  const hourRows = mc.rows.map((r) => `<tr>
+    <td>${esc(visitorHourLabel(r.hour))}</td>
+    <td class="num">${vFmt2(r.lamFyzicka)}</td><td class="num">${vFmt2(r.lamOnline)}</td>
+    <td class="num">${vFmt2(r.lamBezhot)}</td>
+    <td class="num">${vFmt1(r.p95ObFte)}</td><td class="num">${vFmt1(r.p95SvcFte)}</td>
+    <td class="num">${vFmt1(r.p50Util)} %</td>
+    <td class="num ${utilCls(r.p95Util)}">${vFmt1(r.p95Util)} %</td>
+    <td class="num ${overloadCls(r.overloadProb)}">${vFmt1(r.overloadProb)} %</td>
+  </tr>`).join("");
+
+  return `<details class="visitor-details"><summary>Monte Carlo model průměrného dne
+      (${vFmtInt(mc.nIter)} simulací)</summary>
+    <p class="muted">Příchody v každé hodině se losují z Poissonova rozdělení s λ z reálných dat, kapacita
+      počítá s ${vFmt1(mc.presencePct)} % efektivní přítomností bankéře.
+      ${m.mcBoost ? "Druhý sloupec je varianta s vyšší návštěvností (+20 %) z reportu." : ""}</p>
+    <div class="table-wrap"><table class="visitor-table">
+      <thead><tr><th>Ukazatel</th><th>Základní varianta</th>${m.mcBoost ? "<th>Varianta +20 %</th>" : ""}</tr></thead>
+      <tbody>${summary}</tbody></table></div>
+    <h4>Poptávka a vytížení po hodinách</h4>
+    <div class="table-wrap"><table class="visitor-table">
+      <thead><tr><th>Hodina</th><th>λ fyzická</th><th>λ online</th><th>λ bezhot.</th>
+        <th>P95 OB FTE</th><th>P95 servis FTE</th><th>Vytížení P50</th><th>Vytížení P95</th>
+        <th>Přetížení</th></tr></thead>
+      <tbody>${hourRows}</tbody></table></div>
+    <p class="muted">Vytížení = poptávka / kapacita v dané hodině (P50 = medián, P95 = 95. percentil simulací).
+      „Přetížení“ je podíl simulací, ve kterých poptávka v dané hodině přeteče kapacitu.</p>
+  </details>`;
+}
+
+/* ------------------------------- Záložka ---------------------------------- */
+
+let visitorFilterText = "";
+
+function renderVisitorList() {
+  const el = document.getElementById("visitorList");
+  if (!el) return;
+  if (!db) { el.innerHTML = `<p class="muted">Databáze není připojena.</p>`; return; }
+  const rows = dbAll("SELECT * FROM visitor_data ORDER BY nazev");
+  if (!rows.length) {
+    el.innerHTML = `<p class="muted">Zatím není naimportovaný žádný report návštěvnosti.</p>`;
+    return;
+  }
+  const needle = visitorFilterText.trim().toLowerCase();
+  const items = rows.map(decodeVisitorRow).filter(Boolean).filter((v) => !needle
+    || String(v.nazev).toLowerCase().includes(needle) || String(v.pobocka_id).toLowerCase().includes(needle));
+  const body = items.map((v) => {
+    const m = computeVisitorMetrics(v);
+    return `<tr class="visitor-row" data-id="${esc(v.pobocka_id)}">
+      <td>${esc(v.pobocka_id)}</td><td><strong>${esc(v.nazev)}</strong></td>
+      <td>${esc(m.d.branch_format || "—")}</td>
+      <td class="num">${vFmtInt(m.d.total)}</td>
+      <td class="num">${vFmt1(m.visitsPerDay)}</td>
+      <td>${m.peakHour ? esc(visitorHourLabel(m.peakHour.hour)) : "—"}</td>
+      <td class="num">${vFmtInt(m.rooms.meeting_rooms)}${m.rooms.derived ? "*" : ""}</td>
+      <td class="num">${vFmtInt(m.rooms.service_desks)}${m.rooms.derived ? "*" : ""}</td>
+      <td class="num">${m.mc ? `${vFmt1(m.mc.overloadHours)} h` : "—"}</td>
+    </tr>`;
+  }).join("");
+  el.innerHTML = `<p class="muted">Report: <strong>${esc(rows[0].report_title || "")}</strong>
+      (${esc(rows[0].source || "")}, import ${new Date(rows[0].imported_at).toLocaleString("cs-CZ")}) ·
+      ${rows.length} poboček${needle ? `, zobrazeno ${items.length}` : ""}.
+      Hvězdička = doporučení dopočítané v aplikaci (report ho u pobočky neuvádí).</p>
+    <div class="table-wrap"><table class="visitor-table">
+      <thead><tr><th>ID</th><th>Pobočka</th><th>Formát</th><th>Návštěv celkem</th><th>Návštěv/den</th>
+        <th>Špička</th><th>Zasedací m.</th><th>Servisní místa</th><th>Přetížení MC</th></tr></thead>
+      <tbody>${body || `<tr><td colspan="9" class="muted">Žádná pobočka neodpovídá filtru.</td></tr>`}</tbody>
+    </table></div>`;
+  el.querySelectorAll(".visitor-row").forEach((tr) => {
+    tr.addEventListener("click", () => showVisitorDetail(tr.dataset.id));
+  });
+}
+
+function showVisitorDetail(pobockaId) {
+  const visitor = getVisitorData(pobockaId, null);
+  if (!visitor) { toast("Data pobočky se nepodařilo načíst.", "err"); return; }
+  const panel = document.getElementById("visitorDetailPanel");
+  panel.style.display = "block";
+  document.getElementById("visitorDetail").innerHTML = renderVisitorSectionHtml(visitor);
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+/* ---------------------------------- PDF ----------------------------------- */
+
+// Vykreslí sekci návštěvnosti a doporučení prostor do PDF (do už existujícího
+// dokumentu od zadané souřadnice y) a vrátí novou souřadnici y.
+function drawVisitorPdf(pdf, startY, visitor, marginX, pageBottom, stats) {
+  const m = computeVisitorMetrics(visitor);
+  const d = m.d;
+  const rooms = m.rooms;
+  let y = startY;
+
+  const newPageIfNeeded = (need) => { if (y + need > pageBottom) { pdf.addPage(); y = 18; } };
+
+  // Malá tabulková pomůcka — setFillColor/setTextColor se volají znovu před
+  // každou buňkou, jsPDF si barvy drží ve společné cache (viz drawCalculationPdf).
+  const drawTable = (headers, colW, dataRows, fontSize = 7.4) => {
+    const rowH = 6;
+    const drawHeader = () => {
+      pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(fontSize);
+      let x = marginX;
+      headers.forEach((h, i) => {
+        pdf.setFillColor(39, 112, 240);
+        pdf.rect(x, y, colW[i], rowH, "FD");
+        pdf.setTextColor(255, 255, 255);
+        pdf.text(String(h), x + 1.4, y + 4.2, { maxWidth: colW[i] - 2.4 });
+        x += colW[i];
+      });
+      y += rowH;
+      pdf.setTextColor(0, 0, 0);
+    };
+    drawHeader();
+    dataRows.forEach((r) => {
+      const vals = Array.isArray(r) ? r : r.vals;
+      const highlight = !Array.isArray(r) && r.highlight;
+      if (y + rowH > pageBottom) { pdf.addPage(); y = 18; drawHeader(); }
+      pdf.setFont("DejaVuSans", highlight ? "bold" : "normal"); pdf.setFontSize(fontSize);
+      let x = marginX;
+      vals.forEach((v, i) => {
+        if (highlight) pdf.setFillColor(224, 236, 255);
+        pdf.rect(x, y, colW[i], rowH, highlight ? "FD" : "D");
+        pdf.setTextColor(0, 0, 0);
+        pdf.text(String(v), x + 1.4, y + 4.2, { maxWidth: colW[i] - 2.4 });
+        x += colW[i];
+      });
+      y += rowH;
+    });
+  };
+
+  newPageIfNeeded(60);
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(14);
+  pdf.text("Návštěvnost a doporučení prostor", marginX, y); y += 7;
+
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(8.5);
+  [
+    `Zdroj: ${visitor.report_title || "report návštěvnosti"}${visitor.source ? ` (${visitor.source})` : ""}` +
+      `${visitor.imported_at ? `, import ${new Date(visitor.imported_at).toLocaleString("cs-CZ")}` : ""}`,
+    `Pobočka: ${visitor.nazev || ""} (ID ${visitor.pobocka_id})` +
+      `${d.branch_format ? `, formát dle reportu: ${d.branch_format}` : ""}`,
+    `Návštěvy: ${vFmtInt(d.total)} za ${vFmtInt(d.n_days)} dnů` +
+      `${m.visitsPerDay !== null ? ` (${vFmt1(m.visitsPerDay)} / den)` : ""}` +
+      `${d.bankers !== undefined ? `, ${vFmt1(d.bankers)} bankéřů OB` : ""}` +
+      `${d.has_svc ? `, servisní zóna ${vFmt1(d.svc_fte)} FTE` : ", bez servisní zóny"}`,
+  ].forEach((line) => {
+    pdf.splitTextToSize(line, 182).forEach((l) => { newPageIfNeeded(6); pdf.text(l, marginX, y); y += 5; });
+  });
+  y += 3;
+
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
+  newPageIfNeeded(10);
+  pdf.text(`Doporučení prostor: ${rooms.meeting_rooms} zasedacích místností, ${rooms.service_desks} servisních míst`,
+    marginX, y); y += 7;
+
+  const mtgMins = m.consts.MEETING_MINS ?? VISITOR_CONSTS_DEFAULT.MEETING_MINS;
+  const walkMins = m.consts.WALKIN_AVG_MINS ?? VISITOR_CONSTS_DEFAULT.WALKIN_AVG_MINS;
+  drawTable(
+    ["Skupina návštěv", "λ špička", "+1.645·√λ", "P95", "Obsluha", "Míst"],
+    [74, 22, 24, 20, 22, 20],
+    [
+      ["Schůzky (fyzická + online)", vFmt2(rooms.peak_mtg_lam), vFmt2(rooms.delta_mtg), vFmt2(rooms.p95_mtg),
+        `${mtgMins} min`, String(rooms.meeting_rooms)],
+      ["Bezhotovostní obsluha (walk-in)", vFmt2(rooms.peak_bezhot_lam), vFmt2(rooms.delta_bezhot),
+        vFmt2(rooms.p95_bezhot), `${walkMins} min`, String(rooms.service_desks)],
+    ],
+  );
+  y += 3;
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.5);
+  pdf.setTextColor(120, 120, 120);
+  pdf.splitTextToSize("λ = průměrné příchody v nejfrekventovanější hodině, P95 = λ + 1.645·√λ, "
+    + `počet míst = ⌈P95 × minuty obsluhy ÷ 60⌉. ${rooms.derived
+      ? "Report u této pobočky doporučení neuvádí — dopočítáno v aplikaci stejným vzorcem."
+      : "Hodnoty přebrané z reportu."}`, 182)
+    .forEach((l) => { newPageIfNeeded(5); pdf.text(l, marginX, y); y += 4.2; });
+  pdf.setTextColor(0, 0, 0);
+  y += 5;
+
+  // Srovnání s potřebou WPL z kalkulace — dvě nezávislé cesty ke stejné otázce.
+  if (stats) {
+    newPageIfNeeded(30);
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
+    pdf.text("Srovnání s kalkulací", marginX, y); y += 6;
+    drawTable(
+      ["Prostor", "Kalkulace (WPL z FTE)", "Report (P95 návštěvnosti)", "Rozdíl"],
+      [80, 40, 42, 20],
+      [
+        ["Místa pro jednání s klientem (meeting zone)", vFmt1(stats.meetingZoneWpl), String(rooms.meeting_rooms),
+          `${rooms.meeting_rooms - stats.meetingZoneWpl >= 0 ? "+" : ""}${vFmt1(rooms.meeting_rooms - stats.meetingZoneWpl)}`],
+        ["Servisní místa (service zone)", vFmt1(stats.serviceZoneWpl), String(rooms.service_desks),
+          `${rooms.service_desks - stats.serviceZoneWpl >= 0 ? "+" : ""}${vFmt1(rooms.service_desks - stats.serviceZoneWpl)}`],
+      ],
+    );
+    y += 3;
+    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.5);
+    pdf.setTextColor(120, 120, 120);
+    pdf.splitTextToSize("Kladný rozdíl znamená, že reálná návštěvnost ve špičce potřebuje víc míst, než vychází "
+      + "z kalkulace FTE → WPL. Doporučení prostor kalkulaci nepřepisuje — je to druhý pohled při sestavování layoutu.", 182)
+      .forEach((l) => { newPageIfNeeded(5); pdf.text(l, marginX, y); y += 4.2; });
+    pdf.setTextColor(0, 0, 0);
+    y += 5;
+  }
+
+  newPageIfNeeded(30);
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
+  pdf.text("Detail návštěv po hodinách (průměr na otevírací den)", marginX, y); y += 6;
+  drawTable(
+    ["Hodina", "Fyzická", "Online", "Bezhot.", "Hotovost", "Schůzky", "Walk-in", "Celkem"],
+    [24, 22, 22, 22, 22, 22, 22, 24],
+    m.hours.map((r) => ({
+      vals: [visitorHourLabel(r.hour), vFmt2(r.fyzicka), vFmt2(r.online), vFmt2(r.bezhot), vFmt2(r.hotovost),
+        vFmt2(r.meetings), vFmt2(r.walkins), vFmt2(r.total)],
+      highlight: m.peakHour && r.hour === m.peakHour.hour,
+    })),
+  );
+  y += 5;
+
+  if (m.mc) {
+    const mc = m.mc;
+    newPageIfNeeded(40);
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
+    pdf.text(`Monte Carlo model průměrného dne (${vFmtInt(mc.nIter)} simulací)`, marginX, y); y += 6;
+    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(8.5);
+    [
+      `Pravděpodobné hodiny přetížení: ${vFmt1(mc.overloadHours)} h / den` +
+        (m.mcBoost ? ` (varianta +20 %: ${vFmt1(m.mcBoost.overloadHours)} h / den)` : ""),
+      `Pokrytí poptávky: ${mc.coveragePct === null || mc.coveragePct === undefined ? "—" : `${vFmt1(mc.coveragePct)} %`}` +
+        `, bankéřů OB pro 95% pokrytí: ${mc.bankersFor95 === null || mc.bankersFor95 === undefined ? "> +3" : vFmt1(mc.bankersFor95)}` +
+        `, dnes ${vFmt1(mc.currentBankers)}`,
+      `Špičková P95 poptávka OB: ${vFmt1(mc.peakP95Ob)} FTE/hod · kapacita ${vFmt1(mc.obCapFte)} FTE/hod` +
+        ` (${vFmt1(mc.presencePct)} % efektivní přítomnost)`,
+      `Denní poptávka OB: P95 ${vFmt1(mc.obP95Day)} h/den proti kapacitě ${vFmt1(mc.obCapDay)} h/den` +
+        (mc.svcFte ? ` · servisní zóna P95 ${vFmt1(mc.svcP95Day)} h/den proti ${vFmt1(mc.svcCapDay)} h/den` : ""),
+    ].forEach((line) => {
+      pdf.splitTextToSize(line, 182).forEach((l) => { newPageIfNeeded(6); pdf.text(l, marginX, y); y += 5; });
+    });
+    y += 3;
+    drawTable(
+      ["Hodina", "λ fyz.", "λ online", "λ bezhot.", "P95 OB FTE", "P95 servis", "Vytíž. P50", "Vytíž. P95", "Přetížení"],
+      [22, 19, 20, 21, 24, 21, 21, 21, 21],
+      mc.rows.map((r) => [visitorHourLabel(r.hour), vFmt2(r.lamFyzicka), vFmt2(r.lamOnline), vFmt2(r.lamBezhot),
+        vFmt1(r.p95ObFte), vFmt1(r.p95SvcFte), `${vFmt1(r.p50Util)} %`, `${vFmt1(r.p95Util)} %`,
+        `${vFmt1(r.overloadProb)} %`]),
+    );
+    y += 5;
   }
 
   return y;
@@ -2710,9 +3449,11 @@ function renderLayoutReadonly(container, rows, meta, segmentRows) {
     btnFull.addEventListener("click", () => {
       const noteEl = document.getElementById(meta.pdfNoteId);
       const statsEl = document.getElementById(meta.pdfStatsId);
+      const visitorEl = meta.pdfVisitorId ? document.getElementById(meta.pdfVisitorId) : null;
       exportFullReportPdf(meta.calcResult, rows, meta, segmentRows, {
         note: noteEl ? noteEl.value.trim() : "",
         includeStats: statsEl ? statsEl.checked : true,
+        includeVisitor: visitorEl ? visitorEl.checked : false,
       });
     });
   } else {
@@ -2955,6 +3696,7 @@ function showHistoryDetail(calculationKey, loadKey) {
   const mappedInputRows = inputRows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte, wpl_load: r.wpl_load }));
   const stats = computeCalculationStats({ rows: rowsNoTotal, celkem: found || {}, inputRows: mappedInputRows });
   const status = getCalculationStatus(calculationKey);
+  const visitor = getVisitorForCalculation(calculationKey, branch?.pobocka_id, branch?.pobocka_nazev);
 
   document.getElementById("historyDetail").innerHTML = `
     <p class="muted">${branch ? `${esc(branch.pobocka_nazev)} (ID ${esc(branch.pobocka_id)}) · otevírací doba ${esc(branch.oteviraci_doba)} h/týden` : ""}</p>
@@ -2970,6 +3712,8 @@ function showHistoryDetail(calculationKey, loadKey) {
       <tbody>${resultHtml}</tbody></table></div>
     ${refVersionDetailsHtml(refVersionId)}
     ${renderStatsSection(stats, "pdfIncludeStatsHistory")}
+    ${visitor ? renderVisitorSectionHtml(visitor, { stats, checkboxId: "pdfIncludeVisitorHistory" })
+      : renderVisitorMissingHtml(branch?.pobocka_nazev, branch?.pobocka_id)}
     <div class="row" style="margin-top:12px;">
       <button class="btn secondary" id="btnExportPdfHistory">Exportovat PDF s přehledem WPL</button>
       <button class="btn secondary" id="btnCopyResultHistory">📋 Kopírovat výsledek do schránky</button>
@@ -2995,7 +3739,8 @@ function showHistoryDetail(calculationKey, loadKey) {
   document.getElementById("btnExportPdfHistory").addEventListener("click", () => {
     const note = document.getElementById("pdfNoteHistory").value.trim();
     const includeStats = document.getElementById("pdfIncludeStatsHistory").checked;
-    exportCalculationPdf(calcResult, { note, includeStats });
+    const visitorBox = document.getElementById("pdfIncludeVisitorHistory");
+    exportCalculationPdf(calcResult, { note, includeStats, includeVisitor: visitorBox ? visitorBox.checked : false });
   });
   document.getElementById("btnCopyResultHistory").addEventListener("click", () => copyResultToClipboard(calcResult, stats));
   document.getElementById("btnToggleStatus").addEventListener("click", () => {
@@ -3006,6 +3751,7 @@ function showHistoryDetail(calculationKey, loadKey) {
   renderLayoutSection("historyLayoutArea", rowsNoTotal, {
     calculation_key: calculationKey, pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev, stats,
     calcResult, pdfNoteId: "pdfNoteHistory", pdfStatsId: "pdfIncludeStatsHistory",
+    pdfVisitorId: "pdfIncludeVisitorHistory",
   });
 
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -3949,6 +4695,7 @@ function refreshAllTabsAfterDbChange() {
   renderPobockyDatalist();
   renderSegmentsTable();
   renderFurnitureTable();
+  renderVisitorList();
   document.getElementById("refVersionDetail").style.display = "none";
   document.getElementById("historyDetailPanel").style.display = "none";
 }
@@ -4045,6 +4792,17 @@ async function init() {
   });
   document.getElementById("btnSaveFurniture").addEventListener("click", saveFurnitureTable);
   document.getElementById("btnGenerateTemplate").addEventListener("click", generateChecklistTemplate);
+
+  const visitorInput = document.getElementById("visitorReportInput");
+  document.getElementById("btnPickVisitorReport").addEventListener("click", () => visitorInput.click());
+  visitorInput.addEventListener("change", () => {
+    if (visitorInput.files[0]) handleVisitorReportFile(visitorInput.files[0]);
+    visitorInput.value = "";
+  });
+  document.getElementById("visitorFilter").addEventListener("input", (e) => {
+    visitorFilterText = e.target.value;
+    renderVisitorList();
+  });
 
   // Nápověda k pravidlům předvyplnění layoutu — obsah se generuje z LAYOUT_RULES.
   document.getElementById("layoutRulesHelp").innerHTML = layoutRulesHelpHtml();

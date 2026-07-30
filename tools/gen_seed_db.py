@@ -144,6 +144,35 @@ def main():
     )
     """)
 
+    # Data z HTML reportu návštěvnosti — doporučení prostor, návštěvy po hodinách
+    # a Monte Carlo model per pobočka. Naplní se až importem reportu v aplikaci.
+    cur.execute("""
+    CREATE TABLE visitor_data (
+        pobocka_id TEXT PRIMARY KEY,
+        nazev TEXT,
+        imported_at TEXT,
+        source TEXT,
+        report_title TEXT,
+        consts_json TEXT,
+        payload TEXT
+    )
+    """)
+
+    # Snapshot dat návštěvnosti k jednotlivé kalkulaci (aby zůstala zpětně
+    # reprodukovatelná i po importu novějšího reportu).
+    cur.execute("""
+    CREATE TABLE calculation_visitor (
+        calculation_key TEXT PRIMARY KEY,
+        pobocka_id TEXT,
+        nazev TEXT,
+        imported_at TEXT,
+        source TEXT,
+        report_title TEXT,
+        consts_json TEXT,
+        payload TEXT
+    )
+    """)
+
     absence_data = [
         ("MMMA", 22.9, 0.7),
         ("EPC", 19.7, 2.5),

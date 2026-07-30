@@ -176,6 +176,66 @@ nepovoluje, aplikace se automaticky přepne na záložní cestu přes
 `document.execCommand("copy")` s dočasným výběrem, která formátování zachová
 také.
 
+## Návštěvnost a doporučení prostor (report návštěvnosti)
+
+Záložka **„Návštěvnost“** umí naimportovat HTML report návštěvnosti („Analýza
+návštěvnosti“) a data z něj napojit na zpracovávanou kalkulaci. Report má
+všechna čísla vložená přímo v sobě (objekt `const DATA` klíčovaný ID pobočky
+a konstanty modelu `const C`), takže se načte celý v prohlížeči — nikam se
+neodesílá.
+
+Z reportu si aplikace pro každou pobočku ukládá jen to, co kalkulace používá:
+doporučení prostor, návštěvy po hodinách, Monte Carlo model (základní varianta
+i varianta +20 %) a kontext pobočky (počet návštěv, počet dnů, formát dle
+reportu, počet bankéřů OB, servisní zóna). Ostatní části reportu (heatmapy,
+měsíční a denní řady, prodeje, benchmark) se neukládají.
+
+### Co se zobrazí u kalkulace
+
+U výsledku kalkulace (a v detailu v historii) je sekce **„Návštěvnost
+a doporučení prostor“**:
+
+- **Doporučené zasedací místnosti** a **doporučená servisní místa** —
+  hodnoty z reportu, včetně mezivýpočtu: `λ` = průměrné příchody
+  v nejfrekventovanější hodině, `P95 = λ + 1.645·√λ`, počet míst =
+  `⌈P95 × minuty obsluhy ÷ 60⌉` (schůzky 45 min → zasedací místnosti,
+  bezhotovostní walk-in 15 min → servisní místa). U poboček, u kterých report
+  doporučení neuvádí, se dopočítá v aplikaci **stejným vzorcem** z návštěv po
+  hodinách (v seznamu poboček je taková hodnota označená hvězdičkou).
+- **Srovnání s kalkulací** — potřeba WPL pro meeting zone a service zone
+  z kalkulace (z časových dotací pozic) proti doporučení z reálné návštěvnosti.
+  Kladný rozdíl znamená, že špička návštěvnosti potřebuje víc míst, než vychází
+  z FTE. Doporučení kalkulaci **nepřepisuje** — je to druhý pohled při
+  sestavování layoutu.
+- **Detail návštěv po hodinách** (rozbalovací) — pro hodiny 6–21 průměrný počet
+  návštěv na otevírací den po typech (fyzická / online schůzka, bezhotovostní
+  a hotovostní obsluha), součty za schůzky a walk-in a celkem, s vyznačenou
+  nejsilnější hodinou, ze které doporučení vychází.
+- **Monte Carlo model průměrného dne** (rozbalovací) — pravděpodobné hodiny
+  přetížení za den, pokrytí poptávky, počet bankéřů OB pro 95% pokrytí,
+  špičková P95 poptávka a kapacita (denní i hodinová), a tabulka po hodinách:
+  λ jednotlivých typů, P95 poptávka OB a servisu v FTE a vytížení P50 / P95
+  včetně pravděpodobnosti přetížení.
+
+Zaškrtávátkem **„Zahrnout návštěvnost a doporučení prostor do PDF“** se celá
+sekce (doporučení, srovnání s kalkulací, hodinový detail i Monte Carlo)
+přidá do PDF kalkulace i do spojené sestavy. Doporučené zasedací místnosti
+a servisní místa se přidávají i do tabulky ukazatelů při kopírování výsledku
+do schránky.
+
+### Snapshot ke kalkulaci
+
+Při spočítání kalkulace se data návštěvnosti dané pobočky uloží jako snapshot
+ke kalkulaci (tabulka `calculation_visitor`), aby kalkulace zůstala zpětně
+reprodukovatelná i po importu novějšího reportu. U starších kalkulací (bez
+snapshotu) se zobrazí aktuálně naimportovaná data pobočky — v hlavičce sekce
+je vždy uvedeno, o který z obou případů jde.
+
+Pobočka se v reportu hledá podle **ID pobočky**, jako záloha podle názvu.
+Pokud report danou pobočku neobsahuje (nebo ještě není naimportovaný žádný),
+sekce jen upozorní, že doporučení prostor chybí, a kalkulace proběhne beze
+změny.
+
 ## Sestavení layoutu
 
 Pro každý segment a zónu, kde kalkulace vyžaduje WPL > 0, aplikace nabídne
@@ -420,6 +480,11 @@ záznam v tabulce časových dotací, řádek se vynechá a zobrazí se upozorn�
   přímo ze souborového systému (prohlížeče blokují `fetch()` na `file://`).
 - Nahraný Excel checklist se čte/parsuje přes [SheetJS](https://sheetjs.com)
   (`vendor/xlsx.full.min.js`).
+- HTML report návštěvnosti se parsuje bez knihovny: v textu se najde deklarace
+  `const DATA = {` (resp. `const C = {`), objektový literál se odřízne párováním
+  složených závorek s ohledem na řetězce a předá `JSON.parse`. Data se ukládají
+  do tabulek `visitor_data` (per pobočka) a `calculation_visitor` (snapshot ke
+  kalkulaci).
 - Generovaná Excel šablona (záložka „Struktura checklistu“) se naopak zapisuje
   vlastním minimalistickým zapisovačem `.xlsx` (`xlsx_writer.js`) — vendorovaná
   SheetJS (komunitní edice) při zápisu zahazuje veškeré formátování buněk, což
