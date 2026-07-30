@@ -3426,6 +3426,17 @@ const VSTUPY_COL_WIDTHS = [
 ];
 const CHL_CESTOVNI_ROWS = 9; // volných řádků pro cestovní pozice (jako ve vzoru)
 
+// Číselníky pro rozbalovací menu (ověření dat) v hlavičce listu CHL.
+const CHL_FORMATY = ["small", "medium-economy", "medium", "flagship", "EPC"];
+const CHL_TYPY_AKCE = [
+  "Modernizace (nový formát)", "Relokace (nový formát)", "Nová pobočka", "Optimalizace plochy",
+  "FHC (úprava nového formátu)", "Přechod na cashless", "Kontrolní přepočet FTE/WPL", "Ad-hoc", "Studie",
+];
+const CHL_REZIMY = ["cash", "cashless"];
+// Název pomocného listu se seznamem poboček (zdroj pro rozbalovací menu v C3
+// a pro VLOOKUP, kterým se do G1 doplní ID pobočky).
+const POBOCKY_SHEET = "Pobočky";
+
 // Statické bloky, které pobočka vyplňuje, ale nejsou v databázi aplikace —
 // přebírají se ze vzoru, aby šablona byla kompletní.
 const CHL_SAZO = ["Výběrový", "Vkladový", "Recyklační", "Transakční", "Příprava"];
@@ -3486,6 +3497,9 @@ function generateChecklistTemplate() {
   const frontOffice = furnitureSection(["service_zone", "meeting_zone"]);
   const backOffice = furnitureSection(["backoffice_zone", "office_room"]);
 
+  // Seznam poboček pro rozbalovací menu v C3 a pro dopočet ID pobočky do G1.
+  const pobockyRows = dbAll("SELECT id_pobocky, nazev, region FROM pobocky ORDER BY nazev");
+
   /* ------------------------------- styly ---------------------------------- */
   const sb = createStyleBook();
   const A = (size, bold, color) => ({ name: "Arial", size, bold: !!bold, color: color || null });
@@ -3519,6 +3533,7 @@ function generateChecklistTemplate() {
   const chl = {};
   const merges = [];
   const rowHeights = {};
+  const validations = [];
   const COLS = "ABCDEFGHIJK";
   const put = (col, row, cell) => { chl[`${col}${row}`] = cell; };
   const str = (v, s) => ({ t: "str", v: v ?? "", s });
@@ -3536,7 +3551,9 @@ function generateChecklistTemplate() {
   /* ----------------------------- CHL: hlavička ----------------------------- */
   rowHeights[1] = 39.75;
   fillRange("A", "F", 1, st.title, str("CHECKLIST", st.title));
-  put("G", 1, str("", st.titleCtr));
+  // ID pobočky se dopočítá z názvu vybraného v C3 (stejně jako ve vzoru, jen
+  // proti pomocnému listu se seznamem poboček z databáze aplikace).
+  put("G", 1, { f: `IFERROR(VLOOKUP(C3,'${POBOCKY_SHEET}'!$A$2:$B$${pobockyRows.length + 1},2,0),"")`, v: "", t: "str", s: st.titleCtr });
   put("H", 1, str("WPL celkem:", st.titleCtrN));
   put("I", 1, str("Vygenerováno", st.genLabel));
   put("J", 1, str("ROZŠÍŘENÉ POZNÁMKY    ▼", st.noteSide));
@@ -3564,6 +3581,18 @@ function generateChecklistTemplate() {
   put("C", 7, str("", st.value)); put("D", 7, str("", st.value));
   put("C", 8, str("", st.value)); put("D", 8, str("", st.value));
   merges.push("C7:D8");
+
+  // Rozbalovací menu (ověření dat) v hlavičce. Seznam poboček je dlouhý, takže
+  // se odkazuje na pomocný list — inline seznam v definici ověření má v Excelu
+  // limit délky, který by 317 poboček přesáhlo.
+  validations.push(
+    { sqref: "C3:D3", formula: `'${POBOCKY_SHEET}'!$A$2:$A$${pobockyRows.length + 1}`,
+      promptTitle: "Pobočka", prompt: "Vyberte pobočku ze seznamu — do buňky G1 se doplní její ID." },
+    { sqref: "C5:D5", values: CHL_FORMATY },
+    { sqref: "C6:D6", values: CHL_TYPY_AKCE },
+    { sqref: "C7:D8", values: CHL_REZIMY },
+  );
+
   // Otevírací doba (E3:H5 / I3:I5) a doba vytěžení WPL (E6:H8 / I6:I8)
   [["Otevírací doba pobočky:", 3, 5], ["Doba vytěžení WPL:", 6, 8]].forEach(([label, r1, r2]) => {
     for (let r = r1; r <= r2; r++) for (const c of "EFGH") put(c, r, str("", st.label));
@@ -3866,15 +3895,34 @@ function generateChecklistTemplate() {
     vr++;
   }
 
+  /* --------- Pomocný list se seznamem poboček (zdroj rozbalovacího menu) ---- */
+  const pob = {};
+  const pobHeader = sb.style({ font: { name: "Arial", size: 10, bold: true }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
+  const pobCell = sb.style({ font: { name: "Arial", size: 9 }, border: "lrtb", alignment: { h: "left", v: "center" } });
+  ["Název pobočky", "ID pobočky", "Region"].forEach((h, i) => { pob[`${"ABC"[i]}1`] = str(h, pobHeader); });
+  pobockyRows.forEach((r, i) => {
+    const rr = i + 2;
+    pob[`A${rr}`] = str(r.nazev, pobCell);
+    // ID se zapisuje jako číslo, pokud číslem je — aby G1 (a tedy VSTUPY!C1)
+    // vypadalo stejně jako ve vzoru.
+    const idNum = toNumberOrNull(r.id_pobocky);
+    pob[`B${rr}`] = idNum !== null ? num(idNum, pobCell) : str(r.id_pobocky, pobCell);
+    pob[`C${rr}`] = str(r.region || "", pobCell);
+  });
+
   const chlSheet = {
     name: "CHL", cells: chl, cols: CHL_COL_WIDTHS, merges,
-    rowHeights, defaultRowHeight: 15, freezeRows: 9,
+    rowHeights, defaultRowHeight: 15, freezeRows: 9, validations,
   };
   const vstupySheet = {
     name: "VSTUPY", cells: vs, cols: VSTUPY_COL_WIDTHS, defaultRowHeight: 15, freezeRows: 5,
   };
+  const pobockySheet = {
+    name: POBOCKY_SHEET, cells: pob, defaultRowHeight: 15, freezeRows: 1,
+    cols: [{ index: 1, width: 42 }, { index: 2, width: 14 }, { index: 3, width: 26 }],
+  };
 
-  const out = buildXlsxWorkbook([chlSheet, vstupySheet], sb);
+  const out = buildXlsxWorkbook([chlSheet, vstupySheet, pobockySheet], sb);
   const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");

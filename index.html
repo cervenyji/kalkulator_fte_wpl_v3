@@ -485,16 +485,18 @@
   </div>
   <div class="panel">
     <h2>Generovat Excel šablonu checklistu</h2>
-    <p class="muted">Vygeneruje .xlsx ve stejném uspořádání jako vzorový checklist: list <code>CHL</code> je
-      vstupní list, do kterého pobočka vyplňuje počty FTE po pozicích (a u segmentu CESTOVNÍ i vytížení
-      WPL), a list <code>VSTUPY</code> si tyto hodnoty pomocí vzorců jen stahuje do podoby, kterou aplikace
-      načítá — beze změny stávajícího importu. Pořadí segmentů, pozic a nábytku odpovídá aktuálnímu nastavení
-      výše. Po vyplnění listu CHL a uložení v Excelu (kvůli přepočtu vzorců) lze soubor bez úprav načíst zpět
-      do aplikace (záložka „Nový výpočet“ → „Nahrát Excel checklist“).</p>
-    <p class="msg warn">Upozornění: knihovna pro práci s Excelem v prohlížeči (SheetJS, komunitní edice) umí
-      barevné formátování buněk při čtení, ale při zápisu ho zahazuje — vygenerovaný soubor tak nemá barevné
-      podbarvení jako originální šablona. Struktura listů, provázání CHL → VSTUPY i pořadí pozic/nábytku ale
-      odpovídají.</p>
+    <p class="muted">Vygeneruje .xlsx, který vypadá i funguje stejně jako vzorový checklist. List
+      <code>CHL</code> je vstupní list, do kterého vyplňuje pobočka (detaily pobočky, počty FTE po pozicích,
+      volný blok cestovních pozic, SAZO, nábytek business zone / back office, vybavení a poznámky), list
+      <code>VSTUPY</code> si tyto hodnoty pomocí vzorců jen stahuje do podoby, kterou aplikace načítá — beze
+      změny stávajícího importu. Pořadí segmentů, pozic a nábytku odpovídá nastavení výše. Po vyplnění listu
+      CHL a uložení v Excelu (kvůli přepočtu vzorců) lze soubor bez úprav načíst zpět do aplikace (záložka
+      „Nový výpočet“ → „Nahrát Excel checklist“).</p>
+    <p class="muted">V hlavičce CHL jsou <strong>rozbalovací menu</strong> (ověření dat): <code>C3</code>
+      název pobočky (všech 317 poboček), <code>C5</code> cílový formát, <code>C6</code> typ akce a
+      <code>C7</code> režim obsluhy klientů. <strong>ID pobočky v <code>G1</code> se dopočítá samo</strong>
+      z vybraného názvu (vzorcem <code>VLOOKUP</code> proti pomocnému listu „Pobočky“), takže ho není potřeba
+      zadávat ručně.</p>
     <div class="row">
       <button class="btn" id="btnGenerateTemplate">Generovat Excel šablonu</button>
     </div>

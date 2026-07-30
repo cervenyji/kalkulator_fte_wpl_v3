@@ -227,8 +227,10 @@ function createStyleBook() {
 // merges: ["A1:F1", ...]
 // rowHeights: { 1: 39.75, ... }
 // freezeRows: počet zamrznutých řádků odshora
+// validations: [{ sqref, values: ["a","b"] }] nebo [{ sqref, formula: "'List'!$A$2:$A$9" }]
+//              -> ověření dat typu "seznam" (rozbalovací menu v buňce)
 function sheetXml(sheet) {
-  const { cells, cols, merges, rowHeights, freezeRows, defaultRowHeight } = sheet;
+  const { cells, cols, merges, rowHeights, freezeRows, defaultRowHeight, validations } = sheet;
   const byRow = {};
   Object.keys(cells).forEach((addr) => {
     const { row } = parseCellAddr(addr);
@@ -273,12 +275,23 @@ function sheetXml(sheet) {
     : `<sheetViews><sheetView workbookViewId="0"/></sheetViews>`;
   const fmtXml = `<sheetFormatPr defaultRowHeight="${defaultRowHeight || 15}"/>`;
 
+  // Pořadí prvků v CT_Worksheet je dané schématem — dataValidations musí být
+  // až za mergeCells, jinak Excel soubor odmítne jako poškozený.
+  const validationsXml = (validations && validations.length)
+    ? `<dataValidations count="${validations.length}">${validations.map((v) => {
+      const f1 = v.formula !== undefined ? xmlEsc(v.formula) : `"${xmlEsc(v.values.join(","))}"`;
+      return `<dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1"` +
+        `${v.prompt ? ` promptTitle="${xmlEsc(v.promptTitle || "")}" prompt="${xmlEsc(v.prompt)}"` : ""}` +
+        ` sqref="${v.sqref}"><formula1>${f1}</formula1></dataValidation>`;
+    }).join("")}</dataValidations>`
+    : "";
+
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
     `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
     `<dimension ref="A1:${colLetters(maxCol)}${maxRow}"/>` +
     paneXml + fmtXml + colsXml +
     `<sheetData>${rowsXml}</sheetData>` +
-    mergesXml +
+    mergesXml + validationsXml +
     `</worksheet>`;
 }
 

@@ -342,7 +342,8 @@ Tlačítkem **„Generovat Excel šablonu“** se z aktuálního obsahu těchto 
 - **`CHL`** — list, do kterého vyplňuje pobočka. Obsahuje kompletní rozvržení vzoru:
   - hlavičku s titulkem (`=_xlfn.CONCAT("CHECKLIST"," - ",C3)`) a polem pro celkový počet WPL,
   - sekci **DETAILY POBOČKY** (název, datum zpracování, cílový formát, typ akce, režim obsluhy
-    klientů) a vpravo velká pole **otevírací doby** a **doby vytěžení WPL**,
+    klientů) a vpravo velká pole **otevírací doby** a **doby vytěžení WPL**; vybírané položky
+    mají **rozbalovací menu** (ověření dat) — viz níže,
   - sekci **OBSAZENOST POBOČKY** — pozice po segmentech se sloupci „POČET FTE AKTUÁLNĚ“,
     „POČET FTE VÝHLED“ a „POZNÁMKA“, s součtovým řádkem „Suma FTE:“ za každým segmentem
     a řádkem „Suma FTE bez CEST:“,
@@ -374,9 +375,27 @@ ověřená porovnáním obou souborů knihovnou `openpyxl` (výplně, fonty, ohr
 zarovnání, sloučené buňky, šířky sloupců, výšky řádků) i zpětným načtením vyplněné šablony do
 aplikace.
 
-Jediné pole, které se ve vzoru dopočítává a v šabloně ho vyplňuje uživatel, je **ID pobočky**
-(buňka `G1` na listu CHL) — ve vzoru ho hledá `VLOOKUP` v interní tabulce poboček, která součástí
-šablony není.
+#### Rozbalovací menu v hlavičce CHL
+
+Vybírané položky v sekci DETAILY POBOČKY mají v šabloně **ověření dat typu „seznam“**, takže se
+v buňce nabídne rozbalovací menu a nejde napsat nic mimo číselník:
+
+| Buňka | Obsah | Nabídka |
+| --- | --- | --- |
+| `C3` | Název pobočky | všech 317 poboček z tabulky `pobocky` (list **Pobočky**) |
+| `C5` | Cílový formát | small, medium-economy, medium, flagship, EPC |
+| `C6` | Typ akce | Modernizace (nový formát), Relokace (nový formát), Nová pobočka, Optimalizace plochy, FHC (úprava nového formátu), Přechod na cashless, Kontrolní přepočet FTE/WPL, Ad-hoc, Studie |
+| `C7` | Režim obsluhy klientů | cash, cashless |
+
+**ID pobočky (`G1`) se dopočítá samo** z názvu vybraného v `C3` vzorcem
+`=IFERROR(VLOOKUP(C3,'Pobočky'!$A$2:$B$318,2,0),"")` — a protože `VSTUPY!C1` je `=CHL!G1`, dostane
+aplikace ID pobočky bez dalšího zadávání.
+
+Šablona proto obsahuje ještě třetí, pomocný list **Pobočky** se seznamem poboček (název, ID, region)
+z databáze aplikace. Slouží jako zdroj rozbalovacího menu pro `C3` a jako vyhledávací tabulka pro
+`VLOOKUP` — seznam 317 poboček by se do definice ověření dat vepsat nedal (Excel má u seznamu
+zadaného přímo v ověření limit 255 znaků). Kratší číselníky (`C5`, `C6`, `C7`) jsou proto zapsané
+přímo v ověření dat.
 
 ## Formát vstupního Excelu
 
