@@ -375,7 +375,7 @@ def main():
         ("MMMA", "Pokladna s bezpečnostní nástavbou", "service_zone", 1),
         ("MMMA", "Kancelářské místo", "backoffice_zone", 1),
         ("MMMA", "Fast track backoffice", "backoffice_zone", 0),
-        ("MMMA", "Interní zasedací místnost - malá", "backoffice_zone", 0),
+        ("MMMA", "Interní zasedací místnost - malá", "backoffice_zone", 1),
         ("MMMA", "Interní zasedací místnost - velká", "backoffice_zone", 1),
         ("MMMA", "Relax zóna", "backoffice_zone", 0),
         ("MMMA", "Flex box", "backoffice_zone", 1),

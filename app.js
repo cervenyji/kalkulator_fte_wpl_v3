@@ -119,6 +119,11 @@ function migrateSchema(dbi) {
     SEED_FURNITURE.forEach((r) => { ins.run(r); });
     ins.free();
   }
+  // Oprava dat: „Interní zasedací místnost - malá“ se počítá jako WPL (1 WPL/kus),
+  // dříve byla vedená jako prvek nepřispívající k WPL. Podmínka `wpl_counter = 0`
+  // opravuje jen původní (chybnou) hodnotu — vlastní úpravu na jinou hodnotu
+  // v modulu „Struktura checklistu“ ponechá být.
+  dbi.run("UPDATE furniture_to_zone SET wpl_counter = 1 WHERE furniture = 'Interní zasedací místnost - malá' AND wpl_counter = 0");
   const pobockyCount = dbAll("SELECT COUNT(*) AS n FROM pobocky", [], dbi)[0].n;
   if (pobockyCount === 0) {
     const ins = dbi.prepare("INSERT INTO pobocky (id_pobocky, nazev, region) VALUES (?, ?, ?)");
@@ -349,7 +354,7 @@ const SEED_FURNITURE = [
   ["MMMA", "Pokladna s bezpečnostní nástavbou", "service_zone", 1],
   ["MMMA", "Kancelářské místo", "backoffice_zone", 1],
   ["MMMA", "Fast track backoffice", "backoffice_zone", 0],
-  ["MMMA", "Interní zasedací místnost - malá", "backoffice_zone", 0],
+  ["MMMA", "Interní zasedací místnost - malá", "backoffice_zone", 1],
   ["MMMA", "Interní zasedací místnost - velká", "backoffice_zone", 1],
   ["MMMA", "Relax zóna", "backoffice_zone", 0],
   ["MMMA", "Flex box", "backoffice_zone", 1],
@@ -1476,7 +1481,7 @@ function renderResults(result) {
 
   document.getElementById("layoutPanel").style.display = "block";
   renderLayoutSection("layoutArea", result.rows, {
-    calculation_key: result.calculation_key, pobocka_id: result.pobocka_id, pobocka_nazev: result.pobocka_nazev,
+    calculation_key: result.calculation_key, pobocka_id: result.pobocka_id, pobocka_nazev: result.pobocka_nazev, stats,
   });
 }
 
@@ -1873,6 +1878,130 @@ const ZONE_LABELS = {
   office_room: "Office room",
 };
 
+/* ------------------- Pravidla pro předvyplnění layoutu --------------------- */
+// Deklarativní definice pravidel, podle kterých se v sestavení layoutu
+// automaticky předvyplní (a barevně zvýrazní) počty kusů. Ze stejné definice se
+// generuje i nápověda pod ikonou „?“ u nadpisu „Sestavení layoutu“, takže popis
+// pravidel se nemůže rozejít se skutečným chováním aplikace.
+//
+// - `zone`      … zóna, ve které pravidlo platí
+// - `furniture` … přesný název nábytkového prvku (pravidlo se použije jen
+//                 u segmentů, které tento prvek v dané zóně skutečně mají)
+// - `formats`   … pro které formáty pobočky pravidlo platí; null = pro všechny
+// - `qty`       … funkce ({ required, stats }) -> doporučený počet kusů
+//                 (`required` je potřeba WPL dané skupiny segment+zóna)
+const LAYOUT_RULES = [
+  {
+    zone: "service_zone", furniture: "Fast track (stolek a židle)", formats: null,
+    qty: ({ stats }) => stats.recommendedFasttracks,
+    text: "<strong>Fast track (stolek a židle)</strong> = doporučený počet fasttracků na hale.",
+  },
+  {
+    zone: "service_zone", furniture: "Čekací zóna (židle)", formats: ["small", "medium economy"],
+    qty: ({ stats }) => stats.recommendedChairs,
+    text: "<strong>Čekací zóna (židle)</strong> = doporučený počet židlí v čekací zóně.",
+  },
+  {
+    zone: "service_zone", furniture: "Čekací zóna (obývák)", formats: ["medium", "flagship"],
+    qty: ({ stats }) => stats.recommendedChairs,
+    text: "<strong>Čekací zóna (obývák)</strong> = doporučený počet židlí v čekací zóně.",
+  },
+  {
+    zone: "service_zone", furniture: "Lenka vítací", formats: ["small", "medium economy"],
+    qty: ({ required }) => Math.max(1, Math.round(required)),
+    text: "Servisní místo <strong>Lenka vítací</strong> — vždy předvyplněné (v počtu dle potřeby WPL service zone, minimálně 1).",
+  },
+  {
+    zone: "service_zone", furniture: "Theke - nízká", formats: ["medium"],
+    qty: ({ required }) => Math.max(1, Math.round(required)),
+    text: "Servisní místo <strong>Theke - nízká</strong> — vždy předvyplněné (v počtu dle potřeby WPL service zone, minimálně 1).",
+  },
+  {
+    zone: "service_zone", furniture: "Theke - vysoká", formats: ["flagship"],
+    qty: ({ required }) => Math.max(1, Math.round(required)),
+    text: "Servisní místo <strong>Theke - vysoká</strong> — vždy předvyplněné (v počtu dle potřeby WPL service zone, minimálně 1).",
+  },
+  {
+    zone: "backoffice_zone", furniture: "Interní zasedací místnost - malá", formats: ["medium economy"],
+    qty: () => 1,
+    text: "Zasedací místnost <strong>Interní zasedací místnost - malá</strong> = 1 ks.",
+  },
+  {
+    zone: "backoffice_zone", furniture: "Interní zasedací místnost - velká", formats: ["medium", "flagship"],
+    qty: () => 1,
+    text: "Zasedací místnost <strong>Interní zasedací místnost - velká</strong> = 1 ks.",
+  },
+  {
+    zone: "meeting_zone", furniture: "Jednací místnost", formats: null,
+    qty: ({ required }) => Math.round(required),
+    text: "Celá potřeba WPL v Meeting zone se přiřadí na <strong>Jednací místnost</strong> " +
+      "(potřeba WPL 5 → 5 ks; u desetinných hodnot zaokrouhleno).",
+  },
+  {
+    zone: "backoffice_zone", furniture: "Kancelářské místo", formats: null,
+    qty: ({ required }) => Math.floor(required),
+    text: "Potřeba WPL v Backoffice zone se přiřadí na <strong>Kancelářské místo</strong> " +
+      "(potřeba WPL 5 → 5 ks; desetinná část se zaokrouhluje dolů).",
+  },
+  {
+    zone: "backoffice_zone", furniture: "Fast track backoffice", formats: null,
+    qty: ({ required }) => (required - Math.floor(required) > 0.5 ? 1 : 0),
+    text: "Je-li desetinná část potřeby WPL v Backoffice zone větší než 0,5, přidá se navíc " +
+      "1 ks <strong>Fast track backoffice</strong>.",
+  },
+  {
+    zone: "office_room", furniture: "Kancelář", formats: null,
+    qty: ({ required }) => (required > 0 ? Math.max(1, Math.round(required)) : 0),
+    text: "Je-li v zóně Office room jakákoliv potřeba WPL, předvyplní se <strong>Kancelář</strong>.",
+  },
+];
+
+// Formát pobočky se v aplikaci ukládá jako "medium economy", uživatelé ho ale
+// píší i jako "medium-economy" — pro porovnání s pravidly se sjednotí.
+function normalizeFormatKey(formatTyp) {
+  return String(formatTyp || "").trim().toLowerCase().replace(/-/g, " ").replace(/\s+/g, " ");
+}
+
+// Vrátí mapu "segment||zóna||nábytek" -> doporučený počet kusů pro danou
+// kalkulaci. Pravidlo se použije jen tam, kde daný segment a zóna odpovídající
+// nábytkový prvek skutečně mají (podle tabulky furniture_to_zone).
+function computeLayoutSuggestions(segmentRows, stats) {
+  if (!stats) return {};
+  const formatKey = normalizeFormatKey(stats.formatTyp);
+  const out = {};
+  segmentRows.forEach((seg) => {
+    ZONES.forEach((zone) => {
+      const required = seg[zone] || 0;
+      const names = new Set(getFurnitureOptions(seg.segment, zone).map((o) => o.furniture));
+      if (!names.size) return;
+      LAYOUT_RULES.forEach((rule) => {
+        if (rule.zone !== zone) return;
+        if (rule.formats && !rule.formats.includes(formatKey)) return;
+        if (!names.has(rule.furniture)) return;
+        const qty = Math.max(0, Math.round(rule.qty({ required, stats }) || 0));
+        if (qty > 0) out[`${seg.segment}||${zone}||${rule.furniture}`] = qty;
+      });
+    });
+  });
+  return out;
+}
+
+// Ikona nápovědy s výpisem všech platných pravidel — obsah se generuje
+// z LAYOUT_RULES, aby odpovídal tomu, co aplikace skutečně dělá.
+function layoutRulesHelpHtml() {
+  const formatLabel = (formats) => formats ? `pro formát ${formats.join(", ")}` : "pro všechny formáty";
+  const items = LAYOUT_RULES.map((r) =>
+    `<li>${r.text} <span style="opacity:.7">(${ZONE_LABELS[r.zone]}, ${formatLabel(r.formats)})</span></li>`).join("");
+  return `<span class="help-icon" tabindex="0">?<span class="help-tooltip">
+    <strong>Pravidla pro předvyplnění layoutu</strong>
+    <ul>${items}</ul>
+    Předvyplněné hodnoty jsou barevně zvýrazněné a označené štítkem „doporučeno“ — jde o návrh,
+    který lze libovolně přepsat. Pravidlo se použije jen u segmentů, které daný nábytkový prvek
+    v dané zóně mají. Při úpravě už uloženého layoutu se předvyplnění neprovádí, aby nepřepsalo
+    dříve zadané hodnoty.
+  </span></span>`;
+}
+
 function getFurnitureOptions(segment, zone) {
   return dbAll("SELECT furniture, wpl_counter FROM furniture_to_zone WHERE segment = ? AND zone = ? ORDER BY id", [segment, zone]);
 }
@@ -1900,6 +2029,11 @@ function renderLayoutSection(containerId, segmentRows, meta) {
 function renderLayoutForm(container, segmentRows, meta, existingRows) {
   const existingMap = {};
   (existingRows || []).forEach((r) => { existingMap[`${r.segment}||${r.zone}||${r.furniture}`] = r.piece_count; });
+  // Doporučené předvyplnění podle pravidel (LAYOUT_RULES) se použije jen u nového,
+  // zatím neuloženého layoutu — při úpravě uloženého layoutu by přepsalo hodnoty,
+  // které už uživatel zadal.
+  const isEdit = (existingRows || []).length > 0;
+  const suggestions = isEdit ? {} : computeLayoutSuggestions(segmentRows, meta.stats);
 
   let groupsHtml = "";
   let anyGroup = false;
@@ -1922,12 +2056,16 @@ function renderLayoutForm(container, segmentRows, meta, existingRows) {
       anyGroup = true;
       let hasPrefill = false;
       const rowsHtml = options.map((o) => {
-        const prefill = existingMap[`${seg.segment}||${zone}||${o.furniture}`] || 0;
+        const key = `${seg.segment}||${zone}||${o.furniture}`;
+        const suggested = suggestions[key] || 0;
+        const prefill = isEdit ? (existingMap[key] || 0) : suggested;
         if (prefill > 0) hasPrefill = true;
-        return `<tr>
-          <td>${esc(o.furniture)}</td>
+        return `<tr class="${suggested > 0 ? "layout-row-suggested" : ""}">
+          <td>${esc(o.furniture)}${suggested > 0
+            ? ` <span class="layout-suggest-badge" title="Předvyplněno podle pravidel pro formát „${esc(meta.stats?.formatTyp)}“">doporučeno</span>`
+            : ""}</td>
           <td>${o.wpl_counter > 0 ? fmt1(o.wpl_counter) : '<span class="muted">nepřispívá k WPL</span>'}</td>
-          <td><input type="number" min="0" step="1" value="${prefill}" class="layout-qty"
+          <td><input type="number" min="0" step="1" value="${prefill}" class="layout-qty${suggested > 0 ? " suggested" : ""}"
             data-furniture="${esc(o.furniture)}" data-wpl-counter="${o.wpl_counter}"></td>
         </tr>`;
       }).join("");
@@ -2209,7 +2347,7 @@ function showHistoryDetail(calculationKey, loadKey) {
       <label class="muted" for="pdfNoteHistory">Poznámka do PDF (nepovinné):</label>
       <textarea id="pdfNoteHistory" rows="2"></textarea>
     </div>
-    <h3 style="margin-top:22px;">Sestavení layoutu</h3>
+    <h3 style="margin-top:22px;">Sestavení layoutu${layoutRulesHelpHtml()}</h3>
     <div id="historyLayoutArea"></div>`;
 
   document.getElementById("btnExportPdfHistory").addEventListener("click", () => {
@@ -2229,7 +2367,7 @@ function showHistoryDetail(calculationKey, loadKey) {
   });
 
   renderLayoutSection("historyLayoutArea", rowsNoTotal,
-    { calculation_key: calculationKey, pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev });
+    { calculation_key: calculationKey, pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev, stats });
 
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
@@ -2821,6 +2959,9 @@ async function init() {
   });
   document.getElementById("btnSaveFurniture").addEventListener("click", saveFurnitureTable);
   document.getElementById("btnGenerateTemplate").addEventListener("click", generateChecklistTemplate);
+
+  // Nápověda k pravidlům předvyplnění layoutu — obsah se generuje z LAYOUT_RULES.
+  document.getElementById("layoutRulesHelp").innerHTML = layoutRulesHelpHtml();
 
   updateStepper();
 

@@ -202,6 +202,37 @@
   #furnitureTbody td:nth-child(3) input{min-width:220px;}
   #adminDotaceTable td:nth-child(1) input{min-width:90px;}
   #adminDotaceTable td:nth-child(2) input{min-width:320px;}
+
+  /* --- Ikona nápovědy s bublinou (pravidla předvyplnění layoutu) --- */
+  .help-icon{
+    display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px;
+    margin-left:7px; border-radius:50%; background:var(--accent); color:#fff;
+    font-size:12px; font-weight:700; cursor:help; position:relative; vertical-align:middle;
+  }
+  .help-icon .help-tooltip{
+    display:none; position:absolute; top:25px; left:-8px; z-index:60;
+    width:560px; max-width:78vw; background:#1c2530; color:#f2f5f9; border-radius:9px;
+    padding:12px 15px; font-size:12.5px; font-weight:400; line-height:1.55; text-align:left;
+    text-transform:none; letter-spacing:normal; box-shadow:0 8px 26px rgba(0,0,0,.28);
+  }
+  .help-icon:hover .help-tooltip, .help-icon:focus .help-tooltip{display:block;}
+  .help-icon .help-tooltip strong{color:#8ecbff;}
+  .help-icon .help-tooltip ul{margin:7px 0 9px; padding-left:18px;}
+  .help-icon .help-tooltip li{margin-bottom:5px;}
+
+  /* --- Předvyplněné (doporučené) hodnoty v layoutu --- */
+  .layout-row-suggested > td{background:#eef6ff;}
+  .layout-suggest-badge{
+    display:inline-block; padding:1px 7px; border-radius:9px; font-size:10.5px; font-weight:700;
+    background:var(--accent); color:#fff; vertical-align:middle; white-space:nowrap;
+  }
+  input.layout-qty.suggested{
+    background:#dbecff; border-color:var(--accent); border-width:1.5px; color:var(--accent-dark);
+  }
+  input.layout-qty.suggested:hover{border-color:var(--accent-dark);}
+  input.layout-qty.suggested:focus{
+    background:#fff; border-color:var(--accent); box-shadow:0 0 0 2px rgba(39,112,240,.2);
+  }
 </style>
 </head>
 <body>
@@ -342,9 +373,10 @@
   </div>
 
   <div class="panel" id="layoutPanel" style="display:none;">
-    <h2>Sestavení layoutu</h2>
+    <h2>Sestavení layoutu<span id="layoutRulesHelp"></span></h2>
     <p class="muted">Pro každou zónu se spočítaným požadavkem WPL vyberte, kolika kusy jakého nábytku bude
-    obsazena, a uložte layout. Po uložení lze vyexportovat PDF se sestavou nábytku po zónách a segmentech.</p>
+    obsazena, a uložte layout. Část hodnot je předvyplněná podle pravidel (najeďte myší na „?“ u nadpisu).
+    Po uložení lze vyexportovat PDF se sestavou nábytku po zónách a segmentech.</p>
     <div id="layoutArea"></div>
   </div>
 </section>

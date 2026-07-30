@@ -162,6 +162,49 @@ znovu otevře s předvyplněnými počty kusů a uložení přepíše původní 
 Pokud pro nějaký segment/zónu není v databázi definovaný žádný nábytek,
 zobrazí se u dané zóny informační poznámka místo formuláře.
 
+### Automatické předvyplnění podle pravidel
+
+Nový layout se podle **stanoveného formátu pobočky** a spočítaných potřeb WPL
+částečně předvyplní sám. Předvyplněné hodnoty jsou barevně zvýrazněné (modře)
+a označené štítkem „doporučeno“ — jde o návrh, který lze libovolně přepsat.
+U nadpisu „Sestavení layoutu“ je ikona **„?“**, po najetí myší se rozbalí
+bublina s výpisem všech platných pravidel.
+
+Platná pravidla:
+
+| Zóna | Nábytek | Formát | Počet |
+| --- | --- | --- | --- |
+| Service zone | Fast track (stolek a židle) | všechny | doporučený počet fasttracků na hale |
+| Service zone | Čekací zóna (židle) | small, medium economy | doporučený počet židlí v čekací zóně |
+| Service zone | Čekací zóna (obývák) | medium, flagship | doporučený počet židlí v čekací zóně |
+| Service zone | Lenka vítací | small, medium economy | vždy (dle potřeby WPL, min. 1) |
+| Service zone | Theke - nízká | medium | vždy (dle potřeby WPL, min. 1) |
+| Service zone | Theke - vysoká | flagship | vždy (dle potřeby WPL, min. 1) |
+| Backoffice zone | Interní zasedací místnost - malá | medium economy | 1 ks |
+| Backoffice zone | Interní zasedací místnost - velká | medium, flagship | 1 ks |
+| Meeting zone | Jednací místnost | všechny | celá potřeba WPL (5 → 5 ks) |
+| Backoffice zone | Kancelářské místo | všechny | potřeba WPL zaokrouhlená dolů (5 → 5 ks) |
+| Backoffice zone | Fast track backoffice | všechny | 1 ks, je-li desetinná část potřeby WPL > 0,5 |
+| Office room | Kancelář | všechny | je-li v zóně jakákoliv potřeba WPL |
+
+Poznámky k chování:
+
+- Pravidlo se použije jen u segmentů, které daný nábytkový prvek v dané zóně
+  skutečně mají (dle tabulky `furniture_to_zone`) — např. servisní místa nebo
+  interní zasedací místnosti jsou definované jen pro segment MMMA, takže se
+  předvyplní jen tam. Naopak „Kancelářské místo“, „Jednací místnost“ nebo
+  „Kancelář“ existují u více segmentů, a tam se pravidlo použije pro každý
+  segment zvlášť s jeho vlastní potřebou WPL.
+- **Při úpravě už uloženého layoutu se předvyplnění neprovádí**, aby nepřepsalo
+  hodnoty, které uživatel dříve zadal.
+- Definice pravidel je v `app.js` v konstantě `LAYOUT_RULES` — ze stejné
+  definice se generuje i text nápovědy, takže se popis nemůže rozejít se
+  skutečným chováním.
+
+Prvek **„Interní zasedací místnost - malá“** se počítá jako 1 WPL / kus (dříve
+byl vedený jako prvek nepřispívající k WPL). U databází vytvořených starší verzí
+aplikace se hodnota při připojení automaticky opraví.
+
 ## Barevné schéma a ikony segmentů
 
 Každý segment (MMMA, SBC, HC, EPC, EPB, PROVOZ, RKC, CESTOVNÍ, CESTOVNÍ POZICE, OSTATNÍ) má
