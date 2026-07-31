@@ -217,11 +217,24 @@ a doporučení prostor“**:
   λ jednotlivých typů, P95 poptávka OB a servisu v FTE a vytížení P50 / P95
   včetně pravděpodobnosti přetížení.
 
-Zaškrtávátkem **„Zahrnout návštěvnost a doporučení prostor do PDF“** se celá
-sekce (doporučení, srovnání s kalkulací, hodinový detail i Monte Carlo)
-přidá do PDF kalkulace i do spojené sestavy. Doporučené zasedací místnosti
-a servisní místa se přidávají i do tabulky ukazatelů při kopírování výsledku
-do schránky.
+### Co jde do PDF
+
+Zaškrtávátkem **„Zahrnout do PDF doporučení prostor, srovnání s kalkulací
+a grafy Monte Carla“** se sekce přidá do PDF kalkulace i do spojené sestavy.
+Do PDF jde záměrně jen část toho, co je vidět v aplikaci:
+
+- **Doporučení prostor** a tabulka s mezivýpočtem (λ / P95 / obsluha / počet míst),
+- **Srovnání s kalkulací**,
+- **Monte Carlo** — souhrnné hodnoty a místo hodinové tabulky **dva grafy**:
+  *P95 FTE poptávka po hodinách (6h–21h)* (křivka poptávky OB a servisní zóny
+  proti kapacitě vykreslené přerušovanou čárou) a *Distribuce celkové denní FTE
+  poptávky (bankéř-hodiny/den)* (histogram simulovaných dnů se šedou čárou
+  kapacity a zelenou čárou P95 poptávky, zvlášť pro OB tým a servisní zónu).
+
+**Detail návštěv po hodinách** zůstává jen v aplikaci, do PDF se netiskne.
+
+Doporučené zasedací místnosti a servisní místa se přidávají i do tabulky
+ukazatelů při kopírování výsledku do schránky.
 
 ### Snapshot ke kalkulaci
 
@@ -491,4 +504,6 @@ záznam v tabulce časových dotací, řádek se vynechá a zobrazí se upozorn�
   by pro šablonu, která má vypadat jako vzorový checklist, nešlo použít.
 - PDF export přes [jsPDF](https://github.com/parallax/jsPDF) s vloženým
   fontem DejaVu Sans (`vendor/dejavu-fonts.js`), aby se správně zobrazovala
-  česká diakritika.
+  česká diakritika. Grafy Monte Carla v PDF se kreslí přímo z čar a obdélníků
+  (jsPDF grafy neumí) podle stejných dat a stejného vzhledu jako SVG grafy
+  v HTML reportu.

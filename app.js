@@ -2308,6 +2308,9 @@ function summarizeVisitorMc(mc, consts) {
     obCapFte: mc.ob_cap_fte, svcCapFte: mc.svc_cap_fte,
     obCapDay: mc.ob_cap_day, obP95Day: mc.ob_p95_day,
     svcCapDay: mc.svc_cap_day, svcP95Day: mc.svc_p95_day,
+    // Histogramy denní poptávky (pro graf distribuce v PDF).
+    obHist: mc.ob_hist || [], obEdges: mc.ob_edges || [],
+    svcHist: mc.svc_hist || [], svcEdges: mc.svc_edges || [],
     presencePct: (1 - (consts.ABSENCE_RATE ?? VISITOR_CONSTS_DEFAULT.ABSENCE_RATE)) * 100,
   };
 }
@@ -2441,7 +2444,8 @@ function renderVisitorSectionHtml(visitor, options = {}) {
 
   const checkbox = checkboxId
     ? `<label class="muted"><input type="checkbox" id="${checkboxId}" checked>
-        Zahrnout návštěvnost a doporučení prostor do PDF</label>`
+        Zahrnout do PDF doporučení prostor, srovnání s kalkulací a grafy Monte Carla
+        <span class="muted">(detail návštěv po hodinách zůstává jen v aplikaci)</span></label>`
     : "";
 
   return `<div class="visitor-section">
@@ -2601,6 +2605,171 @@ function showVisitorDetail(pobockaId) {
 
 /* ---------------------------------- PDF ----------------------------------- */
 
+/* ------------------- Grafy Monte Carla do PDF ------------------------------ */
+// jsPDF neumí grafy — obě vizualizace se skládají z čar a obdélníků. Vychází
+// ze stejných dat i stejného vzhledu jako SVG grafy v HTML reportu (osy,
+// přerušované čáry kapacity, popisky).
+
+function pdfSetDash(pdf, pattern) {
+  if (typeof pdf.setLineDashPattern === "function") pdf.setLineDashPattern(pattern, 0);
+}
+
+function pdfStroke(pdf, hex, width) {
+  const [r, g, b] = hexToRgb(hex);
+  pdf.setDrawColor(r, g, b);
+  pdf.setLineWidth(width);
+}
+
+function pdfFill(pdf, hex) {
+  const [r, g, b] = hexToRgb(hex);
+  pdf.setFillColor(r, g, b);
+}
+
+function pdfTextColor(pdf, hex) {
+  const [r, g, b] = hexToRgb(hex);
+  pdf.setTextColor(r, g, b);
+}
+
+// Krok osy Y podle rozsahu — stejná logika jako v reportu.
+function chartTickStep(maxY) {
+  if (maxY <= 1.5) return 0.25;
+  if (maxY <= 3) return 0.5;
+  if (maxY <= 6) return 1;
+  if (maxY <= 12) return 2;
+  return 5;
+}
+
+// Graf „P95 FTE poptávka po hodinách (6h–21h)“: poptávka OB (a servisní zóny)
+// po hodinách proti kapacitě vykreslené přerušovanou čárou.
+function drawMcFteLineChartPdf(pdf, x, y, w, h, mc, hasSvc) {
+  const pl = 11;
+  const pr = 17;
+  const pt = 3;
+  const pb = 7;
+  const pw = w - pl - pr;
+  const ph = h - pt - pb;
+  const rows = mc.rows;
+  const n = rows.length;
+  const capOb = mc.obCapFte || 0;
+  const capSvc = mc.svcCapFte || 0;
+  const maxY = Math.max(
+    ...rows.map((r) => r.p95ObFte),
+    ...(hasSvc ? rows.map((r) => r.p95SvcFte) : [0]),
+    capOb, hasSvc ? capSvc : 0,
+  ) * 1.15 || 1;
+  const xs = (i) => x + pl + (n > 1 ? (i / (n - 1)) * pw : 0);
+  const ys = (v) => y + pt + ph * (1 - Math.min(v, maxY) / maxY);
+
+  pdfFill(pdf, "#f8faff");
+  pdf.rect(x + pl, y + pt, pw, ph, "F");
+
+  // Mřížka + popisky osy Y
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(5.5);
+  const step = chartTickStep(maxY);
+  for (let v = 0; v <= maxY * 1.02; v += step) {
+    const yy = ys(v);
+    pdfStroke(pdf, "#e2e8f0", 0.15);
+    pdf.line(x + pl, yy, x + pl + pw, yy);
+    pdfTextColor(pdf, "#94a3b8");
+    pdf.text(String(Math.round(v * 100) / 100), x + pl - 1, yy + 0.7, { align: "right" });
+  }
+
+  // Popisky osy X po dvou hodinách
+  rows.forEach((r, i) => {
+    if (i % 2 !== 0) return;
+    pdfTextColor(pdf, "#94a3b8");
+    pdf.text(`${r.hour}h`, xs(i), y + h - 2.4, { align: "center" });
+  });
+
+  // Kapacita — přerušovaná čára s popiskem vpravo
+  const capLine = (value, hex, label) => {
+    const yy = ys(value);
+    pdfStroke(pdf, hex, 0.4);
+    pdfSetDash(pdf, [1.4, 1]);
+    pdf.line(x + pl, yy, x + pl + pw, yy);
+    pdfSetDash(pdf, []);
+    pdfTextColor(pdf, hex);
+    pdf.text(`${label} ${vFmt1(value)}`, x + pl + pw + 1, yy + 0.7);
+  };
+  capLine(capOb, "#2563eb", "OB");
+  if (hasSvc) capLine(capSvc, "#d97706", "SVC");
+
+  // Křivky poptávky
+  const polyline = (values, hex, width) => {
+    pdfStroke(pdf, hex, width);
+    for (let i = 1; i < values.length; i++) {
+      pdf.line(xs(i - 1), ys(values[i - 1]), xs(i), ys(values[i]));
+    }
+  };
+  if (hasSvc) polyline(rows.map((r) => r.p95SvcFte), "#d97706", 0.4);
+  polyline(rows.map((r) => r.p95ObFte), "#2563eb", 0.6);
+
+  // Osy
+  pdfStroke(pdf, "#94a3b8", 0.2);
+  pdf.line(x + pl, y + pt, x + pl, y + pt + ph);
+  pdf.line(x + pl, y + pt + ph, x + pl + pw, y + pt + ph);
+
+  pdf.setTextColor(0, 0, 0);
+  pdf.setLineWidth(0.2);
+  pdf.setDrawColor(0, 0, 0);
+  return y + h;
+}
+
+// Histogram „Distribuce celkové denní FTE poptávky“: četnosti simulovaných dnů,
+// šedá přerušovaná čára = kapacita, zelená = P95 poptávky.
+function drawMcHistPdf(pdf, x, y, w, h, counts, edges, capV, p95V, hex) {
+  if (!counts || !counts.length || !edges || edges.length < 2) return y;
+  const pl = 9;
+  const pr = 3;
+  const pt = 3;
+  const pb = 6;
+  const pw = w - pl - pr;
+  const ph = h - pt - pb;
+  const maxX = edges[edges.length - 1] || 1;
+  const maxC = Math.max(...counts, 1);
+  const xs = (v) => x + pl + (Math.min(v, maxX) / maxX) * pw;
+  const ys = (v) => y + pt + ph * (1 - v / maxC);
+
+  pdfFill(pdf, "#f8faff");
+  pdf.rect(x + pl, y + pt, pw, ph, "F");
+
+  pdfFill(pdf, hex);
+  counts.forEach((c, i) => {
+    if (!c) return;
+    const x1 = xs(edges[i]);
+    const barW = Math.max(xs(edges[i + 1]) - x1 - 0.15, 0.2);
+    const barY = ys(c);
+    pdf.rect(x1, barY, barW, y + pt + ph - barY, "F");
+  });
+
+  const vline = (value, colorHex) => {
+    if (value === null || value === undefined || value <= 0) return;
+    const xx = xs(value);
+    pdfStroke(pdf, colorHex, 0.4);
+    pdfSetDash(pdf, [1.2, 0.9]);
+    pdf.line(xx, y + pt, xx, y + pt + ph);
+    pdfSetDash(pdf, []);
+  };
+  vline(capV, "#475569");
+  vline(p95V, "#16a34a");
+
+  // Popisky osy X (5 hodnot) + osy
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(5.5);
+  pdfTextColor(pdf, "#94a3b8");
+  [0, 0.25, 0.5, 0.75, 1].forEach((t) => {
+    const v = t * maxX;
+    pdf.text(vFmt1(v), xs(v), y + h - 1.8, { align: "center" });
+  });
+  pdfStroke(pdf, "#94a3b8", 0.2);
+  pdf.line(x + pl, y + pt, x + pl, y + pt + ph);
+  pdf.line(x + pl, y + pt + ph, x + pl + pw, y + pt + ph);
+
+  pdf.setTextColor(0, 0, 0);
+  pdf.setLineWidth(0.2);
+  pdf.setDrawColor(0, 0, 0);
+  return y + h;
+}
+
 // Vykreslí sekci návštěvnosti a doporučení prostor do PDF (do už existujícího
 // dokumentu od zadané souřadnice y) a vrátí novou souřadnici y.
 function drawVisitorPdf(pdf, startY, visitor, marginX, pageBottom, stats) {
@@ -2718,22 +2887,12 @@ function drawVisitorPdf(pdf, startY, visitor, marginX, pageBottom, stats) {
     y += 5;
   }
 
-  newPageIfNeeded(30);
-  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
-  pdf.text("Detail návštěv po hodinách (průměr na otevírací den)", marginX, y); y += 6;
-  drawTable(
-    ["Hodina", "Fyzická", "Online", "Bezhot.", "Hotovost", "Schůzky", "Walk-in", "Celkem"],
-    [24, 22, 22, 22, 22, 22, 22, 24],
-    m.hours.map((r) => ({
-      vals: [visitorHourLabel(r.hour), vFmt2(r.fyzicka), vFmt2(r.online), vFmt2(r.bezhot), vFmt2(r.hotovost),
-        vFmt2(r.meetings), vFmt2(r.walkins), vFmt2(r.total)],
-      highlight: m.peakHour && r.hour === m.peakHour.hour,
-    })),
-  );
-  y += 5;
+  // Detail návštěv po hodinách je záměrně jen v aplikaci — do PDF jde jen
+  // doporučení prostor, srovnání s kalkulací a Monte Carlo v podobě grafů.
 
   if (m.mc) {
     const mc = m.mc;
+    const hasSvc = !!(m.d.has_svc && mc.svcFte);
     newPageIfNeeded(40);
     pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
     pdf.text(`Monte Carlo model průměrného dne (${vFmtInt(mc.nIter)} simulací)`, marginX, y); y += 6;
@@ -2747,18 +2906,54 @@ function drawVisitorPdf(pdf, startY, visitor, marginX, pageBottom, stats) {
       `Špičková P95 poptávka OB: ${vFmt1(mc.peakP95Ob)} FTE/hod · kapacita ${vFmt1(mc.obCapFte)} FTE/hod` +
         ` (${vFmt1(mc.presencePct)} % efektivní přítomnost)`,
       `Denní poptávka OB: P95 ${vFmt1(mc.obP95Day)} h/den proti kapacitě ${vFmt1(mc.obCapDay)} h/den` +
-        (mc.svcFte ? ` · servisní zóna P95 ${vFmt1(mc.svcP95Day)} h/den proti ${vFmt1(mc.svcCapDay)} h/den` : ""),
+        (hasSvc ? ` · servisní zóna P95 ${vFmt1(mc.svcP95Day)} h/den proti ${vFmt1(mc.svcCapDay)} h/den` : ""),
     ].forEach((line) => {
       pdf.splitTextToSize(line, 182).forEach((l) => { newPageIfNeeded(6); pdf.text(l, marginX, y); y += 5; });
     });
     y += 3;
-    drawTable(
-      ["Hodina", "λ fyz.", "λ online", "λ bezhot.", "P95 OB FTE", "P95 servis", "Vytíž. P50", "Vytíž. P95", "Přetížení"],
-      [22, 19, 20, 21, 24, 21, 21, 21, 21],
-      mc.rows.map((r) => [visitorHourLabel(r.hour), vFmt2(r.lamFyzicka), vFmt2(r.lamOnline), vFmt2(r.lamBezhot),
-        vFmt1(r.p95ObFte), vFmt1(r.p95SvcFte), `${vFmt1(r.p50Util)} %`, `${vFmt1(r.p95Util)} %`,
-        `${vFmt1(r.overloadProb)} %`]),
-    );
+
+    // Graf 1 — P95 FTE poptávka po hodinách
+    const lineChartH = 46;
+    newPageIfNeeded(lineChartH + 14);
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(9);
+    pdf.text("P95 FTE poptávka po hodinách (6h–21h)", marginX, y); y += 4.5;
+    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7);
+    pdf.setTextColor(120, 120, 120);
+    pdf.text(`OB (modrá)${hasSvc ? " · servis BKP (oranžová)" : ""} · kapacita = přerušovaná čára `
+      + `(FTE = bankéř × ${vFmt1(mc.presencePct)} % přítomnost)`, marginX, y); y += 3.5;
+    pdf.setTextColor(0, 0, 0);
+    y = drawMcFteLineChartPdf(pdf, marginX, y, 182, lineChartH, mc, hasSvc);
+    y += 5;
+
+    // Graf 2 — distribuce celkové denní FTE poptávky
+    const histH = 36;
+    newPageIfNeeded(histH + 16);
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(9);
+    pdf.text("Distribuce celkové denní FTE poptávky (bankéř-hodiny/den)", marginX, y); y += 4.5;
+    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7);
+    pdf.setTextColor(120, 120, 120);
+    pdf.text("Frekvence simulovaných dnů · šedá přerušovaná = kapacita · zelená = P95 poptávky", marginX, y);
+    y += 4;
+    pdf.setTextColor(0, 0, 0);
+
+    const histW = hasSvc ? 89 : 182;
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(7);
+    pdfTextColor(pdf, "#2563eb");
+    pdf.text(`OB tým (schůzky) — kapacita ${vFmt1(mc.obCapDay)} h · P95 ${vFmt1(mc.obP95Day)} h`,
+      marginX, y, { maxWidth: histW });
+    if (hasSvc) {
+      pdfTextColor(pdf, "#d97706");
+      pdf.text(`Servisní zóna (BKP) — kapacita ${vFmt1(mc.svcCapDay)} h · P95 ${vFmt1(mc.svcP95Day)} h`,
+        marginX + 93, y, { maxWidth: histW });
+    }
+    pdf.setTextColor(0, 0, 0);
+    y += 2.5;
+    const histTop = y;
+    y = drawMcHistPdf(pdf, marginX, histTop, histW, histH, mc.obHist, mc.obEdges, mc.obCapDay, mc.obP95Day, "#2563eb");
+    if (hasSvc) {
+      drawMcHistPdf(pdf, marginX + 93, histTop, histW, histH, mc.svcHist, mc.svcEdges,
+        mc.svcCapDay, mc.svcP95Day, "#d97706");
+    }
     y += 5;
   }
 
