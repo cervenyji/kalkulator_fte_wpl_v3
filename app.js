@@ -1504,24 +1504,13 @@ function renderResults(result) {
       </table>
     </div>
     ${refVersionDetailsHtml(result.refVersionId)}
-    ${renderStatsSection(stats, "pdfIncludeStats")}
-    ${visitor ? renderVisitorSectionHtml(visitor, { stats, checkboxId: "pdfIncludeVisitor" })
+    ${renderStatsSection(stats)}
+    ${noAbsenceVariantHtml(result)}
+    ${visitor ? renderVisitorSectionHtml(visitor, { stats, inputRows: result.inputRows })
       : renderVisitorMissingHtml(result.pobocka_nazev, result.pobocka_id)}
-    <div class="row" style="margin-top:14px;">
-      <button class="btn secondary" id="btnExportPdf">Exportovat PDF s přehledem WPL</button>
-      <button class="btn secondary" id="btnCopyResult">📋 Kopírovat výsledek do schránky</button>
-    </div>
-    <p class="muted" style="margin-top:6px;">Zkopíruje se jako formátovaná tabulka — vložením (Ctrl+V) do MS Teams,
-      Outlooku nebo Wordu se vloží včetně formátování.</p>
-    <div style="margin-top:10px; max-width:480px;">
-      <label class="muted" for="pdfNote">Poznámka do PDF (nepovinné):</label>
-      <textarea id="pdfNote" rows="2"></textarea>
-    </div>`;
+    ${pdfOptionsBoxHtml("", { hasVisitor: !!visitor })}`;
   document.getElementById("btnExportPdf").addEventListener("click", () => {
-    const note = document.getElementById("pdfNote").value.trim();
-    const includeStats = document.getElementById("pdfIncludeStats").checked;
-    const visitorBox = document.getElementById("pdfIncludeVisitor");
-    exportCalculationPdf(result, { note, includeStats, includeVisitor: visitorBox ? visitorBox.checked : false });
+    exportCalculationPdf(result, collectPdfOptions(""));
   });
   document.getElementById("btnCopyResult").addEventListener("click", () => copyResultToClipboard(result, stats));
   document.getElementById("btnToggleStatus").addEventListener("click", () => {
@@ -1534,7 +1523,7 @@ function renderResults(result) {
   renderLayoutSection("layoutArea", result.rows, {
     calculation_key: result.calculation_key, pobocka_id: result.pobocka_id, pobocka_nazev: result.pobocka_nazev, stats,
     // Data kalkulace pro "Generovat celou sestavu" (kalkulace + layout v jednom PDF)
-    calcResult: result, pdfNoteId: "pdfNote", pdfStatsId: "pdfIncludeStats", pdfVisitorId: "pdfIncludeVisitor",
+    calcResult: result, pdfOptionsSuffix: "",
   });
 }
 
@@ -1669,7 +1658,7 @@ async function copyResultToClipboard(result, stats) {
 // podíl backoffice a míst pro jednání s klientem) včetně srovnání s benchmarkem
 // ostatních kalkulací se stejným formátem pobočky. checkboxId řídí, jestli se
 // tato sekce zahrne i do PDF exportu.
-function renderStatsSection(stats, checkboxId) {
+function renderStatsSection(stats) {
   const benchmark = getBenchmark(stats.formatTyp);
   const fmtPct = (v) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : `${v.toFixed(1)} %`;
   const deltaHtml = (value, avg) => {
@@ -1695,7 +1684,6 @@ function renderStatsSection(stats, checkboxId) {
         <tr><td>Podíl míst pro jednání s klientem (meeting zone)</td><td>${fmtPct(stats.meetingPct)}${deltaHtml(stats.meetingPct, benchmark?.avg_meeting)}</td></tr>
       </table></div>
       <p class="muted">${benchmarkNote}</p>
-      <label class="muted"><input type="checkbox" id="${checkboxId}" checked> Zahrnout klíčové ukazatele a benchmark do PDF</label>
     </div>`;
 }
 
@@ -1726,6 +1714,219 @@ function resultRowHtml(r, isTotal = false) {
     <td>${fmt1(r.backoffice_zone)}</td>
     <td>${fmt1(r.office_room)}</td>
   </tr>`;
+}
+
+/* ------- Kontrolní varianta kalkulace bez uplatnění nepřítomnosti ---------- */
+// Stejný výpočet jako kalkulace, jen bez odečtení nepřítomnosti a homeoffice
+// (koeficient 1 místo 1 − nepřítomnost − homeoffice). Je to jen informativní
+// pohled „kolik by WPL vyšlo, kdyby byli všichni vždy na place“ — schovaný
+// v rozbalovací sekci, do PDF exportu ani do schránky se nedostane.
+function computeNoAbsenceVariant(result) {
+  const inputRows = result.inputRows || [];
+  const oteviraciDoba = Number(result.oteviraci_doba) || 0;
+  if (!inputRows.length || !oteviraciDoba || !db) return null;
+
+  // Časové dotace se berou ze stejné verze referenčních dat, se kterou
+  // kalkulace vznikla — aby varianta odpovídala právě jí, ne pozdějším změnám.
+  const version = result.refVersionId ? getRefVersionById(result.refVersionId) : null;
+  const dotaceMap = {};
+  if (version && version.dotace && version.dotace.length) {
+    version.dotace.forEach((r) => {
+      dotaceMap[`${r[0]}\u0000${r[1]}`] = {
+        service_zone: r[2], meeting_zone: r[3], backoffice_zone: r[4], office_room: r[5],
+      };
+    });
+  } else {
+    dbAll("SELECT segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room FROM casove_dotace")
+      .forEach((r) => { dotaceMap[`${r.segment}\u0000${r.pozice}`] = r; });
+  }
+
+  const bySegment = {};
+  const order = [];
+  const celkem = { segment: "Celkem", total_positions: 0, service_zone: 0, meeting_zone: 0, backoffice_zone: 0, office_room: 0 };
+  let missing = 0;
+  inputRows.forEach((row) => {
+    const fte = Number(row.fte) || 0;
+    if (fte <= 0) return;
+    const dotace = dotaceMap[`${row.segment}\u0000${row.pozice}`];
+    if (!dotace) { missing += 1; return; }
+    const wplLoad = (row.wpl_load === null || row.wpl_load === undefined) ? oteviraciDoba : row.wpl_load;
+    const vypocet = fte * wplLoad; // bez (1 − nepřítomnost − homeoffice)
+    if (!bySegment[row.segment]) {
+      bySegment[row.segment] = { segment: row.segment, total_positions: 0, service_zone: 0, meeting_zone: 0, backoffice_zone: 0, office_room: 0 };
+      order.push(row.segment);
+    }
+    const seg = bySegment[row.segment];
+    seg.total_positions += fte;
+    celkem.total_positions += fte;
+    ZONES.forEach((zone) => {
+      const hodiny = (vypocet * (dotace[zone] || 0)) / 100 / oteviraciDoba;
+      seg[zone] += hodiny;
+      celkem[zone] += hodiny;
+    });
+  });
+  if (!order.length) return null;
+
+  const round = (r) => ({
+    segment: r.segment,
+    total_positions: round1(r.total_positions),
+    service_zone: round1(r.service_zone),
+    meeting_zone: round1(r.meeting_zone),
+    backoffice_zone: round1(r.backoffice_zone),
+    office_room: round1(r.office_room),
+    wplTotal: round1(r.service_zone + r.meeting_zone + r.backoffice_zone + r.office_room),
+  });
+
+  return {
+    rows: order.map((seg) => round(bySegment[seg])),
+    celkem: round(celkem),
+    missing,
+    refVersionId: version ? version.id : null,
+  };
+}
+
+// Rozbalovací (výchozí zavřená) sekce s kontrolní variantou bez nepřítomnosti.
+function noAbsenceVariantHtml(result) {
+  const variant = computeNoAbsenceVariant(result);
+  if (!variant) return "";
+  const actualWpl = ZONES.reduce((a, z) => a + (result.celkem[z] || 0), 0);
+  const diff = variant.celkem.wplTotal - actualWpl;
+  const pct = actualWpl > 0 ? (diff / actualWpl) * 100 : null;
+
+  const row = (r, isTotal) => `<tr class="${isTotal ? "total-row" : ""}">
+    <td>${isTotal ? esc(r.segment) : segmentBadgeHtml(r.segment)}</td>
+    <td class="num">${fmt1(r.total_positions)}</td>
+    ${ZONES.map((z) => `<td class="num">${fmt1(r[z])}</td>`).join("")}
+    <td class="num"><strong>${fmt1(r.wplTotal)}</strong></td>
+  </tr>`;
+
+  return `<details class="hidden-variant">
+    <summary>Kontrolní varianta bez uplatnění nepřítomnosti <span class="badge warn">jen pro informaci</span></summary>
+    <p class="muted">Stejný výpočet jako kalkulace, ale s koeficientem 1 místo
+      (1 − nepřítomnost − homeoffice) — ukazuje, kolik WPL by vyšlo, kdyby byli všichni vždy na pobočce.
+      <strong>Neukládá se ani se nikam netiskne</strong> — do PDF exportu, do spojené sestavy ani do schránky
+      se tato varianta nedostane. Závazný je vždy výsledek kalkulace nahoře.</p>
+    <div class="table-wrap"><table class="visitor-table">
+      <thead><tr><th>Segment</th><th>FTE celkem</th>
+        ${ZONES.map((z) => `<th>${esc(ZONE_LABELS[z])}</th>`).join("")}<th>WPL celkem</th></tr></thead>
+      <tbody>${variant.rows.map((r) => row(r, false)).join("")}${row(variant.celkem, true)}</tbody>
+    </table></div>
+    <p class="muted">WPL bez nepřítomnosti: <strong>${fmt1(variant.celkem.wplTotal)}</strong> ·
+      WPL z kalkulace: <strong>${fmt1(round1(actualWpl))}</strong> ·
+      rozdíl <strong>${diff >= 0 ? "+" : ""}${fmt1(round1(diff))}</strong>${pct === null ? ""
+        : ` (${diff >= 0 ? "+" : ""}${pct.toFixed(1)} %)`}.
+      ${variant.missing ? `${variant.missing} řádků bylo vynecháno — chybí pro ně časová dotace.` : ""}</p>
+  </details>`;
+}
+
+/* ------------------- Nastavení PDF exportu (jedno místo) -------------------- */
+// Všechna zaškrtávátka pro obsah PDF jsou v jednom boxu pod kalkulací, aby se
+// nastavení nehledalo po jednotlivých sekcích. Stejné nastavení používá jak
+// samostatný export kalkulace, tak spojená sestava (kalkulace + layout).
+// `suffix` odlišuje box u nové kalkulace ("") od boxu v detailu historie
+// ("History") — id prvků musí být na stránce jednoznačná.
+
+const PDF_OPTION_GROUPS = [
+  { key: "calc", label: "Kalkulace" },
+  { key: "visitor", label: "Návštěvnost a doporučení prostor" },
+  { key: "layout", label: "Sestavení layoutu (celá sestava)" },
+];
+
+const PDF_OPTION_DEFS = [
+  { key: "inputPositions", id: "pdfIncPositions", group: "calc", def: true,
+    label: "Přehled pozic z checklistu" },
+  { key: "refData", id: "pdfIncRefData", group: "calc", def: true,
+    label: "Informace o použitých referenčních datech" },
+  { key: "summaryTable", id: "pdfIncSummary", group: "calc", def: true,
+    label: "Souhrnná tabulka WPL po zónách a doporučení (fasttracky, židle, plocha)" },
+  // Ponecháno původní id — používá ho i starší uložené nastavení a testy.
+  { key: "includeStats", id: "pdfIncludeStats", group: "calc", def: true,
+    label: "Klíčové ukazatele a benchmark" },
+  { key: "warnings", id: "pdfIncWarnings", group: "calc", def: true,
+    label: "Upozornění z výpočtu" },
+  { key: "includeVisitor", id: "pdfIncludeVisitor", group: "visitor", def: true,
+    label: "Doporučení prostor a srovnání s kalkulací" },
+  { key: "visitorCharts", id: "pdfIncVisitorCharts", group: "visitor", def: true,
+    label: "Grafy Monte Carla (poptávka po hodinách, distribuce denní poptávky)" },
+  { key: "visitorBankers", id: "pdfIncVisitorBankers", group: "visitor", def: false,
+    label: "Otevírací doba pobočky a denní návštěvy na bankéře" },
+  { key: "layoutOverview", id: "pdfIncLayoutOverview", group: "layout", def: true,
+    label: "Kompletní přehled WPL po zónách a segmentech" },
+  { key: "layoutFurniture", id: "pdfIncLayoutFurniture", group: "layout", def: true,
+    label: "Seznam nábytku po zónách a segmentech" },
+  { key: "layoutPositions", id: "pdfIncLayoutPositions", group: "layout", def: false,
+    label: "Nábytek připadající na druh zaměstnance" },
+];
+
+// Naposledy použité nastavení (v rámci běhu aplikace) — aby se po překreslení
+// výsledku (např. po potvrzení kalkulace) zaškrtávátka vrátila tak, jak byla.
+const pdfOptionState = {};
+
+function pdfOptionChecked(def) {
+  const stored = pdfOptionState[def.key];
+  return stored === undefined ? def.def : stored;
+}
+
+// Vrátí HTML boxu s nastavením PDF. `hasVisitor` vypne skupinu návštěvnosti,
+// pokud pro pobočku žádná data z reportu nejsou.
+function pdfOptionsBoxHtml(suffix, { hasVisitor = false } = {}) {
+  const groupHtml = PDF_OPTION_GROUPS.map((group) => {
+    const disabled = group.key === "visitor" && !hasVisitor;
+    const items = PDF_OPTION_DEFS.filter((d) => d.group === group.key).map((d) => `
+      <label class="pdf-opt${disabled ? " pdf-opt-off" : ""}">
+        <input type="checkbox" id="${d.id}${suffix}" data-pdf-opt="${d.key}"
+          ${pdfOptionChecked(d) ? "checked" : ""}${disabled ? " disabled" : ""}>
+        <span>${esc(d.label)}</span></label>`).join("");
+    return `<fieldset class="pdf-opt-group">
+      <legend>${esc(group.label)}</legend>
+      ${items}
+      ${disabled ? `<p class="muted" style="margin:6px 0 0;">Pro tuto pobočku nejsou naimportovaná data
+        návštěvnosti — sekce se do PDF netiskne.</p>` : ""}
+    </fieldset>`;
+  }).join("");
+
+  return `<div class="pdf-box">
+    <h3>Co se má vygenerovat do PDF</h3>
+    <p class="muted">Nastavení platí pro <strong>„Exportovat PDF s kalkulací“</strong> i pro
+      <strong>„Generovat celou sestavu“</strong> (kalkulace + layout). Detail návštěv po hodinách
+      a kontrolní varianta bez nepřítomnosti se do PDF netisknou nikdy.</p>
+    <div class="pdf-opt-grid">${groupHtml}</div>
+    <div class="pdf-box-note">
+      <label class="muted" for="pdfNote${suffix}">Poznámka do PDF (nepovinné):</label>
+      <textarea id="pdfNote${suffix}" rows="2"></textarea>
+    </div>
+    <div class="row" style="margin-top:12px;">
+      <button class="btn secondary" id="btnExportPdf${suffix}">Exportovat PDF s kalkulací</button>
+      <button class="btn secondary" id="btnCopyResult${suffix}">📋 Kopírovat výsledek do schránky</button>
+    </div>
+    <p class="muted" style="margin:6px 0 0;">Spojenou sestavu (kalkulace + layout v jednom PDF)
+      vygenerujete tlačítkem v sekci sestavení layoutu — použije stejné nastavení.</p>
+  </div>`;
+}
+
+// Doplní chybějící volby výchozími hodnotami — aby PDF šlo vygenerovat i bez
+// boxu (např. z testu nebo ze staršího volání s pouhou poznámkou).
+function normalizePdfOptions(options) {
+  const out = {};
+  PDF_OPTION_DEFS.forEach((d) => {
+    out[d.key] = (options && options[d.key] !== undefined) ? !!options[d.key] : d.def;
+  });
+  out.note = (options && options.note) || "";
+  return out;
+}
+
+// Přečte nastavení z boxu a uloží si ho pro další překreslení.
+function collectPdfOptions(suffix) {
+  const out = {};
+  PDF_OPTION_DEFS.forEach((d) => {
+    const el = document.getElementById(`${d.id}${suffix}`);
+    const value = el ? (el.checked && !el.disabled) : pdfOptionChecked(d);
+    out[d.key] = value;
+    if (el && !el.disabled) pdfOptionState[d.key] = el.checked;
+  });
+  const noteEl = document.getElementById(`pdfNote${suffix}`);
+  out.note = noteEl ? noteEl.value.trim() : "";
+  return out;
 }
 
 /* --------------------------------- PDF ------------------------------------ */
@@ -1886,7 +2087,8 @@ function exportCalculationPdf(result, options) {
 // stejný obsah použít jak pro samostatný export kalkulace, tak pro spojenou
 // sestavu (kalkulace + layout v jednom PDF).
 function drawCalculationPdf(pdf, startY, result, options) {
-  const { note = "", includeStats = true, includeVisitor = true } = options || {};
+  const opt = normalizePdfOptions(options);
+  const note = opt.note;
   const marginX = 14;
   let y = startY;
   const pageBottom = 280;
@@ -1907,7 +2109,9 @@ function drawCalculationPdf(pdf, startY, result, options) {
 
   const version = result.refVersionId ? getRefVersionById(result.refVersionId) : null;
   const presentSegments = [...new Set((result.inputRows || []).map((r) => r.segment))];
-  if (version) {
+  if (!opt.refData) {
+    // sekce s referenčními daty je vypnutá v nastavení PDF
+  } else if (version) {
     pdf.text(`Referenční data: verze #${version.id} — ${version.note} (${new Date(version.created_at).toLocaleString("cs-CZ")})`, marginX, y);
     y += 6;
     const absenceParts = presentSegments.map((seg) => {
@@ -1922,7 +2126,7 @@ function drawCalculationPdf(pdf, startY, result, options) {
   }
   y += 4;
 
-  if ((result.inputRows || []).length) {
+  if (opt.inputPositions && (result.inputRows || []).length) {
     pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
     pdf.text("Přehled pozic z checklistu", marginX, y); y += 7;
     pdf.setFontSize(9);
@@ -1944,6 +2148,9 @@ function drawCalculationPdf(pdf, startY, result, options) {
     y += 4;
   }
 
+  const stats = computeCalculationStats(result);
+
+  if (opt.summaryTable) {
   pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
   pdf.text("Souhrnná tabulka (WPL po zónách)", marginX, y); y += 7;
 
@@ -2000,7 +2207,6 @@ function drawCalculationPdf(pdf, startY, result, options) {
   y += 8;
   const celkemSum = (result.celkem.service_zone || 0) + (result.celkem.meeting_zone || 0) +
                      (result.celkem.backoffice_zone || 0) + (result.celkem.office_room || 0);
-  const stats = computeCalculationStats(result);
   pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(9);
   pdf.text(`Celkový součet (ServiceZ + MeetingZ + BackofficeZ + OfficeRoom) z řádku 'Celkem': ${celkemSum.toFixed(2)}`, marginX, y);
   y += 9;
@@ -2014,8 +2220,9 @@ function drawCalculationPdf(pdf, startY, result, options) {
   ];
   statLines.forEach((line) => { pdf.text(line, marginX, y); y += 6; });
   y += 4;
+  } // konec volitelné souhrnné tabulky
 
-  if (includeStats) {
+  if (opt.includeStats) {
     if (y > pageBottom - 30) { pdf.addPage(); y = 18; }
     pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
     pdf.text("Klíčové ukazatele a benchmark", marginX, y); y += 7;
@@ -2045,17 +2252,22 @@ function drawCalculationPdf(pdf, startY, result, options) {
     y += 8;
   }
 
-  // Návštěvnost a doporučení prostor z reportu návštěvnosti (pokud jsou pro
-  // pobočku k dispozici a uživatel je nevypnul zaškrtávátkem).
-  if (includeVisitor) {
+  // Návštěvnost a doporučení prostor z reportu návštěvnosti — obsah řídí
+  // zaškrtávátka v boxu „Co se má vygenerovat do PDF“.
+  if (opt.includeVisitor || opt.visitorCharts || opt.visitorBankers) {
     const visitor = getVisitorForCalculation(result.calculation_key, result.pobocka_id, result.pobocka_nazev);
     if (visitor) {
       if (y > pageBottom - 40) { pdf.addPage(); y = 18; }
-      y = drawVisitorPdf(pdf, y, visitor, marginX, pageBottom, stats);
+      y = drawVisitorPdf(pdf, y, visitor, marginX, pageBottom, stats, {
+        recommendations: opt.includeVisitor,
+        charts: opt.visitorCharts,
+        bankers: opt.visitorBankers,
+        inputRows: result.inputRows,
+      });
     }
   }
 
-  if (result.warnings.length) {
+  if (opt.warnings && result.warnings.length) {
     if (y > pageBottom - 20) { pdf.addPage(); y = 18; }
     pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
     pdf.text("Upozornění:", marginX, y); y += 6;
@@ -2114,8 +2326,18 @@ const VISITOR_TYPES = [
 // Pole z reportu, která si aplikace ukládá — ostatní (heatmapy, měsíční a denní
 // řady, prodeje, benchmark) kalkulace nepotřebuje a jen by nadouvala databázi.
 const VISITOR_KEEP_KEYS = ["name", "fte", "bankers", "svc_fte", "has_svc", "cashier_fte", "has_cash",
-  "poc_kli", "total", "by_type", "by_hour", "n_days", "has_time", "annual_open_days", "ph_tyden",
-  "branch_format", "rooms", "mc", "mc_boost"];
+  "poc_kli", "total", "by_type", "by_hour", "by_weekday", "n_days", "n_days_wd", "has_time",
+  "annual_open_days", "ph_tyden", "is_vikend", "od_days", "branch_format", "rooms", "mc", "mc_boost"];
+
+// Pozice, které se pro ukazatel „denní návštěvy na bankéře“ počítají jako
+// bankéři obsluhující klienta. „Podpora firemních bankéřů“ ke klientovi nesedá,
+// „bankéř klientské péče“ (BKP) je servisní zóna — vede se zvlášť, aby šlo
+// ukazatel spočítat i jen za obchodní bankéře.
+const BANKER_POSITION_RE = /bank[éěe]ř/i;
+const BANKER_SKIP_RE = /podpora/i;
+const BANKER_SERVICE_RE = /klientské péče/i;
+
+const WEEKDAY_NAMES = ["Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle"];
 
 /* ----------------------------- Import reportu ------------------------------ */
 
@@ -2315,6 +2537,62 @@ function summarizeVisitorMc(mc, consts) {
   };
 }
 
+// FTE bankéřů zadaných v kalkulaci (z pozic checklistu).
+function computeBankerFte(inputRows) {
+  const rows = [];
+  (inputRows || []).forEach((r) => {
+    const pozice = String(r.pozice || "");
+    if (!BANKER_POSITION_RE.test(pozice) || BANKER_SKIP_RE.test(pozice)) return;
+    const fte = Number(r.fte) || 0;
+    if (fte <= 0) return;
+    rows.push({ segment: r.segment, pozice, fte, service: BANKER_SERVICE_RE.test(pozice) });
+  });
+  const total = rows.reduce((a, r) => a + r.fte, 0);
+  const service = rows.filter((r) => r.service).reduce((a, r) => a + r.fte, 0);
+  return { rows, total, service, sales: total - service };
+}
+
+// Otevírací doba pobočky podle reportu — z ní je vidět i to, jestli je pobočka
+// víkendová (otevřeno v sobotu/nedělí) a kolik má otevíracích dnů v roce.
+function visitorOpeningSummary(d) {
+  const days = Array.isArray(d.od_days) ? d.od_days : [];
+  const openDays = days.filter((x) => !x.closed);
+  const weekendOpen = days.filter((x) => x.wknd && !x.closed);
+  return {
+    days,
+    hoursPerWeek: d.ph_tyden === undefined ? null : d.ph_tyden,
+    annualOpenDays: d.annual_open_days === undefined ? null : d.annual_open_days,
+    isWeekend: !!d.is_vikend || weekendOpen.length > 0,
+    weekendLabels: weekendOpen.map((x) => x.lbl),
+    openDaysPerWeek: days.length ? openDays.length : null,
+    label: days.length
+      ? (weekendOpen.length ? `otevřeno i o víkendu (${weekendOpen.map((x) => x.lbl).join(", ")})`
+        : "otevřeno jen v pracovní dny")
+      : (d.is_vikend ? "víkendová pobočka" : null),
+  };
+}
+
+// Návštěvy po dnech týdne — počet dnů v datech je pro každý den jiný
+// (n_days_wd), takže průměr na den se počítá zvlášť pro každý den.
+function visitorWeekdayRows(d) {
+  const byWeekday = d.by_weekday || {};
+  const nDays = d.n_days_wd || [];
+  const openDays = Array.isArray(d.od_days) ? d.od_days : [];
+  if (!Object.keys(byWeekday).length) return [];
+  return WEEKDAY_NAMES.map((name, i) => {
+    const total = VISITOR_TYPES.reduce((a, t) => a + ((byWeekday[t.key] || [])[i] || 0), 0);
+    const days = nDays[i] || 0;
+    const od = openDays[i] || null;
+    return {
+      name, total, days,
+      perDay: days ? total / days : null,
+      closed: od ? !!od.closed : null,
+      hours: od && od.tot ? od.tot : "",
+      weekend: od ? !!od.wknd : i >= 5,
+    };
+  });
+}
+
 function computeVisitorMetrics(visitor) {
   const d = visitor.d || {};
   const consts = visitor.consts || VISITOR_CONSTS_DEFAULT;
@@ -2337,6 +2615,8 @@ function computeVisitorMetrics(visitor) {
     peakHour: peakHour && peakHour.total > 0 ? peakHour : null,
     maxHourTotal: hours.reduce((a, r) => Math.max(a, r.total), 0),
     visitsPerDay: d.n_days ? d.total / d.n_days : null,
+    opening: visitorOpeningSummary(d),
+    weekdays: visitorWeekdayRows(d),
     mc: d.mc ? summarizeVisitorMc(d.mc, consts) : null,
     mcBoost: d.mc_boost ? summarizeVisitorMc(d.mc_boost, consts) : null,
     d,
@@ -2355,7 +2635,7 @@ function vFmtInt(n) { return (n === null || n === undefined || Number.isNaN(n)) 
 // návštěv po hodinách a Monte Carlo model. `options.stats` (klíčové ukazatele
 // kalkulace) zapne srovnávací tabulku, `options.checkboxId` přepínač do PDF.
 function renderVisitorSectionHtml(visitor, options = {}) {
-  const { stats = null, checkboxId = null } = options;
+  const { stats = null, inputRows = null } = options;
   const m = computeVisitorMetrics(visitor);
   const d = m.d;
   const rooms = m.rooms;
@@ -2414,6 +2694,7 @@ function renderVisitorSectionHtml(visitor, options = {}) {
         : "Hodnoty jsou přebrané přímo z reportu."}</p>`;
 
   const compare = stats ? renderVisitorCompareHtml(rooms, stats) : "";
+  const bankers = renderVisitorBankersHtml(m, inputRows);
 
   const hoursRows = m.hours.map((r) => {
     const width = m.maxHourTotal > 0 ? (r.total / m.maxHourTotal) * 100 : 0;
@@ -2442,11 +2723,6 @@ function renderVisitorSectionHtml(visitor, options = {}) {
 
   const mcDetail = m.mc ? renderVisitorMcHtml(m) : `<p class="muted">Report u této pobočky Monte Carlo model neuvádí.</p>`;
 
-  const checkbox = checkboxId
-    ? `<label class="muted"><input type="checkbox" id="${checkboxId}" checked>
-        Zahrnout do PDF doporučení prostor, srovnání s kalkulací a grafy Monte Carla
-        <span class="muted">(detail návštěv po hodinách zůstává jen v aplikaci)</span></label>`
-    : "";
 
   return `<div class="visitor-section">
     <h3>Návštěvnost a doporučení prostor</h3>
@@ -2455,9 +2731,9 @@ function renderVisitorSectionHtml(visitor, options = {}) {
     ${cards}
     ${roomsTable}
     ${compare}
+    ${bankers}
     ${hoursDetail}
     ${mcDetail}
-    ${checkbox}
   </div>`;
 }
 
@@ -2472,6 +2748,85 @@ function renderVisitorMissingHtml(pobockaNazev, pobockaId) {
       Doporučení prostor (zasedací místnosti a servisní místa), návštěvy po hodinách a Monte Carlo model
       se do kalkulace doplní po nahrání HTML reportu návštěvnosti v záložce <strong>„Návštěvnost“</strong>.</p>
   </div>`;
+}
+
+// Otevírací doba pobočky z reportu a denní návštěvy na bankéře — spočítané
+// z reálných návštěv reportu a z FTE bankéřů zadaných v kalkulaci.
+function renderVisitorBankersHtml(m, inputRows) {
+  const d = m.d;
+  const opening = m.opening;
+  const perDay = m.visitsPerDay;
+  const bankers = computeBankerFte(inputRows);
+  const reportBankers = Number(d.bankers) || 0;
+
+  const openingLine = [
+    opening.hoursPerWeek ? `<strong>${vFmt1(opening.hoursPerWeek)} h/týden</strong>` : null,
+    opening.openDaysPerWeek ? `${opening.openDaysPerWeek} dnů v týdnu` : null,
+    opening.label,
+    opening.annualOpenDays ? `${vFmtInt(opening.annualOpenDays)} otevíracích dnů/rok` : null,
+    d.n_days ? `${vFmtInt(d.n_days)} dnů s návštěvami v datech reportu` : null,
+  ].filter(Boolean).join(" · ");
+
+  const perBanker = (fte) => (fte > 0 && perDay !== null ? perDay / fte : null);
+  const card = (label, value, sub) => `<div class="vcard"><div class="vcard-l">${label}</div>
+    <div class="vcard-v">${value}</div><div class="vcard-s">${sub}</div></div>`;
+
+  const cards = `<div class="visitor-cards">
+    ${card("Denní návštěvy na bankéře", bankers.total > 0 ? vFmt1(perBanker(bankers.total)) : "—",
+      bankers.total > 0 ? `${vFmt1(perDay)} návštěv/den ÷ ${vFmt1(bankers.total)} FTE bankéřů z kalkulace`
+        : "v kalkulaci není žádná pozice bankéře")}
+    ${bankers.service > 0 ? card("Jen obchodní bankéři (bez BKP)",
+      bankers.sales > 0 ? vFmt1(perBanker(bankers.sales)) : "—",
+      `${vFmt1(perDay)} návštěv/den ÷ ${vFmt1(bankers.sales)} FTE`) : ""}
+    ${reportBankers > 0 ? card("Dle stavu v reportu", vFmt1(perBanker(reportBankers)),
+      `${vFmt1(perDay)} návštěv/den ÷ ${vFmt1(reportBankers)} FTE bankéřů OB dle reportu`) : ""}
+    ${card("Otevírací doba dle reportu", opening.hoursPerWeek ? `${vFmt1(opening.hoursPerWeek)} h` : "—",
+      opening.isWeekend ? "otevřeno i o víkendu" : "jen pracovní dny")}
+  </div>`;
+
+  const bankerRows = bankers.rows.length
+    ? `<div class="table-wrap"><table class="visitor-table">
+        <thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Typ</th></tr></thead>
+        <tbody>${bankers.rows.map((r) => `<tr><td>${segmentBadgeHtml(r.segment)}</td>
+          <td>${esc(r.pozice)}</td><td class="num">${vFmt1(r.fte)}</td>
+          <td>${r.service ? "servisní (BKP)" : "obchodní"}</td></tr>`).join("")}
+          <tr class="total-row"><td>Celkem</td><td></td><td class="num">${vFmt1(bankers.total)}</td>
+            <td>${vFmt1(bankers.sales)} obchodní${bankers.service > 0 ? ` · ${vFmt1(bankers.service)} servisní` : ""}</td></tr>
+        </tbody></table></div>`
+    : `<p class="muted">V kalkulaci není žádná pozice s „bankéř“ — ukazatel návštěv na bankéře nelze spočítat.</p>`;
+
+  const openingTable = opening.days.length
+    ? `<div class="table-wrap"><table class="visitor-table">
+        <thead><tr><th>Den</th><th>Dopoledne</th><th>Odpoledne</th><th>Celkem</th></tr></thead>
+        <tbody>${opening.days.map((x) => `<tr${x.wknd ? ' class="visitor-peak"' : ""}>
+          <td>${esc(x.lbl)}</td><td>${x.closed ? "zavřeno" : esc(x.dop || "")}</td>
+          <td>${x.closed ? "" : esc(x.odp || "")}</td><td class="num">${x.closed ? "—" : esc(x.tot || "")}</td>
+          </tr>`).join("")}</tbody></table></div>`
+    : `<p class="muted">Report u této pobočky otevírací dobu po dnech neuvádí.</p>`;
+
+  const weekdayTable = m.weekdays.length
+    ? `<div class="table-wrap"><table class="visitor-table">
+        <thead><tr><th>Den</th><th>Otevírací doba</th><th>Dnů v datech</th><th>Návštěv celkem</th>
+          <th>Návštěv/den</th><th>Na bankéře</th></tr></thead>
+        <tbody>${m.weekdays.map((r) => `<tr${r.weekend ? ' class="visitor-peak"' : ""}>
+          <td>${esc(r.name)}</td><td>${r.closed ? "zavřeno" : esc(r.hours || "—")}</td>
+          <td class="num">${vFmtInt(r.days)}</td><td class="num">${vFmtInt(r.total)}</td>
+          <td class="num">${r.perDay === null ? "—" : vFmt1(r.perDay)}</td>
+          <td class="num">${r.perDay !== null && bankers.total > 0 ? vFmt1(r.perDay / bankers.total) : "—"}</td>
+          </tr>`).join("")}</tbody></table></div>`
+    : "";
+
+  return `<h4>Otevírací doba a návštěvy na bankéře</h4>
+    <p class="muted">${openingLine || "Report u této pobočky otevírací dobu neuvádí."}</p>
+    ${cards}
+    ${bankerRows}
+    <details class="visitor-details"><summary>Otevírací doba a návštěvnost po dnech týdne</summary>
+      ${openingTable}
+      ${weekdayTable}
+      <p class="muted">Průměr na den se u každého dne počítá z počtu dnů, které jsou pro daný den v datech
+        reportu — u víkendových dnů je jich typicky méně. Sloupec „Na bankéře“ dělí návštěvy na den
+        počtem FTE bankéřů z kalkulace${bankers.total > 0 ? ` (${vFmt1(bankers.total)})` : ""}.</p>
+    </details>`;
 }
 
 // Srovnání doporučení z reálné návštěvnosti s potřebou WPL, která vyšla
@@ -2604,6 +2959,104 @@ function showVisitorDetail(pobockaId) {
 }
 
 /* ---------------------------------- PDF ----------------------------------- */
+
+/* --------------------- Tabulková pomůcka pro PDF --------------------------- */
+// Vykreslí jednoduchou tabulku (hlavička + řádky s pevnými šířkami sloupců)
+// a vrátí novou souřadnici y. Řádek může být pole hodnot, nebo objekt
+// { vals, highlight } pro zvýrazněný řádek. setFillColor/setTextColor se volají
+// znovu před každou buňkou — jsPDF si barvy drží ve společné cache, takže
+// prokládané rect()/text() by je jinak po první buňce rozjelo.
+function drawPdfSimpleTable(pdf, { x, y, headers, colW, rows, fontSize = 7.4, rowH = 6, pageBottom = 280 }) {
+  let cy = y;
+  const drawHeader = () => {
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(fontSize);
+    let cx = x;
+    headers.forEach((h, i) => {
+      pdf.setFillColor(39, 112, 240);
+      pdf.rect(cx, cy, colW[i], rowH, "FD");
+      pdf.setTextColor(255, 255, 255);
+      pdf.text(String(h), cx + 1.4, cy + 4.2, { maxWidth: colW[i] - 2.4 });
+      cx += colW[i];
+    });
+    cy += rowH;
+    pdf.setTextColor(0, 0, 0);
+  };
+  drawHeader();
+  rows.forEach((r) => {
+    const vals = Array.isArray(r) ? r : r.vals;
+    const highlight = !Array.isArray(r) && r.highlight;
+    if (cy + rowH > pageBottom) { pdf.addPage(); cy = 18; drawHeader(); }
+    pdf.setFont("DejaVuSans", highlight ? "bold" : "normal"); pdf.setFontSize(fontSize);
+    let cx = x;
+    vals.forEach((v, i) => {
+      if (highlight) pdf.setFillColor(224, 236, 255);
+      pdf.rect(cx, cy, colW[i], rowH, highlight ? "FD" : "D");
+      pdf.setTextColor(0, 0, 0);
+      pdf.text(String(v), cx + 1.4, cy + 4.2, { maxWidth: colW[i] - 2.4 });
+      cx += colW[i];
+    });
+    cy += rowH;
+  });
+  return cy;
+}
+
+// Otevírací doba pobočky z reportu a denní návštěvy na bankéře — do PDF se
+// tiskne jen když si ji uživatel zapne v nastavení PDF.
+function drawVisitorBankersPdf(pdf, startY, m, inputRows, marginX, pageBottom) {
+  let y = startY;
+  const newPageIfNeeded = (need) => { if (y + need > pageBottom) { pdf.addPage(); y = 18; } };
+  const bankers = computeBankerFte(inputRows);
+  const opening = m.opening;
+  const perDay = m.visitsPerDay;
+  const perBanker = (fte) => (fte > 0 && perDay !== null ? perDay / fte : null);
+  const dash = (v) => (v === null ? "—" : vFmt1(v));
+
+  newPageIfNeeded(30);
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
+  pdf.text("Otevírací doba a návštěvy na bankéře", marginX, y); y += 6;
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(8.5);
+  [
+    `Otevírací doba dle reportu: ${opening.hoursPerWeek ? `${vFmt1(opening.hoursPerWeek)} h/týden` : "neuvedena"}`
+      + `${opening.openDaysPerWeek ? `, ${opening.openDaysPerWeek} dnů v týdnu` : ""}`
+      + `${opening.label ? `, ${opening.label}` : ""}`
+      + `${opening.annualOpenDays ? `, ${vFmtInt(opening.annualOpenDays)} otevíracích dnů/rok` : ""}`,
+    `Návštěvy: ${vFmtInt(m.d.total)} za ${vFmtInt(m.d.n_days)} dnů = ${dash(perDay)} návštěv na otevírací den`,
+    `Bankéři z kalkulace: ${vFmt1(bankers.total)} FTE`
+      + `${bankers.service > 0 ? ` (z toho ${vFmt1(bankers.sales)} obchodních a ${vFmt1(bankers.service)} servisních BKP)` : ""}`,
+    `Denní návštěvy na bankéře: ${dash(perBanker(bankers.total))}`
+      + `${bankers.service > 0 ? ` · jen obchodní bankéři: ${dash(perBanker(bankers.sales))}` : ""}`
+      + `${Number(m.d.bankers) > 0 ? ` · dle stavu bankéřů v reportu (${vFmt1(m.d.bankers)} FTE): ${dash(perBanker(Number(m.d.bankers)))}` : ""}`,
+  ].forEach((line) => {
+    pdf.splitTextToSize(line, 182).forEach((l) => { newPageIfNeeded(6); pdf.text(l, marginX, y); y += 5; });
+  });
+  y += 2;
+
+  if (m.weekdays.length) {
+    newPageIfNeeded(20);
+    y = drawPdfSimpleTable(pdf, {
+      x: marginX, y,
+      headers: ["Den", "Otevírací doba", "Dnů v datech", "Návštěv celkem", "Návštěv/den", "Na bankéře"],
+      colW: [30, 32, 28, 32, 30, 30],
+      rows: m.weekdays.map((r) => ({
+        vals: [r.name, r.closed ? "zavřeno" : (r.hours || "—"), vFmtInt(r.days), vFmtInt(r.total),
+          r.perDay === null ? "—" : vFmt1(r.perDay),
+          r.perDay !== null && bankers.total > 0 ? vFmt1(r.perDay / bankers.total) : "—"],
+        highlight: r.weekend && !r.closed,
+      })),
+      pageBottom,
+    });
+    y += 3;
+    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.5);
+    pdf.setTextColor(120, 120, 120);
+    pdf.splitTextToSize("Průměr na den se u každého dne počítá z počtu dnů, které jsou pro daný den v datech "
+      + "reportu. Sloupec „Na bankéře“ dělí návštěvy na den počtem FTE bankéřů z kalkulace.", 182)
+      .forEach((l) => { newPageIfNeeded(5); pdf.text(l, marginX, y); y += 4.2; });
+    pdf.setTextColor(0, 0, 0);
+    y += 5;
+  }
+
+  return y;
+}
 
 /* ------------------- Grafy Monte Carla do PDF ------------------------------ */
 // jsPDF neumí grafy — obě vizualizace se skládají z čar a obdélníků. Vychází
@@ -2772,7 +3225,9 @@ function drawMcHistPdf(pdf, x, y, w, h, counts, edges, capV, p95V, hex) {
 
 // Vykreslí sekci návštěvnosti a doporučení prostor do PDF (do už existujícího
 // dokumentu od zadané souřadnice y) a vrátí novou souřadnici y.
-function drawVisitorPdf(pdf, startY, visitor, marginX, pageBottom, stats) {
+function drawVisitorPdf(pdf, startY, visitor, marginX, pageBottom, stats, opts) {
+  const { recommendations = true, charts = true, bankers = false, inputRows = null } = opts || {};
+  if (!recommendations && !charts && !bankers) return startY;
   const m = computeVisitorMetrics(visitor);
   const d = m.d;
   const rooms = m.rooms;
@@ -2780,39 +3235,8 @@ function drawVisitorPdf(pdf, startY, visitor, marginX, pageBottom, stats) {
 
   const newPageIfNeeded = (need) => { if (y + need > pageBottom) { pdf.addPage(); y = 18; } };
 
-  // Malá tabulková pomůcka — setFillColor/setTextColor se volají znovu před
-  // každou buňkou, jsPDF si barvy drží ve společné cache (viz drawCalculationPdf).
   const drawTable = (headers, colW, dataRows, fontSize = 7.4) => {
-    const rowH = 6;
-    const drawHeader = () => {
-      pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(fontSize);
-      let x = marginX;
-      headers.forEach((h, i) => {
-        pdf.setFillColor(39, 112, 240);
-        pdf.rect(x, y, colW[i], rowH, "FD");
-        pdf.setTextColor(255, 255, 255);
-        pdf.text(String(h), x + 1.4, y + 4.2, { maxWidth: colW[i] - 2.4 });
-        x += colW[i];
-      });
-      y += rowH;
-      pdf.setTextColor(0, 0, 0);
-    };
-    drawHeader();
-    dataRows.forEach((r) => {
-      const vals = Array.isArray(r) ? r : r.vals;
-      const highlight = !Array.isArray(r) && r.highlight;
-      if (y + rowH > pageBottom) { pdf.addPage(); y = 18; drawHeader(); }
-      pdf.setFont("DejaVuSans", highlight ? "bold" : "normal"); pdf.setFontSize(fontSize);
-      let x = marginX;
-      vals.forEach((v, i) => {
-        if (highlight) pdf.setFillColor(224, 236, 255);
-        pdf.rect(x, y, colW[i], rowH, highlight ? "FD" : "D");
-        pdf.setTextColor(0, 0, 0);
-        pdf.text(String(v), x + 1.4, y + 4.2, { maxWidth: colW[i] - 2.4 });
-        x += colW[i];
-      });
-      y += rowH;
-    });
+    y = drawPdfSimpleTable(pdf, { x: marginX, y, headers, colW, rows: dataRows, fontSize, pageBottom });
   };
 
   newPageIfNeeded(60);
@@ -2834,6 +3258,7 @@ function drawVisitorPdf(pdf, startY, visitor, marginX, pageBottom, stats) {
   });
   y += 3;
 
+  if (recommendations) {
   pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
   newPageIfNeeded(10);
   pdf.text(`Doporučení prostor: ${rooms.meeting_rooms} zasedacích místností, ${rooms.service_desks} servisních míst`,
@@ -2886,11 +3311,15 @@ function drawVisitorPdf(pdf, startY, visitor, marginX, pageBottom, stats) {
     pdf.setTextColor(0, 0, 0);
     y += 5;
   }
+  } // konec doporučení prostor a srovnání s kalkulací
+
+  // Otevírací doba a denní návštěvy na bankéře (volitelné).
+  if (bankers) y = drawVisitorBankersPdf(pdf, y, m, inputRows, marginX, pageBottom);
 
   // Detail návštěv po hodinách je záměrně jen v aplikaci — do PDF jde jen
   // doporučení prostor, srovnání s kalkulací a Monte Carlo v podobě grafů.
 
-  if (m.mc) {
+  if (charts && m.mc) {
     const mc = m.mc;
     const hasSvc = !!(m.d.has_svc && mc.svcFte);
     newPageIfNeeded(40);
@@ -3636,20 +4065,15 @@ function renderLayoutReadonly(container, rows, meta, segmentRows) {
       <button class="btn secondary" id="btnEditLayout">Upravit layout</button>
     </div>`;
   // Hledání v rámci `container` — viz poznámka v renderLayoutForm().
-  container.querySelector("#btnExportLayoutPdf").addEventListener("click", () => exportLayoutPdf(rows, meta, segmentRows));
+  container.querySelector("#btnExportLayoutPdf").addEventListener("click", () =>
+    exportLayoutPdf(rows, meta, segmentRows, collectPdfOptions(meta.pdfOptionsSuffix || "")));
   container.querySelector("#btnEditLayout").addEventListener("click", () => renderLayoutForm(container, segmentRows, meta, rows));
 
   const btnFull = container.querySelector("#btnExportFullReport");
   if (meta.calcResult) {
     btnFull.addEventListener("click", () => {
-      const noteEl = document.getElementById(meta.pdfNoteId);
-      const statsEl = document.getElementById(meta.pdfStatsId);
-      const visitorEl = meta.pdfVisitorId ? document.getElementById(meta.pdfVisitorId) : null;
-      exportFullReportPdf(meta.calcResult, rows, meta, segmentRows, {
-        note: noteEl ? noteEl.value.trim() : "",
-        includeStats: statsEl ? statsEl.checked : true,
-        includeVisitor: visitorEl ? visitorEl.checked : false,
-      });
+      exportFullReportPdf(meta.calcResult, rows, meta, segmentRows,
+        collectPdfOptions(meta.pdfOptionsSuffix || ""));
     });
   } else {
     // Bez dat kalkulace (neočekávaný stav) nelze spojenou sestavu sestavit.
@@ -3658,9 +4082,9 @@ function renderLayoutReadonly(container, rows, meta, segmentRows) {
   }
 }
 
-function exportLayoutPdf(rows, meta, segmentRows) {
+function exportLayoutPdf(rows, meta, segmentRows, options) {
   const pdf = newPdfDoc();
-  drawLayoutPdf(pdf, 18, rows, meta, segmentRows);
+  drawLayoutPdf(pdf, 18, rows, meta, segmentRows, options);
   pdf.save(`layout_${meta.calculation_key || "export"}.pdf`);
 }
 
@@ -3669,7 +4093,7 @@ function exportFullReportPdf(result, layoutRows, meta, segmentRows, options) {
   const pdf = newPdfDoc();
   drawCalculationPdf(pdf, 18, result, options);
   pdf.addPage();
-  drawLayoutPdf(pdf, 18, layoutRows, meta, segmentRows);
+  drawLayoutPdf(pdf, 18, layoutRows, meta, segmentRows, options);
   pdf.save(`sestava_${meta.calculation_key || result.calculation_key || "export"}.pdf`);
   toast("Celá sestava (kalkulace + layout) byla vygenerována.", "ok");
 }
@@ -3746,7 +4170,8 @@ function drawWplOverviewPdf(pdf, startY, overview, marginX, pageBottom) {
 }
 
 // Vykreslí část "Sestavení layoutu" do už existujícího PDF dokumentu.
-function drawLayoutPdf(pdf, startY, rows, meta, segmentRows) {
+function drawLayoutPdf(pdf, startY, rows, meta, segmentRows, options) {
+  const opt = normalizePdfOptions(options);
   const marginX = 14;
   const pageBottom = 280;
   let y = startY;
@@ -3760,14 +4185,14 @@ function drawLayoutPdf(pdf, startY, rows, meta, segmentRows) {
     .forEach((line) => { pdf.text(line, marginX, y); y += 6; });
   y += 4;
 
-  if (segmentRows && segmentRows.length) {
+  if (opt.layoutOverview && segmentRows && segmentRows.length) {
     y = drawWplOverviewPdf(pdf, y, computeWplOverview(segmentRows, rows, meta.calcResult?.celkem), marginX, pageBottom);
   }
 
   const byZone = {};
   rows.forEach((r) => { (byZone[r.zone] = byZone[r.zone] || []).push(r); });
 
-  ZONES.forEach((zone) => {
+  if (opt.layoutFurniture) ZONES.forEach((zone) => {
     const zoneRows = byZone[zone];
     if (!zoneRows || !zoneRows.length) return;
     const totalPieces = zoneRows.reduce((s, r) => s + r.piece_count, 0);
@@ -3800,6 +4225,36 @@ function drawLayoutPdf(pdf, startY, rows, meta, segmentRows) {
     });
     y += 3;
   });
+
+  // Nábytek připadající na druh zaměstnance — volitelná část (na obrazovce je
+  // vždy, do PDF jen pokud si ji uživatel zapne v nastavení).
+  if (opt.layoutPositions && meta.calcResult) {
+    const allocation = computePositionFurniture(meta.calcResult, rows);
+    if (allocation.positions.length || allocation.unallocated.length) {
+      if (y > pageBottom - 30) { pdf.addPage(); y = 18; }
+      pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
+      pdf.text("Nábytek připadající na druh zaměstnance", marginX, y); y += 7;
+      const tableRows = [];
+      allocation.positions.forEach((pos) => {
+        pos.items.forEach((it, i) => {
+          tableRows.push([i === 0 ? pos.segment : "", i === 0 ? pos.pozice : "", i === 0 ? fmt1(pos.fte) : "",
+            ZONE_LABELS_SHORT[it.zone] || it.zone, it.furniture,
+            (Math.round(it.pieces * 100) / 100).toString(), fmt1(it.wpl)]);
+        });
+      });
+      allocation.unallocated.forEach((it) => {
+        tableRows.push([it.segment, "Nerozpočítáno", "", ZONE_LABELS_SHORT[it.zone] || it.zone, it.furniture,
+          fmtPieces(it.pieces), "—"]);
+      });
+      y = drawPdfSimpleTable(pdf, {
+        x: marginX, y,
+        headers: ["Segment", "Pozice", "FTE", "Zóna", "Nábytek", "Kusů", "WPL"],
+        colW: [24, 44, 12, 24, 46, 14, 18],
+        rows: tableRows, fontSize: 7.4, pageBottom,
+      });
+      y += 5;
+    }
+  }
 
   return y;
 }
@@ -3893,6 +4348,17 @@ function showHistoryDetail(calculationKey, loadKey) {
   const status = getCalculationStatus(calculationKey);
   const visitor = getVisitorForCalculation(calculationKey, branch?.pobocka_id, branch?.pobocka_nazev);
 
+  // Stejná data kalkulace se použijí pro kontrolní variantu bez nepřítomnosti,
+  // pro samostatný PDF export i pro spojenou sestavu (kalkulace + layout).
+  const calcResult = {
+    calculation_key: calculationKey, load_key: loadKey,
+    createdAt, rows: rowsNoTotal, celkem: found || {},
+    inputRows: mappedInputRows,
+    warnings: [], pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev,
+    oteviraci_doba: branch?.oteviraci_doba, refVersionId,
+    duvod: resultRows[0] ? resultRows[0].duvod : null,
+  };
+
   document.getElementById("historyDetail").innerHTML = `
     <p class="muted">${branch ? `${esc(branch.pobocka_nazev)} (ID ${esc(branch.pobocka_id)}) · otevírací doba ${esc(branch.oteviraci_doba)} h/týden` : ""}</p>
     <p>Load key: <code>${esc(loadKey)}</code><br>Calculation key: <code>${esc(calculationKey)}</code></p>
@@ -3906,36 +4372,16 @@ function showHistoryDetail(calculationKey, loadKey) {
       <th>Service zone</th><th>Meeting zone</th><th>Backoffice zone</th><th>Office room</th></tr></thead>
       <tbody>${resultHtml}</tbody></table></div>
     ${refVersionDetailsHtml(refVersionId)}
-    ${renderStatsSection(stats, "pdfIncludeStatsHistory")}
-    ${visitor ? renderVisitorSectionHtml(visitor, { stats, checkboxId: "pdfIncludeVisitorHistory" })
+    ${renderStatsSection(stats)}
+    ${noAbsenceVariantHtml(calcResult)}
+    ${visitor ? renderVisitorSectionHtml(visitor, { stats, inputRows: mappedInputRows })
       : renderVisitorMissingHtml(branch?.pobocka_nazev, branch?.pobocka_id)}
-    <div class="row" style="margin-top:12px;">
-      <button class="btn secondary" id="btnExportPdfHistory">Exportovat PDF s přehledem WPL</button>
-      <button class="btn secondary" id="btnCopyResultHistory">📋 Kopírovat výsledek do schránky</button>
-    </div>
-    <div style="margin-top:10px; max-width:480px;">
-      <label class="muted" for="pdfNoteHistory">Poznámka do PDF (nepovinné):</label>
-      <textarea id="pdfNoteHistory" rows="2"></textarea>
-    </div>
+    ${pdfOptionsBoxHtml("History", { hasVisitor: !!visitor })}
     <h3 style="margin-top:22px;">Sestavení layoutu${layoutRulesHelpHtml()}</h3>
     <div id="historyLayoutArea"></div>`;
 
-  // Stejná data kalkulace se použijí pro samostatný PDF export i pro spojenou
-  // sestavu (kalkulace + layout), kterou nabízí sekce sestavení layoutu.
-  const calcResult = {
-    calculation_key: calculationKey, load_key: loadKey,
-    createdAt, rows: rowsNoTotal, celkem: found || {},
-    inputRows: mappedInputRows,
-    warnings: [], pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev,
-    oteviraci_doba: branch?.oteviraci_doba, refVersionId,
-    duvod: resultRows[0] ? resultRows[0].duvod : null,
-  };
-
   document.getElementById("btnExportPdfHistory").addEventListener("click", () => {
-    const note = document.getElementById("pdfNoteHistory").value.trim();
-    const includeStats = document.getElementById("pdfIncludeStatsHistory").checked;
-    const visitorBox = document.getElementById("pdfIncludeVisitorHistory");
-    exportCalculationPdf(calcResult, { note, includeStats, includeVisitor: visitorBox ? visitorBox.checked : false });
+    exportCalculationPdf(calcResult, collectPdfOptions("History"));
   });
   document.getElementById("btnCopyResultHistory").addEventListener("click", () => copyResultToClipboard(calcResult, stats));
   document.getElementById("btnToggleStatus").addEventListener("click", () => {
@@ -3945,8 +4391,7 @@ function showHistoryDetail(calculationKey, loadKey) {
 
   renderLayoutSection("historyLayoutArea", rowsNoTotal, {
     calculation_key: calculationKey, pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev, stats,
-    calcResult, pdfNoteId: "pdfNoteHistory", pdfStatsId: "pdfIncludeStatsHistory",
-    pdfVisitorId: "pdfIncludeVisitorHistory",
+    calcResult, pdfOptionsSuffix: "History",
   });
 
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });

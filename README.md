@@ -151,9 +151,8 @@ a je vidět, o kolik procentních bodů se aktuální pobočka od průměru liš
 Kalkulace uložené ještě před zavedením této funkce se při připojení databáze
 automaticky dopočítají, takže se do benchmarku započítá i starší historie.
 
-Zaškrtávacím políčkem „Zahrnout klíčové ukazatele a benchmark do PDF“ (nad
-tlačítkem exportu) lze tuto sekci do PDF přidat, nebo z něj vynechat —
-souhrnná tabulka a doporučení formátu/fasttracků/židlí v PDF zůstávají vždy.
+Jestli se tato sekce dostane do PDF, se řídí volbou „Klíčové ukazatele
+a benchmark“ v boxu [„Co se má vygenerovat do PDF“](#co-se-má-vygenerovat-do-pdf-nastavení-na-jednom-místě).
 
 ## Kopírování výsledku do schránky (MS Teams, Outlook, Word)
 
@@ -211,6 +210,23 @@ a doporučení prostor“**:
   návštěv na otevírací den po typech (fyzická / online schůzka, bezhotovostní
   a hotovostní obsluha), součty za schůzky a walk-in a celkem, s vyznačenou
   nejsilnější hodinou, ze které doporučení vychází.
+- **Otevírací doba a návštěvy na bankéře** — otevírací doba pobočky **z reportu**
+  (hodin/týden, počet otevíracích dnů v týdnu i v roce, a jestli je pobočka
+  víkendová — bere se z rozpisu po dnech, kde je vidět, které dny jsou zavřené),
+  a hlavní ukazatel **denní návštěvy na bankéře**:
+
+  ```
+  denní návštěvy na bankéře = (návštěvy celkem ÷ dnů s návštěvami v datech) ÷ FTE bankéřů z kalkulace
+  ```
+
+  Bankéři se berou **ze zadaných FTE v kalkulaci** — všechny pozice s „bankéř“
+  (mimo „podpora …“). Vede se zvlášť varianta jen za obchodní bankéře (bez BKP)
+  a pro srovnání i přepočet na stav bankéřů OB uvedený v reportu; tabulka pod
+  kartami ukazuje, které pozice se do součtu vzaly. V rozbalovacím detailu je
+  otevírací doba po dnech (dopoledne / odpoledne / celkem, zavřené dny) a
+  návštěvnost po dnech týdne — u každého dne se průměr na den počítá z počtu
+  dnů, které jsou pro daný den v datech reportu (u víkendu je jich méně), plus
+  přepočet na bankéře.
 - **Monte Carlo model průměrného dne** (rozbalovací) — pravděpodobné hodiny
   přetížení za den, pokrytí poptávky, počet bankéřů OB pro 95% pokrytí,
   špičková P95 poptávka a kapacita (denní i hodinová), a tabulka po hodinách:
@@ -219,19 +235,21 @@ a doporučení prostor“**:
 
 ### Co jde do PDF
 
-Zaškrtávátkem **„Zahrnout do PDF doporučení prostor, srovnání s kalkulací
-a grafy Monte Carla“** se sekce přidá do PDF kalkulace i do spojené sestavy.
-Do PDF jde záměrně jen část toho, co je vidět v aplikaci:
+Obsah PDF se řídí boxem **„Co se má vygenerovat do PDF“** (viz níže) — skupina
+*Návštěvnost a doporučení prostor* má tři volby:
 
-- **Doporučení prostor** a tabulka s mezivýpočtem (λ / P95 / obsluha / počet míst),
-- **Srovnání s kalkulací**,
-- **Monte Carlo** — souhrnné hodnoty a místo hodinové tabulky **dva grafy**:
+- **Doporučení prostor a srovnání s kalkulací** — tabulka s mezivýpočtem
+  (λ / P95 / obsluha / počet míst) a srovnávací tabulka.
+- **Grafy Monte Carla** — souhrnné hodnoty a místo hodinové tabulky **dva grafy**:
   *P95 FTE poptávka po hodinách (6h–21h)* (křivka poptávky OB a servisní zóny
   proti kapacitě vykreslené přerušovanou čárou) a *Distribuce celkové denní FTE
   poptávky (bankéř-hodiny/den)* (histogram simulovaných dnů se šedou čárou
   kapacity a zelenou čárou P95 poptávky, zvlášť pro OB tým a servisní zónu).
+- **Otevírací doba pobočky a denní návštěvy na bankéře** — ve výchozím stavu
+  vypnuté, po zapnutí se do PDF přidá souhrn otevírací doby, přepočty na
+  bankéře a tabulka po dnech týdne.
 
-**Detail návštěv po hodinách** zůstává jen v aplikaci, do PDF se netiskne.
+**Detail návštěv po hodinách** zůstává jen v aplikaci, do PDF se netiskne nikdy.
 
 Doporučené zasedací místnosti a servisní místa se přidávají i do tabulky
 ukazatelů při kopírování výsledku do schránky.
@@ -248,6 +266,47 @@ Pobočka se v reportu hledá podle **ID pobočky**, jako záloha podle názvu.
 Pokud report danou pobočku neobsahuje (nebo ještě není naimportovaný žádný),
 sekce jen upozorní, že doporučení prostor chybí, a kalkulace proběhne beze
 změny.
+
+## Co se má vygenerovat do PDF (nastavení na jednom místě)
+
+Pod kalkulací (i v detailu kalkulace v historii) je box **„Co se má vygenerovat
+do PDF“**, ve kterém je pohromadě všechno, co lze do PDF zapnout nebo vypnout,
+plus poznámka do PDF a tlačítka pro export. Stejné nastavení používá
+**„Exportovat PDF s kalkulací“**, **„Generovat celou sestavu“** (kalkulace +
+layout) i **„Exportovat PDF layoutu“**. Nastavení si aplikace pamatuje, takže
+zůstane i po překreslení výsledku nebo při přepnutí na jinou kalkulaci.
+
+| Skupina | Volba | Výchozí |
+| --- | --- | --- |
+| Kalkulace | Přehled pozic z checklistu | ✔ |
+| Kalkulace | Informace o použitých referenčních datech | ✔ |
+| Kalkulace | Souhrnná tabulka WPL po zónách a doporučení (fasttracky, židle, plocha) | ✔ |
+| Kalkulace | Klíčové ukazatele a benchmark | ✔ |
+| Kalkulace | Upozornění z výpočtu | ✔ |
+| Návštěvnost | Doporučení prostor a srovnání s kalkulací | ✔ |
+| Návštěvnost | Grafy Monte Carla | ✔ |
+| Návštěvnost | Otevírací doba pobočky a denní návštěvy na bankéře | — |
+| Layout (celá sestava) | Kompletní přehled WPL po zónách a segmentech | ✔ |
+| Layout (celá sestava) | Seznam nábytku po zónách a segmentech | ✔ |
+| Layout (celá sestava) | Nábytek připadající na druh zaměstnance | — |
+
+Pokud pro pobočku nejsou naimportovaná data návštěvnosti, je celá skupina
+„Návštěvnost“ nedostupná a do PDF se nedostane.
+
+## Kontrolní varianta bez uplatnění nepřítomnosti
+
+Pod klíčovými ukazateli je **rozbalovací (výchozím stavem zavřená)** sekce
+**„Kontrolní varianta bez uplatnění nepřítomnosti“**. Je to stejný výpočet jako
+kalkulace, jen s koeficientem 1 místo `(1 − nepřítomnost − homeoffice)` — tedy
+kolik WPL by vyšlo, kdyby byli všichni vždy na pobočce. Ukazuje WPL po zónách
+a segmentech, celkový WPL a rozdíl proti kalkulaci (absolutně i v procentech).
+
+Časové dotace se pro variantu berou ze **stejné verze referenčních dat**, se
+kterou kalkulace vznikla, aby odpovídala právě jí.
+
+Varianta je jen informativní: **neukládá se do databáze a nikam se netiskne** —
+nedostane se do PDF kalkulace, do spojené sestavy ani do schránky. Závazný je
+vždy výsledek kalkulace.
 
 ## Sestavení layoutu
 
