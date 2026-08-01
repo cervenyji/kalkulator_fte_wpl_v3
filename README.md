@@ -328,6 +328,10 @@ shrnutí**, které stejná data řekne běžnou řečí a hlavně odpoví na ot�
 4. **Tabulka potřeba vs. layout** pro každý druh prvku: kolik je potřeba ve
    špičce (a jestli to číslo přišlo z kalkulace FTE, nebo z návštěvnosti —
    platí vyšší z obou), kolik je v layoutu a verdikt „stačí / těsné / chybí N“.
+   Do kapacity **servisních míst se počítají i fast tracky** — obsluhují klienty
+   na hale stejně jako Lenka a Theke. U řádku je vidět rozpad
+   (*přepážky 6 + fast tracky 2*) a fast tracky mají zároveň vlastní řádek
+   s vlastní potřebou na rychlé bezhotovostní operace.
 5. **A vyjdou na to lidé?** — špičková potřeba bankéřů z Monte Carla proti tomu,
    kolik jich je v kalkulaci reálně na place (zadané FTE mínus dovolené, nemoci
    a homeoffice).

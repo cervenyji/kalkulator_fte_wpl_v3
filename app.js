@@ -1774,11 +1774,12 @@ function computeCapacityCheck({ stats, visitor, calcResult, layoutRows }) {
   // needNormal = kolik by stačilo v běžné špičce (bez rezervy na silný den),
   // need = kolik je potřeba na silný den. Rozdíl obou čísel je v grafu vidět
   // jako pásmo mezi „běžnou špičkou“ a „silným dnem“.
-  const item = (key, label, short, needCalc, needReport, have, plain, needNormal) => {
+  const item = (key, label, short, needCalc, needReport, have, plain, needNormal, haveNote) => {
     const need = Math.max(needCalc || 0, needReport || 0);
     return { key, label, short, needCalc: needCalc || 0, needReport: needReport === null ? null : (needReport || 0),
       need, needNormal: Math.min(needNormal === undefined || needNormal === null ? need : needNormal, need),
-      have, missing: Math.max(0, need - have), status: capacityStatus(need, have), plain };
+      have, haveNote: haveNote || null, missing: Math.max(0, need - have),
+      status: capacityStatus(need, have), plain };
   };
 
   const cMeetingMins = (m && m.consts.MEETING_MINS) || VISITOR_CONSTS_DEFAULT.MEETING_MINS;
@@ -1796,9 +1797,16 @@ function computeCapacityCheck({ stats, visitor, calcResult, layoutRows }) {
     item("meetings", "Místa na sjednanou schůzku (jednací místnosti)", "místo na schůzku",
       Math.ceil(stats.meetingZoneWpl || 0), m ? m.rooms.meeting_rooms : null, counts.meetings,
       "Tolik klientů může naráz sedět s bankéřem u sjednané schůzky.", normal.meetings),
-    item("serviceDesks", "Servisní místa (Lenka, Theke — obsluha na hale)", "servisní místo",
-      Math.ceil(stats.serviceZoneWpl || 0), m ? m.rooms.service_desks : null, counts.serviceDesks,
-      "Tolik lidí naráz obsluhuje klienty, kteří přijdou bez objednání.", normal.serviceDesks),
+    // Fast track je taky obsluha na hale — do kapacity servisních míst se počítá,
+    // a zároveň má vlastní řádek (na rychlé bezhotovostní operace).
+    item("serviceDesks", "Servisní místa (Lenka, Theke, fast tracky — obsluha na hale)", "servisní místo",
+      Math.ceil(stats.serviceZoneWpl || 0), m ? m.rooms.service_desks : null,
+      counts.serviceDesks + counts.fasttracks,
+      "Tolik lidí naráz obsluhuje klienty, kteří přijdou bez objednání. Počítají se i fast tracky.",
+      normal.serviceDesks,
+      counts.fasttracks > 0
+        ? `přepážky ${fmtPieces(counts.serviceDesks)} + fast tracky ${fmtPieces(counts.fasttracks)}`
+        : null),
     item("chairs", "Židle v čekací zóně", "židle v čekací zóně",
       stats.recommendedChairs, null, counts.chairs,
       "Tolik klientů naráz sedí a čeká, než na ně přijde řada.", normal.chairs),
@@ -2113,7 +2121,8 @@ function renderCapacityCheckHtml(check) {
     return `<tr class="${meta.cls}">
       <td><strong>${esc(it.label)}</strong><br><span class="muted">${esc(it.plain)}</span></td>
       <td class="num"><strong>${fmtPieces(it.need)}</strong><br><span class="muted">${esc(needDetail)}</span></td>
-      <td class="num">${fmtPieces(it.have)}</td>
+      <td class="num">${fmtPieces(it.have)}${it.haveNote
+        ? `<br><span class="muted">${esc(it.haveNote)}</span>` : ""}</td>
       <td>${meta.icon} ${esc(capacityRowVerdict(it))}</td>
     </tr>`;
   }).join("");
@@ -3790,9 +3799,10 @@ function drawCapacityCheckPdf(pdf, startY, result, stats, marginX, pageBottom) {
   y = drawPdfSimpleTable(pdf, {
     x: marginX, y,
     headers: ["Co", "Potřeba ve špičce", "V layoutu", "Jak to vypadá"],
-    colW: [64, 30, 20, 68],
+    colW: [58, 26, 34, 64],
     rows: check.items.map((it) => ({
-      vals: [it.label, fmtPieces(it.need), fmtPieces(it.have),
+      vals: [it.label, fmtPieces(it.need),
+        it.haveNote ? `${fmtPieces(it.have)} (${it.haveNote})` : fmtPieces(it.have),
         `${CAPACITY_STATUS_META[it.status].label} — ${capacityRowVerdict(it)}`],
       highlight: it.status !== "ok",
     })),
