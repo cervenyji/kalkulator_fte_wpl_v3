@@ -136,9 +136,12 @@ data i sestavený layout).
 
 Pod výsledkem kalkulace se zobrazí:
 
-- **Stanovený formát pobočky** (small / medium economy / medium / flagship),
-  doporučený počet fasttracků a doporučený počet židlí v čekací zóně — stejná
-  logika jako v původní appce.
+- **Stanovený formát pobočky** (small / medium economy / medium / flagship) —
+  stejná logika jako v původní appce.
+- **Doporučený počet fasttracků a židlí v čekací zóně** — počítá se ze špičky
+  na hale podle reálné návštěvnosti, viz
+  [Špička na bankovní hale](#špička-na-bankovní-hale-židle-v-čekací-zóně-a-fast-tracky).
+  U každého čísla je uvedeno, z čeho vzniklo.
 - **Potřebná plocha** — spočítaná jako celkové WPL × 25 m².
 - **Poměr WPL / FTE** — kolik WPL připadá na jedno FTE (v %).
 - **Podíl Backoffice zóny** a **podíl míst pro jednání s klientem (meeting
@@ -278,6 +281,7 @@ zůstane i po překreslení výsledku nebo při přepnutí na jinou kalkulaci.
 
 | Skupina | Volba | Výchozí |
 | --- | --- | --- |
+| Kalkulace | Srozumitelné shrnutí „Vejde se to?“ | ✔ |
 | Kalkulace | Přehled pozic z checklistu | ✔ |
 | Kalkulace | Informace o použitých referenčních datech | ✔ |
 | Kalkulace | Souhrnná tabulka WPL po zónách a doporučení (fasttracky, židle, plocha) | ✔ |
@@ -292,6 +296,63 @@ zůstane i po překreslení výsledku nebo při přepnutí na jinou kalkulaci.
 
 Pokud pro pobočku nejsou naimportovaná data návštěvnosti, je celá skupina
 „Návštěvnost“ nedostupná a do PDF se nedostane.
+
+## „Vejde se to?“ — srozumitelné shrnutí
+
+Tabulky s P95, λ a Monte Carlem jsou přesné, ale ne každý je čte rád. Nad
+layoutem (v aplikaci) a na začátku PDF kalkulace je proto **srozumitelné
+shrnutí**, které stejná data řekne běžnou řečí a hlavně odpoví na otázku
+„stačí to, co jsem přiřadil?“:
+
+1. **Verdikt** jednou větou v barevném pruhu — *Layout na špičku stačí* /
+   *zvládne to jen těsně* / *ve špičce to nevyjde: chybí 3× místo na schůzku…*
+2. **Vysvětlení špičky** bez zkratek — která hodina je nejrušnější, kolik v ní
+   průměrně přijde klientů, s kolika se počítá v silný den („zhruba jeden den
+   z dvaceti“), kolik z nich jde bez objednání a kolik na sjednanou schůzku,
+   a jak z toho vychází počet židlí a fast tracků.
+3. **Tabulka potřeba vs. layout** pro každý druh prvku: kolik je potřeba ve
+   špičce (a jestli to číslo přišlo z kalkulace FTE, nebo z návštěvnosti —
+   platí vyšší z obou), kolik je v layoutu a verdikt „stačí / těsné / chybí N“.
+4. **A vyjdou na to lidé?** — špičková potřeba bankéřů z Monte Carla proti tomu,
+   kolik jich je v kalkulaci reálně na place (zadané FTE mínus dovolené, nemoci
+   a homeoffice).
+5. **Co s tím** — seznam konkrétních kroků („Místa na sjednanou schůzku:
+   doplnit 3“).
+
+V aplikaci se shrnutí **přepočítává rovnou při zadávání počtů kusů** do
+layoutu, takže je hned vidět, jestli zadané množství stačí. Do PDF jde volbou
+„Srozumitelné shrnutí „Vejde se to?““ a tiskne se hned za hlavičku kalkulace;
+layout k němu se dohledá v databázi, takže funguje i v samostatném PDF
+kalkulace.
+
+## Špička na bankovní hale (židle v čekací zóně a fast tracky)
+
+Doporučený počet židlí v čekací zóně a fast tracků se počítá **ze skutečné
+špičky na hale**, ne poměrem z WPL. Vychází z reportu návštěvnosti:
+
+1. Vezme se **nejrušnější hodina dne** (průměrné příchody λ) — zvlášť všechny
+   návštěvy a zvlášť ty bez objednání (walk-in).
+2. Přidá se **rezerva na silný den**: `P95 = λ + 1.645·√λ` — den, jaký přijde
+   zhruba 1× za 20 otevíracích dní.
+3. Přes Littleho pravidlo (*počet lidí v místě = příchody za hodinu × doba
+   strávená v místě ÷ 60*) se dopočítá:
+
+   ```
+   židle       = ⌈P95 všech příchodů × 1.2 (doprovod) × 10 min čekání ÷ 60⌉   (min. 2)
+   fast tracky = ⌈P95 příchodů bez objednání × 0.5 × 10 min obsluhy ÷ 60⌉     (min. 1)
+   ```
+
+Konstanty (rezerva, doba čekání, faktor doprovodu, podíl klientů na fast track
+a doba obsluhy) jsou pohromadě v `PEAK_MODEL` v `app.js`, aby šly upravit podle
+zkušeností z provozu. U klíčových ukazatelů je vždy uvedeno, z čeho číslo
+vzniklo (např. *špička 21 klientů za hodinu × 10 min čekání × doprovod 1.2*).
+
+Pokud pro pobočku není naimportovaný report návštěvnosti, použije se původní
+odhad z WPL (15 % pro fast tracky a 50 % pro židle ze součtu service + meeting
+zóny) a je to u ukazatele napsané.
+
+Obě čísla zároveň vstupují do [pravidel pro předvyplnění layoutu](#automatické-předvyplnění-podle-pravidel),
+takže se špičkou počítá i návrh layoutu.
 
 ## Kontrolní varianta bez uplatnění nepřítomnosti
 

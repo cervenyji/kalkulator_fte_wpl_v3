@@ -1658,6 +1658,20 @@ async function copyResultToClipboard(result, stats) {
 // podíl backoffice a míst pro jednání s klientem) včetně srovnání s benchmarkem
 // ostatních kalkulací se stejným formátem pobočky. checkboxId řídí, jestli se
 // tato sekce zahrne i do PDF exportu.
+// Krátké vysvětlení, odkud se doporučený počet fast tracků / židlí vzal.
+function recommendationNote(stats, kind) {
+  const p = stats.peak;
+  if (!p) {
+    return "odhad z WPL — pro pobočku zatím nemáme report návštěvnosti";
+  }
+  if (kind === "chairs") {
+    return `špička ${Math.round(p.arrivalsP95)} klientů za hodinu × ${PEAK_MODEL.WAIT_MINS} min čekání`
+      + ` × doprovod ${PEAK_MODEL.COMPANION_FACTOR}`;
+  }
+  return `špička ${Math.round(peakP95(p.walkins))} klientů bez objednání za hodinu, polovina z nich`
+    + ` na fast track × ${PEAK_MODEL.FASTTRACK_MINS} min`;
+}
+
 function renderStatsSection(stats) {
   const benchmark = getBenchmark(stats.formatTyp);
   const fmtPct = (v) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : `${v.toFixed(1)} %`;
@@ -1676,8 +1690,10 @@ function renderStatsSection(stats) {
       <div class="table-wrap"><table class="kpi-table">
         <tr><td>Stanovený formát pobočky</td><td><strong>${esc(stats.formatTyp)}</strong>
           <span class="muted">(dle ${stats.obchodniFteSumDisplay} obchodních FTE)</span></td></tr>
-        <tr><td>Doporučený počet fasttracků na hale</td><td>${stats.recommendedFasttracks}</td></tr>
-        <tr><td>Doporučený počet židlí v čekací zóně</td><td>${stats.recommendedChairs}</td></tr>
+        <tr><td>Doporučený počet fasttracků na hale</td><td>${stats.recommendedFasttracks}
+          <span class="muted">(${esc(recommendationNote(stats, "fasttracks"))})</span></td></tr>
+        <tr><td>Doporučený počet židlí v čekací zóně</td><td>${stats.recommendedChairs}
+          <span class="muted">(${esc(recommendationNote(stats, "chairs"))})</span></td></tr>
         <tr><td>Potřebná plocha</td><td>${stats.requiredAreaM2.toFixed(1)} m² <span class="muted">(WPL × 25 m²)</span></td></tr>
         <tr><td>Poměr WPL / FTE</td><td>${fmtPct(stats.wplFteRatio)}${deltaHtml(stats.wplFteRatio, benchmark?.avg_ratio)}</td></tr>
         <tr><td>Podíl Backoffice zóny</td><td>${fmtPct(stats.backofficePct)}${deltaHtml(stats.backofficePct, benchmark?.avg_backoffice)}</td></tr>
@@ -1714,6 +1730,253 @@ function resultRowHtml(r, isTotal = false) {
     <td>${fmt1(r.backoffice_zone)}</td>
     <td>${fmt1(r.office_room)}</td>
   </tr>`;
+}
+
+/* ---------- „Vejde se to?“ — srozumitelné shrnutí bez odborných pojmů ------- */
+// Kolik kterých prvků je potřeba na špičku (z kalkulace FTE i z reálné
+// návštěvnosti a Monte Carla) a jestli na to layout stačí. Cílem je, aby se
+// z toho dalo přečíst „stačí / nestačí a o kolik“ bez znalosti pojmů jako P95.
+
+// Do které kategorie nábytkový prvek patří — pořadí rozhoduje, první pravidlo
+// vyhrává (židle a fast tracky jsou taky v service zone, ale nejsou to přepážky).
+const CAPACITY_CATEGORIES = [
+  { key: "chairs", test: (r) => /čekací zóna/i.test(r.furniture) },
+  { key: "fasttracks", test: (r) => r.zone === "service_zone" && /fast track/i.test(r.furniture) },
+  { key: "serviceDesks", test: (r) => r.zone === "service_zone" },
+  { key: "meetings", test: (r) => r.zone === "meeting_zone" },
+  { key: "backoffice", test: (r) => r.zone === "backoffice_zone" },
+  { key: "office", test: (r) => r.zone === "office_room" },
+];
+
+function countLayoutByCategory(layoutRows) {
+  const counts = { chairs: 0, fasttracks: 0, serviceDesks: 0, meetings: 0, backoffice: 0, office: 0 };
+  (layoutRows || []).forEach((r) => {
+    const cat = CAPACITY_CATEGORIES.find((c) => c.test(r));
+    if (cat) counts[cat.key] += Number(r.piece_count) || 0;
+  });
+  return counts;
+}
+
+// Verdikt jednoho řádku: stačí / těsné / nestačí.
+function capacityStatus(need, have) {
+  if (need <= 0) return have > 0 ? "ok" : "ok";
+  if (have >= need) return "ok";
+  if (need - have <= 1 && have / need >= 0.7) return "tight";
+  return "missing";
+}
+
+function computeCapacityCheck({ stats, visitor, calcResult, layoutRows }) {
+  const m = visitor ? computeVisitorMetrics(visitor) : null;
+  const peak = stats.peak || (m ? computePeakModel(m) : null);
+  const counts = countLayoutByCategory(layoutRows);
+  const hasLayout = (layoutRows || []).length > 0;
+
+  const item = (key, label, short, needCalc, needReport, have, plain) => {
+    const need = Math.max(needCalc || 0, needReport || 0);
+    return { key, label, short, needCalc: needCalc || 0, needReport: needReport === null ? null : (needReport || 0),
+      need, have, missing: Math.max(0, need - have), status: capacityStatus(need, have), plain };
+  };
+
+  const items = [
+    item("meetings", "Místa na sjednanou schůzku (jednací místnosti)", "místo na schůzku",
+      Math.ceil(stats.meetingZoneWpl || 0), m ? m.rooms.meeting_rooms : null, counts.meetings,
+      "Tolik klientů může naráz sedět s bankéřem u sjednané schůzky."),
+    item("serviceDesks", "Servisní místa (Lenka, Theke — obsluha na hale)", "servisní místo",
+      Math.ceil(stats.serviceZoneWpl || 0), m ? m.rooms.service_desks : null, counts.serviceDesks,
+      "Tolik lidí naráz obsluhuje klienty, kteří přijdou bez objednání."),
+    item("chairs", "Židle v čekací zóně", "židle v čekací zóně",
+      stats.recommendedChairs, null, counts.chairs,
+      "Tolik klientů naráz sedí a čeká, než na ně přijde řada."),
+    item("fasttracks", "Fast tracky na hale", "fast track",
+      stats.recommendedFasttracks, null, counts.fasttracks,
+      "Místa pro rychlé bezhotovostní vyřízení, které trvá pár minut."),
+    item("backoffice", "Kancelářská místa v zázemí", "kancelářské místo v zázemí",
+      Math.ceil(stats.backofficeZoneWpl || 0), null, counts.backoffice,
+      "Místa na práci, u které bankéř nepotřebuje klienta."),
+  ];
+  if ((stats.officeRoomWpl || 0) > 0 || counts.office > 0) {
+    items.push(item("office", "Kancelář (vedení pobočky)", "kancelář",
+      Math.ceil(stats.officeRoomWpl || 0), null, counts.office,
+      "Samostatná kancelář mimo otevřený prostor."));
+  }
+
+  // Lidé: vejdou se špičkové požadavky do bankéřů zadaných v kalkulaci?
+  const bankerFte = computeBankerFte(calcResult ? calcResult.inputRows : []);
+  const people = [];
+  if (m && m.mc) {
+    const presence = m.mc.presencePct / 100;
+    people.push({
+      key: "ob", label: "Bankéři na schůzky (obchodní)",
+      need: m.mc.peakP95Ob, have: bankerFte.sales * presence, fte: bankerFte.sales, presence,
+      plain: "Kolik bankéřů musí být ve špičce naráz u klientů.",
+    });
+    if (bankerFte.service > 0 || m.mc.peakP95Svc > 0) {
+      people.push({
+        key: "bkp", label: "Servisní zóna (bankéři klientské péče)",
+        need: m.mc.peakP95Svc, have: bankerFte.service * presence, fte: bankerFte.service, presence,
+        plain: "Kolik lidí musí ve špičce naráz obsluhovat rychlé požadavky.",
+      });
+    }
+    people.forEach((p) => {
+      p.status = capacityStatus(Math.round(p.need * 10) / 10, Math.round(p.have * 10) / 10);
+      p.missing = Math.max(0, p.need - p.have);
+    });
+  }
+
+  const missingItems = items.filter((i) => i.status === "missing");
+  const tightItems = items.filter((i) => i.status === "tight");
+  const peopleShort = people.filter((p) => p.status !== "ok");
+  const peopleNote = peopleShort.length
+    ? ` Lidí je ve špičce málo: ${peopleShort.map((p) => `${p.label.toLowerCase()} chybí ${vFmt1(p.missing)}`).join(", ")}.`
+    : "";
+  let verdict;
+  if (!hasLayout) {
+    verdict = { status: "none",
+      text: `Layout zatím není sestavený — níže je vidět, kolik čeho bude potřeba.${peopleNote}` };
+  } else if (missingItems.length) {
+    verdict = { status: "missing",
+      text: `Ve špičce to nevyjde: chybí ${missingItems.map((i) => `${fmtPieces(i.missing)}× ${i.short}`).join(", ")}.${peopleNote}` };
+  } else if (tightItems.length) {
+    verdict = { status: "tight",
+      text: `Layout špičku zvládne jen těsně — hlídejte ${tightItems.map((i) => i.short).join(", ")}.${peopleNote}` };
+  } else if (peopleShort.length) {
+    verdict = { status: "tight",
+      text: `Nábytku je dost, ale lidí ne.${peopleNote}` };
+  } else {
+    verdict = { status: "ok", text: "Layout na špičku stačí — všech prvků je tolik, kolik je potřeba." };
+  }
+
+  return { m, peak, counts, items, people, bankerFte, verdict, hasLayout, hasReport: !!m, peopleShort };
+}
+
+// Slovní úvod: co je „špička“ a s čím se počítá — bez zkratek.
+function capacityIntroLines(check) {
+  const { m, peak } = check;
+  if (!m || !peak) {
+    return ["Pro tuto pobočku nemáme report návštěvnosti, takže se počítá jen z počtu FTE zadaných v kalkulaci. "
+      + "Po naimportování reportu se doporučení upřesní podle skutečných návštěv."];
+  }
+  const hourLabel = visitorHourLabel(peak.hour);
+  return [
+    `Nejrušnější hodina dne je na této pobočce ${hourLabel} — přijde v ní průměrně `
+      + `${vFmt1(peak.arrivals)} klientů.`,
+    `Některé dny jsou ale silnější než průměr. Aby to fungovalo i v takový den (zhruba jeden den z dvaceti), `
+      + `počítáme s ${Math.round(peak.arrivalsP95)} klienty v té hodině — z toho asi `
+      + `${Math.round(peakP95(peak.walkins))} přijde bez objednání na rychlé vyřízení a `
+      + `${Math.round(peakP95(peak.meetings))} na sjednanou schůzku.`,
+    `Židle: každý čeká průměrně ${PEAK_MODEL.WAIT_MINS} minut, někdo přijde s doprovodem — `
+      + `v čekací zóně tak sedí naráz zhruba ${vFmt1(peak.chairsRaw)} lidí, zaokrouhleno na `
+      + `${peak.chairs} ${peak.chairs === 1 ? "židli" : "židle"}.`,
+    `Fast tracky: rychlé vyřízení trvá kolem ${PEAK_MODEL.FASTTRACK_MINS} minut a míří na něj zhruba `
+      + `polovina lidí bez objednání — potřeba je ${peak.fasttracks} `
+      + `${peak.fasttracks === 1 ? "fast track" : "fast tracky"}.`,
+  ];
+}
+
+const CAPACITY_STATUS_META = {
+  ok: { icon: "✅", label: "Stačí", cls: "cap-ok" },
+  tight: { icon: "⚠️", label: "Těsné", cls: "cap-tight" },
+  missing: { icon: "❌", label: "Nestačí", cls: "cap-missing" },
+  none: { icon: "ℹ️", label: "Bez layoutu", cls: "cap-none" },
+};
+
+function capacityRowVerdict(it) {
+  if (it.status === "ok") {
+    const extra = it.have - it.need;
+    return extra > 0 ? `Stačí, máte i ${fmtPieces(extra)} navíc.` : "Stačí přesně.";
+  }
+  if (it.status === "tight") return `Těsné — ve špičce může chybět ${fmtPieces(it.missing)}.`;
+  return `Chybí ${fmtPieces(it.missing)} — na tolik lidí se ve špičce nedostane.`;
+}
+
+// Sestaví srozumitelné shrnutí pro daný layout (řádky s počty kusů) — používá
+// se v sekci layoutu i v PDF.
+function capacityCheckHtmlFor(meta, layoutRows, preloadedVisitor) {
+  if (!meta || !meta.stats) return "";
+  const visitor = preloadedVisitor !== undefined
+    ? preloadedVisitor
+    : getVisitorForCalculation(meta.calculation_key, meta.pobocka_id, meta.pobocka_nazev);
+  return renderCapacityCheckHtml(computeCapacityCheck({
+    stats: meta.stats, visitor, calcResult: meta.calcResult, layoutRows,
+  }));
+}
+
+// Přečte aktuálně zadané počty kusů z formuláře layoutu (ještě před uložením),
+// aby šlo shrnutí „vejde se to?“ přepočítávat rovnou při psaní.
+function readLayoutFormRows(container) {
+  const rows = [];
+  container.querySelectorAll(".layout-group[data-segment]").forEach((g) => {
+    const { segment, zone } = g.dataset;
+    g.querySelectorAll("input.layout-qty").forEach((inp) => {
+      const pieces = Number(inp.value) || 0;
+      if (pieces <= 0) return;
+      rows.push({ segment, zone, furniture: inp.dataset.furniture, piece_count: pieces,
+        wpl_assigned: pieces * (Number(inp.dataset.wplCounter) || 0) });
+    });
+  });
+  return rows;
+}
+
+function renderCapacityCheckHtml(check) {
+  const intro = capacityIntroLines(check).map((l) => `<p>${l}</p>`).join("");
+  const v = CAPACITY_STATUS_META[check.verdict.status];
+
+  const rowsHtml = check.items.map((it) => {
+    const meta = CAPACITY_STATUS_META[it.status];
+    const needDetail = [
+      `z kalkulace ${fmtPieces(it.needCalc)}`,
+      it.needReport === null ? null : `z návštěvnosti ${fmtPieces(it.needReport)}`,
+    ].filter(Boolean).join(" · ");
+    return `<tr class="${meta.cls}">
+      <td><strong>${esc(it.label)}</strong><br><span class="muted">${esc(it.plain)}</span></td>
+      <td class="num"><strong>${fmtPieces(it.need)}</strong><br><span class="muted">${esc(needDetail)}</span></td>
+      <td class="num">${fmtPieces(it.have)}</td>
+      <td>${meta.icon} ${esc(capacityRowVerdict(it))}</td>
+    </tr>`;
+  }).join("");
+
+  const peopleHtml = check.people.length ? `
+    <h4>A vyjdou na to lidé?</h4>
+    <div class="table-wrap"><table class="visitor-table cap-table">
+      <thead><tr><th>Kdo</th><th>Potřeba ve špičce</th><th>Reálně na place</th><th>Jak to vypadá</th></tr></thead>
+      <tbody>${check.people.map((p) => {
+        const meta = CAPACITY_STATUS_META[p.status];
+        return `<tr class="${meta.cls}">
+          <td><strong>${esc(p.label)}</strong><br><span class="muted">${esc(p.plain)}</span></td>
+          <td class="num">${vFmt1(p.need)}<br><span class="muted">lidí naráz</span></td>
+          <td class="num">${vFmt1(p.have)}<br><span class="muted">z ${vFmt1(p.fte)} FTE v kalkulaci
+            (${Math.round(p.presence * 100)} % je v práci)</span></td>
+          <td>${meta.icon} ${p.status === "ok" ? "Stačí."
+            : `Chybí ${vFmt1(p.missing)} člověka — ve špičce se tvoří fronta.`}</td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table></div>
+    <p class="muted">„Reálně na place“ = zadané FTE mínus dovolené, nemoci a homeoffice
+      (${check.m && check.m.mc ? vFmt1(check.m.mc.presencePct) : "77"} % času je člověk skutečně na pobočce).</p>` : "";
+
+  const todo = [
+    ...check.items.filter((i) => i.status !== "ok").map((i) =>
+      `<li><strong>${esc(i.label)}</strong>: doplnit ${fmtPieces(i.missing)} (v layoutu ${fmtPieces(i.have)},
+        potřeba ${fmtPieces(i.need)}).</li>`),
+    ...check.people.filter((p) => p.status !== "ok").map((p) =>
+      `<li><strong>${esc(p.label)}</strong>: ve špičce chybí ${vFmt1(p.missing)} člověka — buď posílit směnu,
+        nebo počítat s tím, že klienti budou čekat.</li>`),
+  ].join("");
+
+  return `<div class="cap-box">
+    <h3>Vejde se to? Srozumitelné shrnutí</h3>
+    <div class="cap-verdict ${v.cls}">${v.icon} ${esc(check.verdict.text)}</div>
+    <div class="cap-intro">${intro}</div>
+    <div class="table-wrap"><table class="visitor-table cap-table">
+      <thead><tr><th>Co</th><th>Kolik je potřeba ve špičce</th><th>Kolik je v layoutu</th><th>Jak to vypadá</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table></div>
+    <p class="muted">Potřeba = vyšší z obou pohledů: kolik vychází z počtu FTE v kalkulaci a kolik vychází
+      ze skutečné návštěvnosti ve špičce. Kde návštěvnost nic neříká (zázemí, kancelář), platí jen kalkulace.</p>
+    ${peopleHtml}
+    ${todo ? `<h4>Co s tím</h4><ul class="cap-todo">${todo}</ul>`
+      : `<p class="cap-ok-note">✅ Není co doplňovat — layout pokrývá špičku i s rezervou na silný den.</p>`}
+  </div>`;
 }
 
 /* ------- Kontrolní varianta kalkulace bez uplatnění nepřítomnosti ---------- */
@@ -1833,6 +2096,8 @@ const PDF_OPTION_GROUPS = [
 ];
 
 const PDF_OPTION_DEFS = [
+  { key: "plainSummary", id: "pdfIncPlain", group: "calc", def: true,
+    label: "Srozumitelné shrnutí „Vejde se to?“ (potřeba ve špičce vs. layout)" },
   { key: "inputPositions", id: "pdfIncPositions", group: "calc", def: true,
     label: "Přehled pozic z checklistu" },
   { key: "refData", id: "pdfIncRefData", group: "calc", def: true,
@@ -1951,6 +2216,50 @@ const OBCHODNI_POZICE = new Set([
 ]);
 const MEETING_ZONE_SUM_SEGMENTS = ["MMMA", "SBC", "HC"];
 
+/* ------------------ Model špičky na bankovní hale -------------------------- */
+// Kolik lidí je na pobočce naráz v nejsilnější hodině a co z toho plyne pro
+// počet židlí v čekací zóně a počet fast tracků. Vychází z reálných návštěv
+// z reportu návštěvnosti: vezme se nejsilnější hodina dne a přidá se rezerva na
+// silný den (P95 = λ + 1.645·√λ — den, jaký přijde zhruba 1× za 20 otevíracích
+// dní). Z počtu příchozích za hodinu se přes Littleho pravidlo (počet lidí
+// v místě = příchody za hodinu × doba strávená v místě ÷ 60) dopočítá, kolik
+// klientů sedí v čekací zóně naráz a kolik fast tracků je potřeba.
+//
+// Konstanty jsou na jednom místě, aby se daly upravit podle zkušeností z provozu.
+const PEAK_MODEL = {
+  Z: 1.645,              // rezerva na silný den (P95 ≈ 1× za 20 otevíracích dní)
+  WAIT_MINS: 10,         // jak dlouho klient ve špičce průměrně čeká, než na něj přijde řada
+  COMPANION_FACTOR: 1.2, // část klientů přijde ve dvou (doprovod) → víc židlí
+  MIN_CHAIRS: 2,
+  FASTTRACK_SHARE: 0.5,  // podíl bezhotovostních (walk-in) klientů, které obslouží fast track
+  FASTTRACK_MINS: 10,    // jak dlouho trvá jedno vyřízení na fast tracku
+  MIN_FASTTRACKS: 1,
+};
+
+const peakP95 = (lambda) => lambda + PEAK_MODEL.Z * Math.sqrt(lambda);
+
+// `metrics` = výstup computeVisitorMetrics. Vrací null, pokud pobočka nemá
+// v reportu použitelná data o návštěvách po hodinách.
+function computePeakModel(metrics) {
+  if (!metrics || !metrics.peakHour) return null;
+  const arrivals = metrics.peakHour.total;
+  const walkins = metrics.hours.reduce((a, r) => Math.max(a, r.walkins), 0);
+  const meetings = metrics.hours.reduce((a, r) => Math.max(a, r.meetings), 0);
+  const arrivalsP95 = peakP95(arrivals);
+  const walkinsP95 = peakP95(walkins);
+  const chairsRaw = (arrivalsP95 * PEAK_MODEL.COMPANION_FACTOR * PEAK_MODEL.WAIT_MINS) / 60;
+  const fasttracksRaw = (walkinsP95 * PEAK_MODEL.FASTTRACK_SHARE * PEAK_MODEL.FASTTRACK_MINS) / 60;
+  return {
+    hour: metrics.peakHour.hour,
+    arrivals, arrivalsP95,
+    walkins, walkinsP95,
+    meetings, meetingsP95: peakP95(meetings),
+    chairsRaw, fasttracksRaw,
+    chairs: Math.max(PEAK_MODEL.MIN_CHAIRS, Math.ceil(chairsRaw)),
+    fasttracks: Math.max(PEAK_MODEL.MIN_FASTTRACKS, Math.ceil(fasttracksRaw)),
+  };
+}
+
 // Spočítá odvozené ukazatele kalkulace ze segmentových řádků (bez "Celkem"),
 // řádku "Celkem" a vstupních pozic z checklistu. Používá se jak pro okamžité
 // zobrazení po dokončení kalkulace, tak pro PDF export a pro zpětné dopočítání
@@ -1974,6 +2283,15 @@ function computeCalculationStats(result) {
   else if (obchodniFteSum >= 5) formatTyp = "medium economy";
   else formatTyp = "small";
 
+  // Doporučený počet židlí v čekací zóně a fast tracků se počítá ze špičky
+  // reálné návštěvnosti; když pro pobočku report nemáme, použije se původní
+  // odhad z WPL (15 % / 50 % service + meeting zóny).
+  let peak = null;
+  try {
+    const visitor = getVisitorForCalculation(result.calculation_key, result.pobocka_id, result.pobocka_nazev);
+    if (visitor) peak = computePeakModel(computeVisitorMetrics(visitor));
+  } catch (e) { /* bez dat návštěvnosti se použije odhad z WPL */ }
+
   const serviceZone = result.celkem.service_zone || 0;
   const meetingZoneTotal = result.celkem.meeting_zone || 0;
   const backofficeZone = result.celkem.backoffice_zone || 0;
@@ -1987,8 +2305,10 @@ function computeCalculationStats(result) {
     obchodniFteSum,
     obchodniFteSumDisplay: round1(obchodniFteSum).toFixed(1),
     formatTyp,
-    recommendedFasttracks: Math.ceil(combinedTotal * 0.15),
-    recommendedChairs: Math.ceil(combinedTotal * 0.50),
+    peak,
+    recommendationSource: peak ? "report" : "wpl",
+    recommendedFasttracks: peak ? peak.fasttracks : Math.ceil(combinedTotal * 0.15),
+    recommendedChairs: peak ? peak.chairs : Math.ceil(combinedTotal * 0.50),
     celkemFte,
     celkemWpl,
     serviceZoneWpl: serviceZone,
@@ -2089,6 +2409,7 @@ function exportCalculationPdf(result, options) {
 function drawCalculationPdf(pdf, startY, result, options) {
   const opt = normalizePdfOptions(options);
   const note = opt.note;
+  const stats = computeCalculationStats(result);
   const marginX = 14;
   let y = startY;
   const pageBottom = 280;
@@ -2126,6 +2447,12 @@ function drawCalculationPdf(pdf, startY, result, options) {
   }
   y += 4;
 
+  // Srozumitelné shrnutí „vejde se to?“ jako první věc po hlavičce — je to
+  // odpověď na hlavní otázku, ostatní tabulky jsou podklad.
+  if (opt.plainSummary) {
+    y = drawCapacityCheckPdf(pdf, y, result, stats, marginX, pageBottom);
+  }
+
   if (opt.inputPositions && (result.inputRows || []).length) {
     pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
     pdf.text("Přehled pozic z checklistu", marginX, y); y += 7;
@@ -2147,8 +2474,6 @@ function drawCalculationPdf(pdf, startY, result, options) {
     });
     y += 4;
   }
-
-  const stats = computeCalculationStats(result);
 
   if (opt.summaryTable) {
   pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
@@ -2214,8 +2539,8 @@ function drawCalculationPdf(pdf, startY, result, options) {
   const statLines = [
     `Součet meeting_zone pro segmenty MMMA, SBC, HC: ${stats.meetingZoneSum.toFixed(2)}`,
     `Stanovený formát dle počtu (${stats.obchodniFteSumDisplay}) obchodních FTE: ${stats.formatTyp}`,
-    `Doporučený počet fasttracků na hale: ${stats.recommendedFasttracks}`,
-    `Doporučený počet židlí v čekací zóně: ${stats.recommendedChairs}`,
+    `Doporučený počet fasttracků na hale: ${stats.recommendedFasttracks} (${recommendationNote(stats, "fasttracks")})`,
+    `Doporučený počet židlí v čekací zóně: ${stats.recommendedChairs} (${recommendationNote(stats, "chairs")})`,
     `Potřebná plocha (WPL × 25 m²): ${stats.requiredAreaM2.toFixed(1)} m²`,
   ];
   statLines.forEach((line) => { pdf.text(line, marginX, y); y += 6; });
@@ -2968,34 +3293,42 @@ function showVisitorDetail(pobockaId) {
 // prokládané rect()/text() by je jinak po první buňce rozjelo.
 function drawPdfSimpleTable(pdf, { x, y, headers, colW, rows, fontSize = 7.4, rowH = 6, pageBottom = 280 }) {
   let cy = y;
-  const drawHeader = () => {
-    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(fontSize);
+  const lineH = fontSize * 0.42;   // výška řádku textu v mm pro danou velikost písma
+  const padY = 4.2;
+
+  // Text, který se do sloupce nevejde, se zalomí — výška řádku se tomu
+  // přizpůsobí, aby text nepřetékal přes rámeček buňky.
+  const wrap = (vals, bold) => {
+    pdf.setFont("DejaVuSans", bold ? "bold" : "normal"); pdf.setFontSize(fontSize);
+    const cells = vals.map((v, i) => pdf.splitTextToSize(String(v), colW[i] - 2.8));
+    const maxLines = cells.reduce((a, c) => Math.max(a, c.length), 1);
+    return { cells, height: Math.max(rowH, padY + (maxLines - 1) * lineH + 2) };
+  };
+
+  const drawCells = (vals, { bold, headerRow, highlight }) => {
+    const { cells, height } = wrap(vals, bold);
     let cx = x;
-    headers.forEach((h, i) => {
-      pdf.setFillColor(39, 112, 240);
-      pdf.rect(cx, cy, colW[i], rowH, "FD");
-      pdf.setTextColor(255, 255, 255);
-      pdf.text(String(h), cx + 1.4, cy + 4.2, { maxWidth: colW[i] - 2.4 });
+    cells.forEach((lines, i) => {
+      if (headerRow) pdf.setFillColor(39, 112, 240);
+      else if (highlight) pdf.setFillColor(224, 236, 255);
+      pdf.rect(cx, cy, colW[i], height, (headerRow || highlight) ? "FD" : "D");
+      pdf.setTextColor(headerRow ? 255 : 0, headerRow ? 255 : 0, headerRow ? 255 : 0);
+      lines.forEach((line, li) => { pdf.text(line, cx + 1.4, cy + padY + li * lineH); });
       cx += colW[i];
     });
-    cy += rowH;
+    cy += height;
     pdf.setTextColor(0, 0, 0);
   };
+
+  const drawHeader = () => drawCells(headers, { bold: true, headerRow: true });
+
   drawHeader();
   rows.forEach((r) => {
     const vals = Array.isArray(r) ? r : r.vals;
     const highlight = !Array.isArray(r) && r.highlight;
-    if (cy + rowH > pageBottom) { pdf.addPage(); cy = 18; drawHeader(); }
-    pdf.setFont("DejaVuSans", highlight ? "bold" : "normal"); pdf.setFontSize(fontSize);
-    let cx = x;
-    vals.forEach((v, i) => {
-      if (highlight) pdf.setFillColor(224, 236, 255);
-      pdf.rect(cx, cy, colW[i], rowH, highlight ? "FD" : "D");
-      pdf.setTextColor(0, 0, 0);
-      pdf.text(String(v), cx + 1.4, cy + 4.2, { maxWidth: colW[i] - 2.4 });
-      cx += colW[i];
-    });
-    cy += rowH;
+    const { height } = wrap(vals, highlight);
+    if (cy + height > pageBottom) { pdf.addPage(); cy = 18; drawHeader(); }
+    drawCells(vals, { bold: highlight, highlight });
   });
   return cy;
 }
@@ -3221,6 +3554,114 @@ function drawMcHistPdf(pdf, x, y, w, h, counts, edges, capV, p95V, hex) {
   pdf.setLineWidth(0.2);
   pdf.setDrawColor(0, 0, 0);
   return y + h;
+}
+
+// Srozumitelné shrnutí „Vejde se to?“ do PDF: verdikt, slovní vysvětlení
+// špičky a tabulka potřeba vs. layout. Layout se dohledá v databázi podle
+// calculation_key, takže shrnutí funguje i v samostatném PDF kalkulace.
+function drawCapacityCheckPdf(pdf, startY, result, stats, marginX, pageBottom) {
+  let y = startY;
+  if (!db || !result.calculation_key) return y;
+  let layoutRows = [];
+  try { layoutRows = getExistingLayout(result.calculation_key); } catch (e) { layoutRows = []; }
+  const visitor = getVisitorForCalculation(result.calculation_key, result.pobocka_id, result.pobocka_nazev);
+  const check = computeCapacityCheck({ stats, visitor, calcResult: result, layoutRows });
+  const newPageIfNeeded = (need) => { if (y + need > pageBottom) { pdf.addPage(); y = 18; } };
+
+  newPageIfNeeded(46);
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(13);
+  pdf.text("Vejde se to? Srozumitelné shrnutí", marginX, y); y += 7;
+
+  // Verdikt v barevném pruhu
+  const verdictColor = { ok: [232, 249, 238], tight: [255, 246, 224], missing: [253, 234, 234], none: [238, 242, 249] };
+  const verdictText = { ok: [10, 122, 51], tight: [138, 92, 0], missing: [164, 31, 31], none: [107, 118, 132] };
+  const vc = verdictColor[check.verdict.status] || verdictColor.none;
+  const vt = verdictText[check.verdict.status] || verdictText.none;
+  const verdictLines = pdf.splitTextToSize(check.verdict.text, 176);
+  const boxH = 6 + verdictLines.length * 5;
+  newPageIfNeeded(boxH + 6);
+  pdf.setFillColor(vc[0], vc[1], vc[2]);
+  pdf.rect(marginX, y, 182, boxH, "F");
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
+  pdf.setTextColor(vt[0], vt[1], vt[2]);
+  let vy = y + 5.5;
+  verdictLines.forEach((l) => { pdf.text(l, marginX + 3, vy); vy += 5; });
+  pdf.setTextColor(0, 0, 0);
+  y += boxH + 5;
+
+  // Slovní vysvětlení špičky
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(9);
+  capacityIntroLines(check).forEach((line) => {
+    pdf.splitTextToSize(line, 182).forEach((l) => { newPageIfNeeded(6); pdf.text(l, marginX, y); y += 5; });
+    y += 1.5;
+  });
+  y += 2;
+
+  // Tabulka potřeba vs. layout
+  newPageIfNeeded(24);
+  y = drawPdfSimpleTable(pdf, {
+    x: marginX, y,
+    headers: ["Co", "Potřeba ve špičce", "V layoutu", "Jak to vypadá"],
+    colW: [64, 30, 20, 68],
+    rows: check.items.map((it) => ({
+      vals: [it.label, fmtPieces(it.need), fmtPieces(it.have),
+        `${CAPACITY_STATUS_META[it.status].label} — ${capacityRowVerdict(it)}`],
+      highlight: it.status !== "ok",
+    })),
+    fontSize: 7.4, rowH: 6.4, pageBottom,
+  });
+  y += 3;
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.5);
+  pdf.setTextColor(120, 120, 120);
+  pdf.splitTextToSize("Potřeba = vyšší z obou pohledů: kolik vychází z počtu FTE v kalkulaci a kolik "
+    + "ze skutečné návštěvnosti ve špičce.", 182)
+    .forEach((l) => { newPageIfNeeded(5); pdf.text(l, marginX, y); y += 4.2; });
+  pdf.setTextColor(0, 0, 0);
+  y += 4;
+
+  if (check.people.length) {
+    newPageIfNeeded(24);
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
+    pdf.text("A vyjdou na to lidé?", marginX, y); y += 5.5;
+    y = drawPdfSimpleTable(pdf, {
+      x: marginX, y,
+      headers: ["Kdo", "Potřeba ve špičce", "Reálně na place", "Jak to vypadá"],
+      colW: [64, 30, 30, 58],
+      rows: check.people.map((p) => ({
+        vals: [p.label, `${vFmt1(p.need)} lidí`, `${vFmt1(p.have)} z ${vFmt1(p.fte)} FTE`,
+          p.status === "ok" ? "Stačí." : `Chybí ${vFmt1(p.missing)} — ve špičce se tvoří fronta.`],
+        highlight: p.status !== "ok",
+      })),
+      fontSize: 7.4, rowH: 6.4, pageBottom,
+    });
+    y += 3;
+    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.5);
+    pdf.setTextColor(120, 120, 120);
+    pdf.text(`„Reálně na place“ = zadané FTE mínus dovolené, nemoci a homeoffice.`, marginX, y);
+    pdf.setTextColor(0, 0, 0);
+    y += 6;
+  }
+
+  const todo = [
+    ...check.items.filter((i) => i.status !== "ok").map((i) =>
+      `- ${i.label}: doplnit ${fmtPieces(i.missing)} (v layoutu ${fmtPieces(i.have)}, potřeba ${fmtPieces(i.need)}).`),
+    ...check.people.filter((p) => p.status !== "ok").map((p) =>
+      `- ${p.label}: ve špičce chybí ${vFmt1(p.missing)} člověka — posílit směnu, nebo počítat s čekáním klientů.`),
+  ];
+  if (todo.length) {
+    newPageIfNeeded(10 + todo.length * 5);
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
+    pdf.text("Co s tím", marginX, y); y += 5.5;
+    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(9);
+    todo.forEach((line) => {
+      pdf.splitTextToSize(line, 178).forEach((l) => { newPageIfNeeded(6); pdf.text(l, marginX + 2, y); y += 5; });
+    });
+  } else if (check.hasLayout) {
+    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(9);
+    pdf.text("Není co doplňovat — layout pokrývá špičku i s rezervou na silný den.", marginX, y); y += 5;
+  }
+  y += 6;
+  return y;
 }
 
 // Vykreslí sekci návštěvnosti a doporučení prostor do PDF (do už existujícího
@@ -3702,11 +4143,23 @@ function renderLayoutForm(container, segmentRows, meta, existingRows) {
     container.innerHTML = `<p class="muted">Pro tuto kalkulaci nejsou v databázi definované žádné nábytkové prvky — sestavení layoutu se neprovádí.</p>`;
     return;
   }
-  container.innerHTML = `${groupsHtml}
+  container.innerHTML = `<div class="cap-box-holder"></div>
+    ${groupsHtml}
     <div class="row" style="margin-top:14px;">
       <button class="btn" id="btnSaveLayout">Uložit layout</button>
     </div>`;
   wireLayoutFormListeners(container);
+
+  // Shrnutí „vejde se to?“ se přepočítává rovnou při zadávání počtů kusů, aby
+  // bylo hned vidět, jestli zadané množství na špičku stačí. Data návštěvnosti
+  // se načtou jednou dopředu, ne při každém stisku klávesy.
+  const capHolder = container.querySelector(".cap-box-holder");
+  const visitorForCap = getVisitorForCalculation(meta.calculation_key, meta.pobocka_id, meta.pobocka_nazev);
+  const refreshCapBox = () => {
+    capHolder.innerHTML = capacityCheckHtmlFor(meta, readLayoutFormRows(container), visitorForCap);
+  };
+  refreshCapBox();
+  container.addEventListener("input", (e) => { if (e.target.classList.contains("layout-qty")) refreshCapBox(); });
   // Tlačítka se hledají v rámci `container`, ne přes document.getElementById —
   // sekce layoutu je na stránce dvakrát (krok 4 průvodce a detail v historii),
   // takže stejná id existují ve dvou instancích a globální hledání by našlo
@@ -4055,6 +4508,7 @@ function renderLayoutReadonly(container, rows, meta, segmentRows) {
 
   const overview = computeWplOverview(segmentRows, rows, meta.calcResult?.celkem);
   container.innerHTML = `
+    ${capacityCheckHtmlFor(meta, rows)}
     <div class="layout-group">${renderWplOverviewHtml(overview)}</div>
     ${groupsHtml}
     ${renderZoneAnalysisHtml(overview, rows)}
