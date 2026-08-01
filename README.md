@@ -306,17 +306,32 @@ shrnutí**, které stejná data řekne běžnou řečí a hlavně odpoví na ot�
 
 1. **Verdikt** jednou větou v barevném pruhu — *Layout na špičku stačí* /
    *zvládne to jen těsně* / *ve špičce to nevyjde: chybí 3× místo na schůzku…*
-2. **Vysvětlení špičky** bez zkratek — která hodina je nejrušnější, kolik v ní
+2. **Graf „Kapacita proti špičce — jedním pohledem“** — jeden pruhový řádek pro
+   každý druh místa i pro bankéře. Všechny řádky mají **stejné měřítko: 100 % =
+   potřeba na silný den**, takže svislá plná čára je u všech na stejném místě
+   a stačí se podívat, jestli za ni barevný pruh (kapacita) dosáhne:
+
+   | Pruh | Význam |
+   | --- | --- |
+   | zelený, přes plnou čáru | kapacita stačí i na silný den |
+   | oranžový, mezi tečkovanou a plnou čarou | běžný den v pohodě, silný den těsný |
+   | červený, před tečkovanou čarou | nestačí ani běžná špička |
+
+   Tečkovaná čára je potřeba v běžné špičce, plná potřeba v silný den (jeden den
+   z dvaceti), vpravo je vždy „kolik je / kolik je potřeba“ a pokrytí v %.
+   U bankéřů je pruh počet lidí reálně na place (FTE mínus dovolené, nemoci
+   a homeoffice) a čáry jsou špičková poptávka z Monte Carla.
+3. **Vysvětlení špičky** bez zkratek — která hodina je nejrušnější, kolik v ní
    průměrně přijde klientů, s kolika se počítá v silný den („zhruba jeden den
    z dvaceti“), kolik z nich jde bez objednání a kolik na sjednanou schůzku,
    a jak z toho vychází počet židlí a fast tracků.
-3. **Tabulka potřeba vs. layout** pro každý druh prvku: kolik je potřeba ve
+4. **Tabulka potřeba vs. layout** pro každý druh prvku: kolik je potřeba ve
    špičce (a jestli to číslo přišlo z kalkulace FTE, nebo z návštěvnosti —
    platí vyšší z obou), kolik je v layoutu a verdikt „stačí / těsné / chybí N“.
-4. **A vyjdou na to lidé?** — špičková potřeba bankéřů z Monte Carla proti tomu,
+5. **A vyjdou na to lidé?** — špičková potřeba bankéřů z Monte Carla proti tomu,
    kolik jich je v kalkulaci reálně na place (zadané FTE mínus dovolené, nemoci
    a homeoffice).
-5. **Co s tím** — seznam konkrétních kroků („Místa na sjednanou schůzku:
+6. **Co s tím** — seznam konkrétních kroků („Místa na sjednanou schůzku:
    doplnit 3“).
 
 V aplikaci se shrnutí **přepočítává rovnou při zadávání počtů kusů** do

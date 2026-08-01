@@ -1771,25 +1771,40 @@ function computeCapacityCheck({ stats, visitor, calcResult, layoutRows }) {
   const counts = countLayoutByCategory(layoutRows);
   const hasLayout = (layoutRows || []).length > 0;
 
-  const item = (key, label, short, needCalc, needReport, have, plain) => {
+  // needNormal = kolik by stačilo v běžné špičce (bez rezervy na silný den),
+  // need = kolik je potřeba na silný den. Rozdíl obou čísel je v grafu vidět
+  // jako pásmo mezi „běžnou špičkou“ a „silným dnem“.
+  const item = (key, label, short, needCalc, needReport, have, plain, needNormal) => {
     const need = Math.max(needCalc || 0, needReport || 0);
     return { key, label, short, needCalc: needCalc || 0, needReport: needReport === null ? null : (needReport || 0),
-      need, have, missing: Math.max(0, need - have), status: capacityStatus(need, have), plain };
+      need, needNormal: Math.min(needNormal === undefined || needNormal === null ? need : needNormal, need),
+      have, missing: Math.max(0, need - have), status: capacityStatus(need, have), plain };
   };
+
+  const cMeetingMins = (m && m.consts.MEETING_MINS) || VISITOR_CONSTS_DEFAULT.MEETING_MINS;
+  const cWalkinMins = (m && m.consts.WALKIN_AVG_MINS) || VISITOR_CONSTS_DEFAULT.WALKIN_AVG_MINS;
+  const normal = peak ? {
+    meetings: Math.ceil((peak.meetings * cMeetingMins) / 60),
+    serviceDesks: Math.ceil((peak.bezhot * cWalkinMins) / 60),
+    chairs: Math.max(PEAK_MODEL.MIN_CHAIRS,
+      Math.ceil((peak.arrivals * PEAK_MODEL.COMPANION_FACTOR * PEAK_MODEL.WAIT_MINS) / 60)),
+    fasttracks: Math.max(PEAK_MODEL.MIN_FASTTRACKS,
+      Math.ceil((peak.walkins * PEAK_MODEL.FASTTRACK_SHARE * PEAK_MODEL.FASTTRACK_MINS) / 60)),
+  } : {};
 
   const items = [
     item("meetings", "Místa na sjednanou schůzku (jednací místnosti)", "místo na schůzku",
       Math.ceil(stats.meetingZoneWpl || 0), m ? m.rooms.meeting_rooms : null, counts.meetings,
-      "Tolik klientů může naráz sedět s bankéřem u sjednané schůzky."),
+      "Tolik klientů může naráz sedět s bankéřem u sjednané schůzky.", normal.meetings),
     item("serviceDesks", "Servisní místa (Lenka, Theke — obsluha na hale)", "servisní místo",
       Math.ceil(stats.serviceZoneWpl || 0), m ? m.rooms.service_desks : null, counts.serviceDesks,
-      "Tolik lidí naráz obsluhuje klienty, kteří přijdou bez objednání."),
+      "Tolik lidí naráz obsluhuje klienty, kteří přijdou bez objednání.", normal.serviceDesks),
     item("chairs", "Židle v čekací zóně", "židle v čekací zóně",
       stats.recommendedChairs, null, counts.chairs,
-      "Tolik klientů naráz sedí a čeká, než na ně přijde řada."),
+      "Tolik klientů naráz sedí a čeká, než na ně přijde řada.", normal.chairs),
     item("fasttracks", "Fast tracky na hale", "fast track",
       stats.recommendedFasttracks, null, counts.fasttracks,
-      "Místa pro rychlé bezhotovostní vyřízení, které trvá pár minut."),
+      "Místa pro rychlé bezhotovostní vyřízení, které trvá pár minut.", normal.fasttracks),
     item("backoffice", "Kancelářská místa v zázemí", "kancelářské místo v zázemí",
       Math.ceil(stats.backofficeZoneWpl || 0), null, counts.backoffice,
       "Místa na práci, u které bankéř nepotřebuje klienta."),
@@ -1805,15 +1820,21 @@ function computeCapacityCheck({ stats, visitor, calcResult, layoutRows }) {
   const people = [];
   if (m && m.mc) {
     const presence = m.mc.presencePct / 100;
+    // Běžná poptávka = příchody v nejsilnější hodině × doba obsluhy; P95 z Monte
+    // Carla je stejná hodnota s rezervou na silný den.
+    const normalOb = m.mc.rows.reduce((a, r) => Math.max(a, ((r.lamOnline + r.lamFyzicka) * cMeetingMins) / 60), 0);
+    const normalSvc = m.mc.rows.reduce((a, r) => Math.max(a, (r.lamBezhot * cWalkinMins) / 60), 0);
     people.push({
       key: "ob", label: "Bankéři na schůzky (obchodní)",
-      need: m.mc.peakP95Ob, have: bankerFte.sales * presence, fte: bankerFte.sales, presence,
+      need: m.mc.peakP95Ob, needNormal: Math.min(normalOb, m.mc.peakP95Ob),
+      have: bankerFte.sales * presence, fte: bankerFte.sales, presence,
       plain: "Kolik bankéřů musí být ve špičce naráz u klientů.",
     });
     if (bankerFte.service > 0 || m.mc.peakP95Svc > 0) {
       people.push({
         key: "bkp", label: "Servisní zóna (bankéři klientské péče)",
-        need: m.mc.peakP95Svc, have: bankerFte.service * presence, fte: bankerFte.service, presence,
+        need: m.mc.peakP95Svc, needNormal: Math.min(normalSvc, m.mc.peakP95Svc),
+        have: bankerFte.service * presence, fte: bankerFte.service, presence,
         plain: "Kolik lidí musí ve špičce naráz obsluhovat rychlé požadavky.",
       });
     }
@@ -1917,6 +1938,168 @@ function readLayoutFormRows(container) {
   return rows;
 }
 
+/* ------------- Graf kapacity proti špičce (bullet chart) ------------------- */
+// Jeden řádek = jeden druh místa nebo lidí. Barevný pruh je to, co je
+// k dispozici (v layoutu / na place), svislé značky ukazují, kolik je potřeba
+// v běžné špičce a kolik v silný den (P95). Na první pohled je vidět, jestli
+// pruh za značky dosáhne.
+
+// Připraví řádky grafu ze společné struktury computeCapacityCheck.
+function capacityChartRows(check) {
+  const rows = check.items.map((it) => ({
+    label: it.label,
+    normal: it.needNormal,
+    p95: it.need,
+    capacity: it.have,
+    status: it.status,
+    unit: "ks",
+    decimals: 0,
+  }));
+  check.people.forEach((p) => {
+    rows.push({
+      label: p.label,
+      normal: p.needNormal === undefined ? p.need : p.needNormal,
+      p95: p.need,
+      capacity: p.have,
+      status: p.status,
+      unit: "lidí",
+      decimals: 1,
+    });
+  });
+  return rows;
+}
+
+function capacityBarColor(status) {
+  return status === "ok" ? "#0bb43f" : status === "tight" ? "#e0a112" : "#d03636";
+}
+
+// Všechny řádky mají stejné měřítko: 100 % = potřeba na silný den. Svislá plná
+// čára je proto u všech řádků na stejném místě a stačí se podívat, jestli za ni
+// barevný pruh dosáhne. Osa jde do 150 % potřeby.
+const CAPCHART_SCALE = 1.5;
+
+function capacityChartPct(value, p95) {
+  const base = (p95 || 1) * CAPCHART_SCALE;
+  return Math.max(0, Math.min(100, (value / base) * 100));
+}
+
+function renderCapacityChartHtml(check) {
+  const rows = capacityChartRows(check);
+  if (!rows.length) return "";
+  const num = (v, d) => (d ? v.toFixed(1) : String(Math.round(v)));
+  const targetPct = 100 / CAPCHART_SCALE; // poloha značky „silný den“ (66.7 %)
+
+  const barsHtml = rows.map((r) => {
+    const pct = (v) => `${capacityChartPct(v, r.p95).toFixed(1)}%`;
+    const meta = CAPACITY_STATUS_META[r.status] || CAPACITY_STATUS_META.none;
+    const coverage = r.p95 > 0 ? Math.round((r.capacity / r.p95) * 100) : 100;
+    return `<div class="capchart-row">
+      <div class="capchart-label">${esc(r.label)}</div>
+      <div class="capchart-track">
+        <div class="capchart-zone" style="left:${pct(r.normal)}; width:${(targetPct - capacityChartPct(r.normal, r.p95)).toFixed(1)}%;"></div>
+        <div class="capchart-bar" style="width:${pct(r.capacity)}; background:${capacityBarColor(r.status)};"></div>
+        <div class="capchart-mark capchart-mark-normal" style="left:${pct(r.normal)};"
+          title="Běžná špička: ${num(r.normal, r.decimals)}"></div>
+        <div class="capchart-mark capchart-mark-p95" style="left:${targetPct.toFixed(1)}%;"
+          title="Silný den: ${num(r.p95, r.decimals)}"></div>
+      </div>
+      <div class="capchart-value">
+        <strong>${num(r.capacity, r.decimals)}</strong> / ${num(r.p95, r.decimals)} ${esc(r.unit)}
+        <span class="muted">(${coverage} %)</span>
+        <span class="capchart-icon">${meta.icon}</span>
+      </div>
+    </div>`;
+  }).join("");
+
+  return `<div class="capchart">
+    <div class="capchart-legend">
+      <span><i class="capchart-key-bar"></i> kolik je k dispozici (layout / lidé na place)</span>
+      <span><i class="capchart-key-normal"></i> potřeba v běžné špičce</span>
+      <span><i class="capchart-key-p95"></i> potřeba v silný den (1 den z 20)</span>
+      <span><i class="capchart-key-zone"></i> pásmo mezi nimi</span>
+    </div>
+    ${barsHtml}
+    <div class="capchart-row capchart-axis">
+      <div class="capchart-label"></div>
+      <div class="capchart-track">
+        <span style="left:0;">0</span>
+        <span style="left:${targetPct.toFixed(1)}%;">potřeba na silný den</span>
+        <span style="left:100%;">+50 %</span>
+      </div>
+      <div class="capchart-value"></div>
+    </div>
+    <p class="muted" style="margin:8px 0 0;">Všechny řádky mají stejné měřítko: svislá plná čára je potřeba
+      na silný den. Pruh za čárou = kapacita stačí. Pruh mezi tečkovanou a plnou čarou = běžný den v pohodě,
+      silný den těsný. Pruh před tečkovanou čarou = nestačí ani běžná špička.</p>
+  </div>`;
+}
+
+// Stejný graf do PDF — obdélníky a svislé značky.
+function drawCapacityChartPdf(pdf, startY, check, marginX, pageBottom) {
+  const rows = capacityChartRows(check);
+  if (!rows.length) return startY;
+  let y = startY;
+  const labelW = 56;
+  const valueW = 41;
+  const trackX = marginX + labelW;
+  const trackW = 182 - labelW - valueW;
+  const rowH = 7.4;
+  const barH = 4.4;
+  const num = (v, d) => (d ? v.toFixed(1) : String(Math.round(v)));
+
+  const need = rows.length * rowH + 16;
+  if (y + need > pageBottom) { pdf.addPage(); y = 18; }
+
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
+  pdf.text("Kapacita proti špičce — jedním pohledem", marginX, y); y += 5.5;
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7);
+  pdf.setTextColor(120, 120, 120);
+  pdf.text("Pruh = kolik je k dispozici · tečkovaná značka = běžná špička · plná značka = potřeba na silný den "
+    + "(1 den z 20, u všech řádků na stejném místě)", marginX, y);
+  pdf.setTextColor(0, 0, 0);
+  y += 4;
+
+  rows.forEach((r) => {
+    if (y + rowH > pageBottom) { pdf.addPage(); y = 18; }
+    const xOf = (v) => trackX + (capacityChartPct(v, r.p95) / 100) * trackW;
+
+    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.2);
+    pdf.text(r.label, marginX, y + 3.4, { maxWidth: labelW - 2 });
+
+    // dráha
+    pdfFill(pdf, "#eef2f9");
+    pdf.rect(trackX, y, trackW, barH, "F");
+    // pásmo mezi běžnou špičkou a silným dnem
+    const zoneW = xOf(r.p95) - xOf(r.normal);
+    const coverage = r.p95 > 0 ? Math.round((r.capacity / r.p95) * 100) : 100;
+    if (zoneW > 0.2) {
+      pdfFill(pdf, "#dbe6f7");
+      pdf.rect(xOf(r.normal), y, zoneW, barH, "F");
+    }
+    // kapacita
+    pdfFill(pdf, capacityBarColor(r.status));
+    pdf.rect(trackX, y, Math.max(xOf(r.capacity) - trackX, 0.3), barH, "F");
+    // značky
+    pdfStroke(pdf, "#475569", 0.4);
+    pdfSetDash(pdf, [0.8, 0.8]);
+    pdf.line(xOf(r.normal), y - 0.7, xOf(r.normal), y + barH + 0.7);
+    pdfSetDash(pdf, []);
+    pdfStroke(pdf, "#1c2530", 0.6);
+    pdf.line(xOf(r.p95), y - 1, xOf(r.p95), y + barH + 1);
+
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(7.2);
+    pdf.setTextColor(0, 0, 0);
+    const icon = r.status === "ok" ? "OK" : r.status === "tight" ? "těsné" : "chybí";
+    pdf.text(`${num(r.capacity, r.decimals)} / ${num(r.p95, r.decimals)} ${r.unit} (${coverage} %) ${icon}`,
+      trackX + trackW + 2, y + 3.4, { maxWidth: valueW - 1 });
+    pdf.setLineWidth(0.2);
+    pdf.setDrawColor(0, 0, 0);
+    y += rowH;
+  });
+
+  return y + 4;
+}
+
 function renderCapacityCheckHtml(check) {
   const intro = capacityIntroLines(check).map((l) => `<p>${l}</p>`).join("");
   const v = CAPACITY_STATUS_META[check.verdict.status];
@@ -1966,6 +2149,7 @@ function renderCapacityCheckHtml(check) {
   return `<div class="cap-box">
     <h3>Vejde se to? Srozumitelné shrnutí</h3>
     <div class="cap-verdict ${v.cls}">${v.icon} ${esc(check.verdict.text)}</div>
+    ${renderCapacityChartHtml(check)}
     <div class="cap-intro">${intro}</div>
     <div class="table-wrap"><table class="visitor-table cap-table">
       <thead><tr><th>Co</th><th>Kolik je potřeba ve špičce</th><th>Kolik je v layoutu</th><th>Jak to vypadá</th></tr></thead>
@@ -2244,6 +2428,7 @@ function computePeakModel(metrics) {
   if (!metrics || !metrics.peakHour) return null;
   const arrivals = metrics.peakHour.total;
   const walkins = metrics.hours.reduce((a, r) => Math.max(a, r.walkins), 0);
+  const bezhot = metrics.hours.reduce((a, r) => Math.max(a, r.bezhot), 0);
   const meetings = metrics.hours.reduce((a, r) => Math.max(a, r.meetings), 0);
   const arrivalsP95 = peakP95(arrivals);
   const walkinsP95 = peakP95(walkins);
@@ -2252,7 +2437,7 @@ function computePeakModel(metrics) {
   return {
     hour: metrics.peakHour.hour,
     arrivals, arrivalsP95,
-    walkins, walkinsP95,
+    walkins, walkinsP95, bezhot, bezhotP95: peakP95(bezhot),
     meetings, meetingsP95: peakP95(meetings),
     chairsRaw, fasttracksRaw,
     chairs: Math.max(PEAK_MODEL.MIN_CHAIRS, Math.ceil(chairsRaw)),
@@ -3588,6 +3773,9 @@ function drawCapacityCheckPdf(pdf, startY, result, stats, marginX, pageBottom) {
   verdictLines.forEach((l) => { pdf.text(l, marginX + 3, vy); vy += 5; });
   pdf.setTextColor(0, 0, 0);
   y += boxH + 5;
+
+  // Graf kapacity proti špičce
+  y = drawCapacityChartPdf(pdf, y, check, marginX, pageBottom);
 
   // Slovní vysvětlení špičky
   pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(9);
