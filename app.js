@@ -3149,7 +3149,7 @@ function computeVisitorMetrics(visitor) {
     if (!peakHour || row.total > peakHour.total) peakHour = row;
   }
   const dayTotal = hours.reduce((a, r) => a + r.total, 0);
-  return {
+  const metrics = {
     consts, rooms, hours, dayTotal,
     peakHour: peakHour && peakHour.total > 0 ? peakHour : null,
     maxHourTotal: hours.reduce((a, r) => Math.max(a, r.total), 0),
@@ -3160,6 +3160,77 @@ function computeVisitorMetrics(visitor) {
     mcBoost: d.mc_boost ? summarizeVisitorMc(d.mc_boost, consts) : null,
     d,
   };
+
+  // Doporučený počet míst ve třech variantách; ve zbytku aplikace i sestavy se
+  // pracuje s variantou Monte Carlo a) (pokud ji report pro pobočku má).
+  metrics.roomVariants = computeRoomVariants(metrics);
+  const primary = metrics.roomVariants.primary;
+  metrics.rooms = { ...rooms, meeting_rooms: primary.meetingRooms, service_desks: primary.serviceDesks,
+    variantKey: primary.key, variantLabel: primary.label };
+  return metrics;
+}
+
+/* --------- Doporučený počet míst ve třech variantách ----------------------- */
+// 1) Reálná data — skutečné návštěvy: průměrný den (propustnost proti otevírací
+//    době) i špička s rezervou na silný den (λ + 1.645·√λ). Doporučuje se ta
+//    vyšší, tedy špička.
+// 2) Monte Carlo a) — základní simulace z reportu: špičková P95 poptávka
+//    v FTE za hodinu = tolik míst musí být obsazeno naráz.
+// 3) Monte Carlo b) — stejná simulace s návštěvností vyšší o 20 %.
+function computeRoomVariants(metrics) {
+  const { consts, rooms, opening, d } = metrics;
+  const mtgMins = consts.MEETING_MINS ?? VISITOR_CONSTS_DEFAULT.MEETING_MINS;
+  const walkMins = consts.WALKIN_AVG_MINS ?? VISITOR_CONSTS_DEFAULT.WALKIN_AVG_MINS;
+  const variants = [];
+
+  // 1) Reálná data
+  const openMinutes = (opening && opening.hoursPerWeek && opening.openDaysPerWeek)
+    ? (opening.hoursPerWeek / opening.openDaysPerWeek) * 60 : null;
+  let avgMeetingRooms = null;
+  let avgServiceDesks = null;
+  let avgDetail = "";
+  if (openMinutes && d.by_type && d.n_days) {
+    const perDay = (n) => (Number(n) || 0) / d.n_days;
+    const meetingsDay = perDay(d.by_type.online) + perDay(d.by_type.fyzicka);
+    const walkinsDay = perDay(d.by_type.bezhot);
+    avgMeetingRooms = Math.ceil((meetingsDay * mtgMins) / openMinutes);
+    avgServiceDesks = Math.ceil((walkinsDay * walkMins) / openMinutes);
+    avgDetail = `průměrný den: ${vFmt1(meetingsDay)} schůzek × ${mtgMins} min a ${vFmt1(walkinsDay)} `
+      + `bezhotovostních × ${walkMins} min proti ${Math.round(openMinutes)} min otevřeno `
+      + `→ ${avgMeetingRooms} / ${avgServiceDesks}`;
+  }
+  variants.push({
+    key: "real",
+    label: "Reálná data (skutečné návštěvy a kapacita)",
+    short: "reálná data",
+    meetingRooms: rooms.meeting_rooms,
+    serviceDesks: rooms.service_desks,
+    detail: `špička: λ ${vFmt2(rooms.peak_mtg_lam)} → P95 ${vFmt2(rooms.p95_mtg)} × ${mtgMins} min ÷ 60 `
+      + `a λ ${vFmt2(rooms.peak_bezhot_lam)} → P95 ${vFmt2(rooms.p95_bezhot)} × ${walkMins} min ÷ 60`
+      + (avgDetail ? `; ${avgDetail}` : ""),
+    avgMeetingRooms, avgServiceDesks,
+  });
+
+  // 2) a 3) Monte Carlo — kolik míst musí být naráz obsazeno ve špičce
+  const mcVariant = (mc, key, label, short, note) => {
+    if (!mc) return null;
+    return {
+      key, label, short,
+      meetingRooms: Math.ceil(mc.peakP95Ob),
+      serviceDesks: Math.ceil(mc.peakP95Svc),
+      detail: `špičková P95 poptávka ze simulace: ${vFmt1(mc.peakP95Ob)} schůzek naráz`
+        + `${mc.peakP95Svc > 0 ? ` a ${vFmt1(mc.peakP95Svc)} obsluh bez objednání` : ""}`
+        + `${note ? ` (${note})` : ""}`,
+    };
+  };
+  const mcA = mcVariant(metrics.mc, "mcA", "Monte Carlo — varianta a) základní", "Monte Carlo a)",
+    `${vFmtInt(metrics.mc ? metrics.mc.nIter : 0)} simulací`);
+  const mcB = mcVariant(metrics.mcBoost, "mcB", "Monte Carlo — varianta b) návštěvnost +20 %", "Monte Carlo b)",
+    "stejná simulace s o 20 % vyšší návštěvností");
+  if (mcA) variants.push(mcA);
+  if (mcB) variants.push(mcB);
+
+  return { variants, primary: mcA || variants[0], hasMc: !!mcA };
 }
 
 /* --------------------------- Zobrazení v aplikaci -------------------------- */
@@ -3195,13 +3266,14 @@ function renderVisitorSectionHtml(visitor, options = {}) {
     d.has_svc ? `servisní zóna ${vFmt1(d.svc_fte)} FTE` : "bez servisní zóny",
   ].filter(Boolean);
 
+  const primaryLabel = m.roomVariants.primary.short || m.roomVariants.primary.label;
   const cards = `<div class="visitor-cards">
     <div class="vcard"><div class="vcard-l">Doporučené zasedací místnosti</div>
       <div class="vcard-v" style="color:#1d4ed8;">${vFmtInt(rooms.meeting_rooms)}</div>
-      <div class="vcard-s">P95 schůzek ve špičce</div></div>
+      <div class="vcard-s">dle ${esc(primaryLabel)}</div></div>
     <div class="vcard"><div class="vcard-l">Doporučená servisní místa</div>
       <div class="vcard-v" style="color:#0891b2;">${vFmtInt(rooms.service_desks)}</div>
-      <div class="vcard-s">P95 walk-inů ve špičce</div></div>
+      <div class="vcard-s">dle ${esc(primaryLabel)}</div></div>
     <div class="vcard"><div class="vcard-l">Nejsilnější hodina</div>
       <div class="vcard-v">${m.peakHour ? esc(visitorHourLabel(m.peakHour.hour)) : "—"}</div>
       <div class="vcard-s">${m.peakHour ? `${vFmt1(m.peakHour.total)} návštěv/hod` : "bez dat o časech"}</div></div>
@@ -3212,25 +3284,23 @@ function renderVisitorSectionHtml(visitor, options = {}) {
 
   const mtgMins = m.consts.MEETING_MINS ?? VISITOR_CONSTS_DEFAULT.MEETING_MINS;
   const walkMins = m.consts.WALKIN_AVG_MINS ?? VISITOR_CONSTS_DEFAULT.WALKIN_AVG_MINS;
-  const roomsTable = `<div class="table-wrap"><table class="visitor-table">
-    <thead><tr><th>Skupina návštěv</th><th>λ špičkové hodiny</th><th>+1.645·√λ</th><th>P95</th>
-      <th>Obsluha</th><th>Potřeba míst</th></tr></thead>
-    <tbody>
-      <tr><td>Schůzky (fyzická + online) → zasedací místnosti</td>
-        <td class="num">${vFmt2(rooms.peak_mtg_lam)}</td><td class="num">${vFmt2(rooms.delta_mtg)}</td>
-        <td class="num">${vFmt2(rooms.p95_mtg)}</td><td class="num">${mtgMins} min</td>
-        <td class="num"><strong>${vFmtInt(rooms.meeting_rooms)}</strong>
-          <span class="muted">(⌈${vFmt2((rooms.p95_mtg * mtgMins) / 60)}⌉)</span></td></tr>
-      <tr><td>Bezhotovostní obsluha (walk-in) → servisní místa</td>
-        <td class="num">${vFmt2(rooms.peak_bezhot_lam)}</td><td class="num">${vFmt2(rooms.delta_bezhot)}</td>
-        <td class="num">${vFmt2(rooms.p95_bezhot)}</td><td class="num">${walkMins} min</td>
-        <td class="num"><strong>${vFmtInt(rooms.service_desks)}</strong>
-          <span class="muted">(⌈${vFmt2((rooms.p95_bezhot * walkMins) / 60)}⌉)</span></td></tr>
-    </tbody></table></div>
-    <p class="muted">λ = průměrné příchody v nejfrekventovanější hodině · P95 = λ + 1.645·√λ ·
-      počet míst = ⌈P95 × minuty obsluhy ÷ 60⌉.
-      ${rooms.derived ? "Report u této pobočky doporučení neuvádí — hodnoty jsou dopočítané v aplikaci stejným vzorcem z návštěv po hodinách."
-        : "Hodnoty jsou přebrané přímo z reportu."}</p>`;
+  const rv = m.roomVariants;
+  const roomsTable = `<h4>Doporučený počet míst — tři varianty</h4>
+    <div class="table-wrap"><table class="visitor-table">
+      <thead><tr><th>Varianta</th><th>Zasedací místnosti</th><th>Servisní místa</th><th>Z čeho vychází</th></tr></thead>
+      <tbody>${rv.variants.map((v) => `<tr class="${v.key === rv.primary.key ? "visitor-peak" : ""}">
+        <td><strong>${esc(v.label)}</strong>${v.key === rv.primary.key
+          ? ' <span class="badge ok">použito v sestavě</span>' : ""}</td>
+        <td class="num"><strong>${vFmtInt(v.meetingRooms)}</strong></td>
+        <td class="num"><strong>${vFmtInt(v.serviceDesks)}</strong></td>
+        <td class="muted">${esc(v.detail)}</td></tr>`).join("")}</tbody>
+    </table></div>
+    <p class="muted">Schůzka se obsluhuje ${mtgMins} min, klient bez objednání ${walkMins} min.
+      λ = průměrné příchody v nejfrekventovanější hodině, P95 = λ + 1.645·√λ (silný den, zhruba 1 den z 20).
+      ${rv.hasMc
+        ? "V dalších částech (kapacitní shrnutí, srovnání s kalkulací, grafy) se pracuje s variantou Monte Carlo a)."
+        : "Report u této pobočky Monte Carlo neuvádí — v dalších částech se pracuje s variantou podle reálných dat."}
+      ${rooms.derived ? "Doporučení ze špičky reálných dat report neuvádí, dopočítalo ho stejným vzorcem v aplikaci." : ""}</p>`;
 
   const compare = stats ? renderVisitorCompareHtml(rooms, stats) : "";
   const bankers = renderVisitorBankersHtml(m, inputRows);
@@ -3755,7 +3825,7 @@ function renderVisitorCompareHtml(rooms, stats) {
   };
   return `<h4>Srovnání s kalkulací</h4>
     <div class="table-wrap"><table class="visitor-table">
-      <thead><tr><th>Prostor</th><th>Kalkulace (WPL z FTE)</th><th>Report (P95 návštěvnosti)</th>
+      <thead><tr><th>Prostor</th><th>Kalkulace (WPL z FTE)</th><th>Doporučení z návštěvnosti</th>
         <th>Rozdíl</th><th></th></tr></thead>
       <tbody>
         ${row("Místa pro jednání s klientem (meeting zone)", stats.meetingZoneWpl, rooms.meeting_rooms,
@@ -4408,30 +4478,31 @@ function drawVisitorPdf(pdf, startY, visitor, marginX, pageBottom, stats, opts) 
   y += 4;
 
   if (recommendations) {
+  const rv = m.roomVariants;
   pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
   newPageIfNeeded(10);
-  pdf.text(`Doporučení prostor: ${rooms.meeting_rooms} zasedacích místností, ${rooms.service_desks} servisních míst`,
-    marginX, y); y += 7;
+  pdf.text(`Doporučení prostor: ${rooms.meeting_rooms} zasedacích místností, ${rooms.service_desks} servisních míst`
+    + ` (${rv.primary.short || rv.primary.label})`, marginX, y); y += 7;
 
   const mtgMins = m.consts.MEETING_MINS ?? VISITOR_CONSTS_DEFAULT.MEETING_MINS;
   const walkMins = m.consts.WALKIN_AVG_MINS ?? VISITOR_CONSTS_DEFAULT.WALKIN_AVG_MINS;
   drawTable(
-    ["Skupina návštěv", "λ špička", "+1.645·√λ", "P95", "Obsluha", "Míst"],
-    [74, 22, 24, 20, 22, 20],
-    [
-      ["Schůzky (fyzická + online)", vFmt2(rooms.peak_mtg_lam), vFmt2(rooms.delta_mtg), vFmt2(rooms.p95_mtg),
-        `${mtgMins} min`, String(rooms.meeting_rooms)],
-      ["Bezhotovostní obsluha (walk-in)", vFmt2(rooms.peak_bezhot_lam), vFmt2(rooms.delta_bezhot),
-        vFmt2(rooms.p95_bezhot), `${walkMins} min`, String(rooms.service_desks)],
-    ],
+    ["Varianta", "Zasedací místnosti", "Servisní místa", "Z čeho vychází"],
+    [46, 26, 24, 86],
+    rv.variants.map((v) => ({
+      vals: [v.label, String(v.meetingRooms), String(v.serviceDesks), v.detail],
+      variant: v.key === rv.primary.key ? "highlight" : null,
+    })),
   );
   y += 3;
   pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.5);
   pdf.setTextColor(120, 120, 120);
-  pdf.splitTextToSize("λ = průměrné příchody v nejfrekventovanější hodině, P95 = λ + 1.645·√λ, "
-    + `počet míst = ⌈P95 × minuty obsluhy ÷ 60⌉. ${rooms.derived
-      ? "Report u této pobočky doporučení neuvádí — dopočítáno v aplikaci stejným vzorcem."
-      : "Hodnoty přebrané z reportu."}`, 182)
+  pdf.splitTextToSize(`Schůzka se obsluhuje ${mtgMins} min, klient bez objednání ${walkMins} min. `
+    + "λ = průměrné příchody v nejfrekventovanější hodině, P95 = λ + 1.645·√λ (silný den, zhruba 1 den z 20). "
+    + (rv.hasMc
+      ? "Ve zbytku sestavy se pracuje s variantou Monte Carlo a) — zvýrazněný řádek."
+      : "Report u této pobočky Monte Carlo neuvádí — ve zbytku sestavy se pracuje s variantou podle reálných dat."),
+    182)
     .forEach((l) => { newPageIfNeeded(5); pdf.text(l, marginX, y); y += 4.2; });
   pdf.setTextColor(0, 0, 0);
   y += 5;
@@ -4442,7 +4513,7 @@ function drawVisitorPdf(pdf, startY, visitor, marginX, pageBottom, stats, opts) 
     pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
     pdf.text("Srovnání s kalkulací", marginX, y); y += 6;
     drawTable(
-      ["Prostor", "Kalkulace (WPL z FTE)", "Report (P95 návštěvnosti)", "Rozdíl"],
+      ["Prostor", "Kalkulace (WPL z FTE)", "Doporučení z návštěvnosti", "Rozdíl"],
       [80, 40, 42, 20],
       [
         ["Místa pro jednání s klientem (meeting zone)", vFmt1(stats.meetingZoneWpl), String(rooms.meeting_rooms),

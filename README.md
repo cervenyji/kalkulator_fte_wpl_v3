@@ -197,13 +197,21 @@ měsíční a denní řady, prodeje, benchmark) se neukládají.
 U výsledku kalkulace (a v detailu v historii) je sekce **„Návštěvnost
 a doporučení prostor“**:
 
-- **Doporučené zasedací místnosti** a **doporučená servisní místa** —
-  hodnoty z reportu, včetně mezivýpočtu: `λ` = průměrné příchody
-  v nejfrekventovanější hodině, `P95 = λ + 1.645·√λ`, počet míst =
-  `⌈P95 × minuty obsluhy ÷ 60⌉` (schůzky 45 min → zasedací místnosti,
-  bezhotovostní walk-in 15 min → servisní místa). U poboček, u kterých report
-  doporučení neuvádí, se dopočítá v aplikaci **stejným vzorcem** z návštěv po
-  hodinách (v seznamu poboček je taková hodnota označená hvězdičkou).
+- **Doporučený počet míst ve třech variantách** — zasedací místnosti i servisní
+  místa vždy zvlášť:
+
+  | Varianta | Z čeho vychází |
+  | --- | --- |
+  | **Reálná data** (skutečné návštěvy a kapacita) | špička: `λ` = průměrné příchody v nejfrekventovanější hodině, `P95 = λ + 1.645·√λ`, počet míst = `⌈P95 × minuty obsluhy ÷ 60⌉` (schůzka 45 min, walk-in 15 min); v detailu je i průměrný den (počet schůzek a walk-inů za den proti otevírací době) |
+  | **Monte Carlo — varianta a)** | špičková P95 poptávka ze simulace reportu: `⌈P95 souběžných schůzek⌉` a `⌈P95 souběžných obsluh⌉` |
+  | **Monte Carlo — varianta b)** | stejná simulace s návštěvností vyšší o 20 % |
+
+  **Ve zbytku aplikace i sestavy (karty nahoře, srovnání s kalkulací, kapacitní
+  shrnutí, graf) se pracuje s variantou Monte Carlo a)** — v tabulce je
+  zvýrazněná. Pokud report pro pobočku Monte Carlo nemá (a tedy zbývá jen první
+  varianta), použije se varianta podle reálných dat; u poboček, kde report
+  neuvádí ani doporučení ze špičky, se dopočítá v aplikaci stejným vzorcem
+  z návštěv po hodinách (v seznamu poboček je taková hodnota s hvězdičkou).
 - **Srovnání s kalkulací** — potřeba WPL pro meeting zone a service zone
   z kalkulace (z časových dotací pozic) proti doporučení z reálné návštěvnosti.
   Kladný rozdíl znamená, že špička návštěvnosti potřebuje víc míst, než vychází
@@ -241,8 +249,9 @@ a doporučení prostor“**:
 Obsah PDF se řídí boxem **„Co se má vygenerovat do PDF“** (viz níže) — skupina
 *Návštěvnost a doporučení prostor* má tři volby:
 
-- **Doporučení prostor a srovnání s kalkulací** — tabulka s mezivýpočtem
-  (λ / P95 / obsluha / počet míst) a srovnávací tabulka.
+- **Doporučení prostor a srovnání s kalkulací** — tabulka všech tří variant
+  (reálná data, Monte Carlo a), Monte Carlo b) +20 %) se zvýrazněnou variantou,
+  se kterou pracuje zbytek sestavy, a srovnávací tabulka s kalkulací.
 - **Grafy Monte Carla** — souhrnné hodnoty a místo hodinové tabulky **dva grafy**:
   *P95 FTE poptávka po hodinách (6h–21h)* (křivka poptávky OB a servisní zóny
   proti kapacitě vykreslené přerušovanou čárou) a *Distribuce celkové denní FTE
