@@ -1505,6 +1505,7 @@ function renderResults(result) {
     </div>
     ${refVersionDetailsHtml(result.refVersionId)}
     ${renderStatsSection(stats)}
+    ${renderYearCapacityHtml(computeYearCapacity({ stats, visitor, calcResult: result }))}
     ${noAbsenceVariantHtml(result)}
     ${visitor ? renderVisitorSectionHtml(visitor, { stats, inputRows: result.inputRows })
       : renderVisitorMissingHtml(result.pobocka_nazev, result.pobocka_id)}
@@ -2306,6 +2307,8 @@ const PDF_OPTION_DEFS = [
   // Ponecháno původní id — používá ho i starší uložené nastavení a testy.
   { key: "includeStats", id: "pdfIncludeStats", group: "calc", def: true,
     label: "Klíčové ukazatele a benchmark" },
+  { key: "yearCapacity", id: "pdfIncYearCapacity", group: "calc", def: true,
+    label: "Roční kapacita — otevírací doba, přítomnost, návštěvy" },
   { key: "warnings", id: "pdfIncWarnings", group: "calc", def: true,
     label: "Upozornění z výpočtu" },
   { key: "includeVisitor", id: "pdfIncludeVisitor", group: "visitor", def: true,
@@ -2769,6 +2772,13 @@ function drawCalculationPdf(pdf, startY, result, options, drawMiddle) {
       : `Zatím není dostatek kalkulací pro benchmark formátu „${stats.formatTyp}“.`, marginX, y);
     pdf.setTextColor(0, 0, 0);
     y += 8;
+  }
+
+  // Roční kapacita — barevné pruhy hned za klíčovými ukazateli.
+  if (opt.yearCapacity) {
+    const visitorForCap = getVisitorForCalculation(result.calculation_key, result.pobocka_id, result.pobocka_nazev);
+    y = drawYearCapacityPdf(pdf, y, computeYearCapacity({ stats, visitor: visitorForCap, calcResult: result }),
+      marginX, pageBottom);
   }
 
   // Sestavení layoutu (jen ve spojené sestavě) — mezi klíčové ukazatele
@@ -3266,6 +3276,247 @@ function renderVisitorSectionHtml(visitor, options = {}) {
   </div>`;
 }
 
+/* ---------- Roční kapacita pobočky (barevný pruh pod kalkulací) ------------ */
+// Tři pruhy na jedné škále (bankéř-hodiny za rok) ukazují, kolik času vlastně
+// je a co ho spotřebuje:
+//   1) otevírací doba × počet bankéřů — hrubý strop,
+//   2) kolik z toho jsou bankéři fakticky přítomni (po odečtení nepřítomnosti),
+//   3) kolik z přítomného času spotřebuje obsluha klientů podle reálných návštěv.
+const YEAR_CAPACITY = {
+  MEETING_SLOT_MINS: 60,   // schůzka 45 min + 15 min příprava
+  WALKIN_MINS: 15,         // obsluha klienta bez objednání
+  DEFAULT_OPEN_DAYS_YEAR: 252,
+  DEFAULT_OPEN_DAYS_WEEK: 5,
+};
+
+function computeYearCapacity({ stats, visitor, calcResult }) {
+  const inputRows = (calcResult && calcResult.inputRows) || [];
+  const bankers = computeBankerFte(inputRows);
+  if (!bankers.total) return null;
+
+  const m = visitor ? computeVisitorMetrics(visitor) : null;
+
+  // Otevírací doba: přednostně z reportu (zná i víkendové pobočky).
+  let openHoursDay = null;
+  let openDaysYear = YEAR_CAPACITY.DEFAULT_OPEN_DAYS_YEAR;
+  let openSource = "";
+  if (m && m.opening && m.opening.hoursPerWeek && m.opening.openDaysPerWeek) {
+    openHoursDay = m.opening.hoursPerWeek / m.opening.openDaysPerWeek;
+    openDaysYear = m.opening.annualOpenDays || YEAR_CAPACITY.DEFAULT_OPEN_DAYS_YEAR;
+    openSource = `report: ${vFmt1(m.opening.hoursPerWeek)} h/týden, ${m.opening.openDaysPerWeek} dnů v týdnu`;
+  } else if (calcResult && Number(calcResult.oteviraci_doba)) {
+    openHoursDay = Number(calcResult.oteviraci_doba) / YEAR_CAPACITY.DEFAULT_OPEN_DAYS_WEEK;
+    openSource = `kalkulace: ${fmt1(Number(calcResult.oteviraci_doba))} h/týden ÷ 5 dnů`;
+  }
+  if (!openHoursDay) return null;
+  const openHoursYear = openHoursDay * openDaysYear;
+
+  // Přítomnost: vážený průměr (1 − nepřítomnost − homeoffice) přes segmenty,
+  // ve kterých jsou bankéři — ze stejné verze referenčních dat jako kalkulace.
+  const version = calcResult && calcResult.refVersionId ? getRefVersionById(calcResult.refVersionId) : null;
+  const absenceFor = (segment) => {
+    if (version) {
+      const [nep, ho] = absenceFromSnapshot(version.absence, segment);
+      return (nep + ho) / 100;
+    }
+    const row = db ? dbAll("SELECT nepritomnost, homeoffice FROM absence WHERE segment = ?", [segment])[0] : null;
+    return row ? ((row.nepritomnost || 0) + (row.homeoffice || 0)) / 100 : 0;
+  };
+  let weighted = 0;
+  bankers.rows.forEach((r) => { weighted += r.fte * (1 - absenceFor(r.segment)); });
+  const presenceFactor = bankers.total > 0 ? weighted / bankers.total : 1;
+
+  const totalHours = bankers.total * openHoursYear;
+  const presentHours = totalHours * presenceFactor;
+  const absentHours = totalHours - presentHours;
+
+  // Obsluha klientů podle reálných dat (přepočtená na rok podle otevíracích dnů).
+  let meetingHours = null;
+  let walkinHours = null;
+  if (m && m.d && m.d.by_type && m.d.n_days) {
+    const perDay = (n) => (Number(n) || 0) / m.d.n_days;
+    const meetingsYear = (perDay(m.d.by_type.online) + perDay(m.d.by_type.fyzicka)) * openDaysYear;
+    const walkinsYear = (perDay(m.d.by_type.bezhot) + perDay(m.d.by_type.hotovost)) * openDaysYear;
+    meetingHours = (meetingsYear * YEAR_CAPACITY.MEETING_SLOT_MINS) / 60;
+    walkinHours = (walkinsYear * YEAR_CAPACITY.WALKIN_MINS) / 60;
+  }
+  const clientHours = meetingHours === null ? null : meetingHours + walkinHours;
+  const restHours = clientHours === null ? null : Math.max(0, presentHours - clientHours);
+
+  return {
+    bankers, openHoursDay, openDaysYear, openHoursYear, openSource,
+    presenceFactor, absencePct: (1 - presenceFactor) * 100,
+    totalHours, presentHours, absentHours,
+    meetingHours, walkinHours, clientHours, restHours,
+    utilPct: clientHours === null || presentHours <= 0 ? null : (clientHours / presentHours) * 100,
+    overloaded: clientHours !== null && clientHours > presentHours,
+  };
+}
+
+const YEAR_CAP_COLORS = {
+  total: "#2770f0",
+  present: "#0bb43f",
+  absent: "#c9d2de",
+  meetings: "#1b57c4",
+  walkins: "#0891b2",
+  rest: "#bfe6cd",
+};
+
+function renderYearCapacityHtml(yc) {
+  if (!yc) return "";
+  const hrs = (v) => `${Math.round(v).toLocaleString("cs-CZ")} h`;
+  const pct = (v) => `${Math.round((v / yc.totalHours) * 100)} %`;
+  const seg = (value, color, label) => `<div class="ycap-seg" style="width:${((value / yc.totalHours) * 100).toFixed(2)}%;
+    background:${color};" title="${esc(label)}: ${hrs(value)}"><span>${esc(label)}</span></div>`;
+
+  const bar3 = yc.clientHours === null
+    ? `<div class="ycap-bar ycap-empty">Bez reportu návštěvnosti nelze spočítat, kolik času spotřebují klienti.</div>`
+    : `<div class="ycap-bar">
+        ${seg(yc.meetingHours, YEAR_CAP_COLORS.meetings, "Schůzky")}
+        ${seg(yc.walkinHours, YEAR_CAP_COLORS.walkins, "Obsluha bez objednání")}
+        ${seg(yc.restHours, YEAR_CAP_COLORS.rest, "Zbývá")}
+      </div>`;
+
+  const rows = [
+    { label: "Otevřeno × bankéři", note: `${vFmtInt(yc.openDaysYear)} otevíracích dnů × ${vFmt1(yc.openHoursDay)} h `
+        + `× ${vFmt1(yc.bankers.total)} FTE bankéřů`,
+      bar: `<div class="ycap-bar">${seg(yc.totalHours, YEAR_CAP_COLORS.total, "Otevírací doba × bankéři")}</div>`,
+      value: hrs(yc.totalHours), sub: "100 %" },
+    { label: "Fakticky přítomni", note: `po odečtení nepřítomnosti a homeoffice (${vFmt1(yc.absencePct)} %)`,
+      bar: `<div class="ycap-bar">${seg(yc.presentHours, YEAR_CAP_COLORS.present, "Na pobočce")}`
+        + `${seg(yc.absentHours, YEAR_CAP_COLORS.absent, "Nepřítomnost")}</div>`,
+      value: hrs(yc.presentHours), sub: pct(yc.presentHours) },
+    { label: "Spotřebují klienti", note: yc.clientHours === null ? "chybí report návštěvnosti"
+        : `schůzky ${hrs(yc.meetingHours)} (60 min/schůzku) + obsluha bez objednání ${hrs(yc.walkinHours)} (15 min)`,
+      bar: bar3,
+      value: yc.clientHours === null ? "—" : hrs(yc.clientHours),
+      sub: yc.clientHours === null ? "" : pct(yc.clientHours) },
+  ];
+
+  const verdict = yc.utilPct === null ? "" : `<div class="ycap-verdict ${yc.overloaded ? "ycap-over"
+    : yc.utilPct > 85 ? "ycap-tight" : "ycap-ok"}">
+    ${yc.overloaded ? "❌" : yc.utilPct > 85 ? "⚠️" : "✅"}
+    Obsluha klientů spotřebuje <strong>${vFmt1(yc.utilPct)} %</strong> času, který jsou bankéři na pobočce.
+    ${yc.overloaded ? "Na tolik klientů kapacita nestačí — něco musí zůstat neobslouženo nebo se přesčas."
+      : yc.utilPct > 85 ? "Zbývá jen malá rezerva na porady, školení a administrativu."
+      : `Zbývá ${hrs(yc.restHours)} na porady, školení, administrativu a rezervu.`}</div>`;
+
+  return `<div class="ycap-box">
+    <h3>Roční kapacita — kolik času je a co ho spotřebuje</h3>
+    <p class="muted">Vše je přepočítané na <strong>bankéř-hodiny za rok</strong> a všechny pruhy mají stejné
+      měřítko (100 % = otevírací doba × počet bankéřů). Otevírací doba ${esc(yc.openSource)}.</p>
+    <div class="ycap-rows">
+      ${rows.map((r) => `<div class="ycap-row">
+        <div class="ycap-label"><strong>${esc(r.label)}</strong><span class="muted">${esc(r.note)}</span></div>
+        ${r.bar}
+        <div class="ycap-value"><strong>${esc(r.value)}</strong><span class="muted">${esc(r.sub)}</span></div>
+      </div>`).join("")}
+    </div>
+    ${verdict}
+  </div>`;
+}
+
+// Stejný pruhový přehled do PDF.
+function drawYearCapacityPdf(pdf, startY, yc, marginX, pageBottom) {
+  if (!yc) return startY;
+  let y = startY;
+  const labelW = 52;
+  const valueW = 28;
+  const trackX = marginX + labelW;
+  const trackW = 182 - labelW - valueW;
+  const hrs = (v) => `${Math.round(v).toLocaleString("cs-CZ")} h`;
+  const wOf = (v) => (v / yc.totalHours) * trackW;
+
+  if (y + 46 > pageBottom) { pdf.addPage(); y = 18; }
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
+  pdf.text("Roční kapacita — kolik času je a co ho spotřebuje", marginX, y); y += 6;
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.5);
+  pdf.setTextColor(120, 120, 120);
+  pdf.splitTextToSize("Vše přepočítané na bankéř-hodiny za rok, všechny pruhy mají stejné měřítko "
+    + `(100 % = otevírací doba × počet bankéřů). Otevírací doba ${yc.openSource}.`, 182)
+    .forEach((l) => { pdf.text(l, marginX, y); y += 4; });
+  pdf.setTextColor(0, 0, 0);
+  y += 2;
+
+  const rows = [
+    { label: "Otevřeno × bankéři",
+      note: `${vFmtInt(yc.openDaysYear)} dnů × ${vFmt1(yc.openHoursDay)} h × ${vFmt1(yc.bankers.total)} FTE`,
+      segs: [[yc.totalHours, YEAR_CAP_COLORS.total]], value: hrs(yc.totalHours), sub: "100 %" },
+    { label: "Fakticky přítomni", note: `nepřítomnost ${vFmt1(yc.absencePct)} %`,
+      segs: [[yc.presentHours, YEAR_CAP_COLORS.present], [yc.absentHours, YEAR_CAP_COLORS.absent]],
+      value: hrs(yc.presentHours), sub: `${Math.round((yc.presentHours / yc.totalHours) * 100)} %` },
+  ];
+  if (yc.clientHours !== null) {
+    rows.push({ label: "Spotřebují klienti", note: "schůzky 60 min · obsluha bez objednání 15 min",
+      segs: [[yc.meetingHours, YEAR_CAP_COLORS.meetings], [yc.walkinHours, YEAR_CAP_COLORS.walkins],
+        [yc.restHours, YEAR_CAP_COLORS.rest]],
+      value: hrs(yc.clientHours), sub: `${Math.round((yc.clientHours / yc.totalHours) * 100)} %` });
+  }
+
+  const rowH = 11;
+  rows.forEach((r) => {
+    if (y + rowH > pageBottom) { pdf.addPage(); y = 18; }
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(7.6);
+    pdf.text(r.label, marginX, y + 3.6, { maxWidth: labelW - 2 });
+    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(6.6);
+    pdf.setTextColor(120, 120, 120);
+    pdf.text(r.note, marginX, y + 7.4, { maxWidth: labelW - 2 });
+    pdf.setTextColor(0, 0, 0);
+
+    pdfFill(pdf, "#eef2f9");
+    pdf.rect(trackX, y, trackW, 6, "F");
+    let cx = trackX;
+    r.segs.forEach(([value, color]) => {
+      const w = wOf(value);
+      if (w <= 0) return;
+      pdfFill(pdf, color);
+      pdf.rect(cx, y, w, 6, "F");
+      cx += w;
+    });
+
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(7.6);
+    pdf.text(r.value, trackX + trackW + 2, y + 3.6);
+    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(6.6);
+    pdf.setTextColor(120, 120, 120);
+    pdf.text(r.sub, trackX + trackW + 2, y + 7.4);
+    pdf.setTextColor(0, 0, 0);
+    y += rowH;
+  });
+
+  // Legenda
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(6.8);
+  let lx = trackX;
+  [["Na pobočce", YEAR_CAP_COLORS.present], ["Nepřítomnost", YEAR_CAP_COLORS.absent],
+    ["Schůzky", YEAR_CAP_COLORS.meetings], ["Bez objednání", YEAR_CAP_COLORS.walkins],
+    ["Zbývá", YEAR_CAP_COLORS.rest]].forEach(([label, color]) => {
+    pdfFill(pdf, color);
+    pdf.rect(lx, y + 0.6, 3, 2.4, "F");
+    pdf.setTextColor(110, 118, 130);
+    pdf.text(label, lx + 4, y + 2.8);
+    lx += 4 + pdf.getTextWidth(label) + 5;
+  });
+  pdf.setTextColor(0, 0, 0);
+  y += 6;
+
+  if (yc.utilPct !== null) {
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(8.5);
+    const [cr, cg, cb] = hexToRgb(yc.overloaded ? "#a41f1f" : yc.utilPct > 85 ? "#8a5c00" : "#0a7a33");
+    const verdictLines = pdf.splitTextToSize(
+      `Obsluha klientů spotřebuje ${vFmt1(yc.utilPct)} % času, který jsou bankéři na pobočce`
+      + `${yc.overloaded ? " — na tolik klientů kapacita nestačí."
+        : yc.utilPct > 85 ? " — rezerva na porady a administrativu je malá."
+        : ` — zbývá ${hrs(yc.restHours)} na porady, školení a administrativu.`}`, 178);
+    // Verdikt se nerozděluje mezi stránky — buď se vejde celý, nebo jde na další.
+    if (y + verdictLines.length * 5 + 4 > pageBottom) { pdf.addPage(); y = 18; }
+    pdf.setTextColor(cr, cg, cb);
+    verdictLines.forEach((l) => { pdf.text(l, marginX, y + 3); y += 5; });
+    pdf.setTextColor(0, 0, 0);
+    y += 3;
+  }
+
+  return y + 3;
+}
+
 /* ------- Tři kontroly kapacity míst pro schůzky (meeting zone) ------------- */
 // Tři nezávislé pohledy na otázku „stačí WPL v meeting zone?“:
 //   1) kapacita bankéřů — každý bankéř má zvládnout 5 schůzek denně,
@@ -3624,23 +3875,27 @@ function showVisitorDetail(pobockaId) {
 // Detaily pobočky a kalkulace vypadají líp oddělené od zbytku sestavy:
 // světle šedý podklad, tmavší šedý text.
 function drawPdfDetailBox(pdf, startY, lines, marginX, pageBottom, width = 182) {
+  const inset = 6;        // odsazení boxíku od okraje stránky
+  const padX = 7;         // vnitřní odsazení textu
+  const boxX = marginX + inset;
+  const boxW = width - inset * 2;
   pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(9);
   const wrapped = [];
-  lines.forEach((l) => pdf.splitTextToSize(l, width - 8).forEach((w) => wrapped.push(w)));
+  lines.forEach((l) => pdf.splitTextToSize(l, boxW - padX * 2).forEach((w) => wrapped.push(w)));
   const lineH = 5;
-  const boxH = wrapped.length * lineH + 5;
-  let y = startY;
+  const boxH = wrapped.length * lineH + 8;
+  let y = startY + 1;
   if (y + boxH > pageBottom) { pdf.addPage(); y = 18; }
   pdf.setFillColor(243, 245, 248);
   pdf.setDrawColor(223, 228, 235);
   pdf.setLineWidth(0.2);
-  pdf.roundedRect(marginX, y, width, boxH, 1.6, 1.6, "FD");
+  pdf.roundedRect(boxX, y, boxW, boxH, 2.2, 2.2, "FD");
   pdf.setTextColor(84, 94, 108);
-  let ty = y + 5.4;
-  wrapped.forEach((l) => { pdf.text(l, marginX + 4, ty); ty += lineH; });
+  let ty = y + 7;
+  wrapped.forEach((l) => { pdf.text(l, boxX + padX, ty); ty += lineH; });
   pdf.setTextColor(0, 0, 0);
   pdf.setDrawColor(0, 0, 0);
-  return y + boxH;
+  return y + boxH + 1;
 }
 
 /* --------------------- Tabulková pomůcka pro PDF --------------------------- */
@@ -5314,6 +5569,7 @@ function showHistoryDetail(calculationKey, loadKey) {
       <tbody>${resultHtml}</tbody></table></div>
     ${refVersionDetailsHtml(refVersionId)}
     ${renderStatsSection(stats)}
+    ${renderYearCapacityHtml(computeYearCapacity({ stats, visitor, calcResult }))}
     ${noAbsenceVariantHtml(calcResult)}
     ${visitor ? renderVisitorSectionHtml(visitor, { stats, inputRows: mappedInputRows })
       : renderVisitorMissingHtml(branch?.pobocka_nazev, branch?.pobocka_id)}

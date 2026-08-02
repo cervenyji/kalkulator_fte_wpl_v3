@@ -275,7 +275,7 @@ změny.
 Kapitoly jdou v PDF v tomto pořadí: hlavička se **světle šedým boxíkem
 s detaily** (název a ID pobočky, otevírací doba, klíče, datum, referenční data)
 → **Přehled pozic z checklistu** → **Souhrnná tabulka (WPL po zónách)** →
-**Klíčové ukazatele a benchmark** → **Sestavení layoutu** (jen ve spojené
+**Klíčové ukazatele a benchmark** → **Roční kapacita** → **Sestavení layoutu** (jen ve spojené
 sestavě) → **Návštěvnost a doporučení prostor** → **Kapacitní shrnutí** →
 upozornění a poznámka.
 
@@ -293,6 +293,7 @@ zůstane i po překreslení výsledku nebo při přepnutí na jinou kalkulaci.
 | Kalkulace | Informace o použitých referenčních datech | ✔ |
 | Kalkulace | Souhrnná tabulka WPL po zónách a doporučení (fasttracky, židle, plocha) | ✔ |
 | Kalkulace | Klíčové ukazatele a benchmark | ✔ |
+| Kalkulace | Roční kapacita — otevírací doba, přítomnost, návštěvy | ✔ |
 | Kalkulace | Upozornění z výpočtu | ✔ |
 | Návštěvnost | Doporučení prostor a srovnání s kalkulací | ✔ |
 | Návštěvnost | Grafy Monte Carla | ✔ |
@@ -303,6 +304,34 @@ zůstane i po překreslení výsledku nebo při přepnutí na jinou kalkulaci.
 
 Pokud pro pobočku nejsou naimportovaná data návštěvnosti, je celá skupina
 „Návštěvnost“ nedostupná a do PDF se nedostane.
+
+## Roční kapacita — kolik času je a co ho spotřebuje
+
+Pod klíčovými ukazateli (a v PDF hned za nimi) je barevný pruhový přehled, ze
+kterého je na první pohled vidět hrubá kapacita pobočky. Všechno je přepočítané
+na **bankéř-hodiny za rok** a všechny tři pruhy mají stejné měřítko
+(100 % = otevírací doba × počet bankéřů):
+
+1. **Otevřeno × bankéři** — `otevírací dny v roce × hodin denně × FTE bankéřů`.
+   Otevírací doba se bere z reportu návštěvnosti (zná i víkendové pobočky),
+   jinak z otevírací doby zadané v kalkulaci (÷ 5 dnů).
+2. **Fakticky přítomni** — kolik z toho zbude po odečtení nepřítomnosti
+   a homeoffice. Procento se bere ze **stejné verze referenčních dat**, se
+   kterou kalkulace vznikla, vážené podle FTE bankéřů v jednotlivých segmentech.
+   Zbytek pruhu je šedá „nepřítomnost“.
+3. **Spotřebují klienti** — kolik z přítomného času padne na obsluhu podle
+   **reálných návštěv z reportu**: schůzky × 60 min (45 + 15 min příprava)
+   + návštěvy bez objednání × 15 min. Zbytek pruhu je volná kapacita na porady,
+   školení a administrativu.
+
+Pod pruhy je jednou větou verdikt (např. *„Obsluha klientů spotřebuje 66.7 %
+času, který jsou bankéři na pobočce — zbývá 4 410 h na porady, školení
+a administrativu.“*), barevně odlišený podle toho, jestli je rezerva dostatečná
+(zeleně), malá (oranžově), nebo kapacita nestačí (červeně).
+
+Bez naimportovaného reportu se vykreslí první dva pruhy a u třetího je uvedeno,
+že bez reportu ho spočítat nelze. Do PDF jde volbou „Roční kapacita — otevírací
+doba, přítomnost, návštěvy“.
 
 ## Kapacitní shrnutí
 
