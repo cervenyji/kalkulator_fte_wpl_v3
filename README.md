@@ -272,6 +272,13 @@ změny.
 
 ## Co se má vygenerovat do PDF (nastavení na jednom místě)
 
+Kapitoly jdou v PDF v tomto pořadí: hlavička se **světle šedým boxíkem
+s detaily** (název a ID pobočky, otevírací doba, klíče, datum, referenční data)
+→ **Přehled pozic z checklistu** → **Souhrnná tabulka (WPL po zónách)** →
+**Klíčové ukazatele a benchmark** → **Sestavení layoutu** (jen ve spojené
+sestavě) → **Návštěvnost a doporučení prostor** → **Kapacitní shrnutí** →
+upozornění a poznámka.
+
 Pod kalkulací (i v detailu kalkulace v historii) je box **„Co se má vygenerovat
 do PDF“**, ve kterém je pohromadě všechno, co lze do PDF zapnout nebo vypnout,
 plus poznámka do PDF a tlačítka pro export. Stejné nastavení používá
@@ -281,7 +288,7 @@ zůstane i po překreslení výsledku nebo při přepnutí na jinou kalkulaci.
 
 | Skupina | Volba | Výchozí |
 | --- | --- | --- |
-| Kalkulace | Srozumitelné shrnutí „Vejde se to?“ | ✔ |
+| Kalkulace | Kapacitní shrnutí | ✔ |
 | Kalkulace | Přehled pozic z checklistu | ✔ |
 | Kalkulace | Informace o použitých referenčních datech | ✔ |
 | Kalkulace | Souhrnná tabulka WPL po zónách a doporučení (fasttracky, židle, plocha) | ✔ |
@@ -292,12 +299,12 @@ zůstane i po překreslení výsledku nebo při přepnutí na jinou kalkulaci.
 | Návštěvnost | Otevírací doba pobočky a denní návštěvy na bankéře | — |
 | Layout (celá sestava) | Kompletní přehled WPL po zónách a segmentech | ✔ |
 | Layout (celá sestava) | Seznam nábytku po zónách a segmentech | ✔ |
-| Layout (celá sestava) | Nábytek připadající na druh zaměstnance | — |
+| Layout (celá sestava) | Analýza segmentů, zón a jejich prvků | ✔ |
 
 Pokud pro pobočku nejsou naimportovaná data návštěvnosti, je celá skupina
 „Návštěvnost“ nedostupná a do PDF se nedostane.
 
-## „Vejde se to?“ — srozumitelné shrnutí
+## Kapacitní shrnutí
 
 Tabulky s P95, λ a Monte Carlem jsou přesné, ale ne každý je čte rád. Nad
 layoutem (v aplikaci) a na začátku PDF kalkulace je proto **srozumitelné
@@ -335,12 +342,25 @@ shrnutí**, které stejná data řekne běžnou řečí a hlavně odpoví na ot�
 5. **A vyjdou na to lidé?** — špičková potřeba bankéřů z Monte Carla proti tomu,
    kolik jich je v kalkulaci reálně na place (zadané FTE mínus dovolené, nemoci
    a homeoffice).
-6. **Co s tím** — seznam konkrétních kroků („Místa na sjednanou schůzku:
+6. **Tři kontroly míst pro schůzky (meeting zone)** — tři nezávislé pohledy na
+   stejnou otázku, každý ve vlastním barevně odlišeném boxu. Schůzka se počítá
+   jako 45 min + 15 min příprava (60 min na jedno místo) a dělí se otevírací
+   dobou pobočky za den (z reportu, jinak z otevírací doby v kalkulaci):
+
+   | Kontrola | Předpoklad | Potřeba míst |
+   | --- | --- | --- |
+   | 1 — kapacita bankéřů | každý bankéř z kalkulace odbaví 5 schůzek denně | `bankéři × 5 × 60 min ÷ otevřeno` |
+   | 2 — klientský model | každý klient pobočky přijde 1× ročně na schůzku | `klienti ÷ otevírací dny × 60 min ÷ otevřeno` |
+   | 3 — reálné návštěvy | skutečné schůzky z reportu návštěvnosti | `schůzky/den × 60 min ÷ otevřeno` (+ potřeba ve špičce) |
+
+   Proti potřebě stojí počet míst v layoutu (nebo WPL meeting zone z kalkulace,
+   pokud layout ještě není sestavený) a každá kontrola má vlastní verdikt.
+7. **Co s tím** — seznam konkrétních kroků („Místa na sjednanou schůzku:
    doplnit 3“).
 
 V aplikaci se shrnutí **přepočítává rovnou při zadávání počtů kusů** do
 layoutu, takže je hned vidět, jestli zadané množství stačí. Do PDF jde volbou
-„Srozumitelné shrnutí „Vejde se to?““ a tiskne se hned za hlavičku kalkulace;
+„Kapacitní shrnutí“ a tiskne se hned za hlavičku kalkulace;
 layout k němu se dohledá v databázi, takže funguje i v samostatném PDF
 kalkulace.
 
@@ -488,6 +508,8 @@ jako **jedna jednotná tabulka**:
 - Prvky, které nepřispívají k WPL, mají ve sloupci „WPL / kus“ pomlčku.
 
 ### Nábytek připadající na druh zaměstnance
+
+*(jen v aplikaci — do PDF se místo něj tiskne analýza segmentů, zón a prvků)*
 
 Pod analýzou je další rozbalovací tabulka, která ukazuje, **kolik kterého nábytku
 připadá na jeden druh zaměstnance** (pozici z checklistu — např. „osobní bankéř
