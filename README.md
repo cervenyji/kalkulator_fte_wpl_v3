@@ -41,14 +41,16 @@ Celou složku je potřeba udržet spolu — `index.html` odkazuje na soubory ve
    z jakých vstupních dat a z jakého důvodu kalkulace vznikla. Formulář pro
    zadání zmizí, aby nepletl — pro další kalkulaci klikněte na „+ Založit
    další kalkulaci“.
-5. Volitelně klikněte na „Exportovat PDF s přehledem WPL“ pro stažení PDF
-   shrnutí — obsahuje přehled všech pozic z checklistu, referenční data (verzi)
-   a nepřítomnost po segmentech, se kterými se počítalo, souhrnnou tabulku a
-   doporučený formát pobočky, počet fasttracků a počet židlí v čekací zóně
-   (stejná logika jako v původní appce).
-6. V kroku 4 „Sestavení layoutu“ přiřaďte konkrétní nábytek do každé zóny
-   s vypočítaným požadavkem WPL a uložte layout — poté lze vyexportovat PDF
-   se sestavou nábytku po zónách a segmentech.
+5. V kroku 4 „Sestavení layoutu“ přiřaďte konkrétní nábytek do každé zóny
+   s vypočítaným požadavkem WPL a uložte layout.
+6. Na konci kalkulace je blok **„Výstup a sestava“** — zvolte rozsah (celá
+   sestava / jen kalkulace / jen návštěvnost / jen layout), co všechno se má
+   vytisknout, a klikněte na „Vygenerovat PDF“. Sestava obsahuje přehled všech
+   pozic z checklistu, referenční data (verzi) a nepřítomnost po segmentech,
+   se kterými se počítalo, souhrnnou tabulku, doporučený formát pobočky, počet
+   fasttracků a počet židlí v čekací zóně (stejná logika jako v původní appce)
+   a podle rozsahu i layout a analýzu návštěvnosti. Ve stejném bloku jsou
+   i tlačítka pro kopírování do schránky a „Potvrdit / uzavřít kalkulaci“.
 
 Databáze se po každé změně (nahrání checklistu, spočítání kalkulace, úprava
 referenčních dat) automaticky ukládá zpět do stejného souboru
@@ -132,6 +134,10 @@ Kliknutím na pobočku se zobrazí seznam všech jejích kalkulací v čase; kli
 na konkrétní kalkulaci pak její detail (vstupní data, výsledek, referenční
 data i sestavený layout).
 
+**Potvrzené (uzavřené) kalkulace mají v seznamu zelený svislý proužek** vlevo
+a světle zelené podbarvení, takže je hned vidět, které jsou hotové a které jsou
+ještě rozpracované (viz „Stav kalkulace“ níže).
+
 ## Vertikální timeline u kalkulace
 
 Vedle výsledku kalkulace je vlevo **svislá osa postupu**, která ukazuje, kde se
@@ -173,15 +179,22 @@ Kalkulace uložené ještě před zavedením této funkce se při připojení da
 automaticky dopočítají, takže se do benchmarku započítá i starší historie.
 
 Jestli se tato sekce dostane do PDF, se řídí volbou „Klíčové ukazatele
-a benchmark“ v boxu [„Co se má vygenerovat do PDF“](#co-se-má-vygenerovat-do-pdf-nastavení-na-jednom-místě).
+a benchmark“ v boxu [„Výstup a sestava“](#výstup-a-sestava-všechno-generování-na-jednom-místě).
 
 ## Kopírování výsledku do schránky (MS Teams, Outlook, Word)
 
-Tlačítkem **„📋 Kopírovat výsledek do schránky“** (u výsledku kalkulace i
-v detailu v historii) se výsledek zkopíruje jako **formátovaná tabulka**.
-Vložením přes Ctrl+V do MS Teams, Outlooku, Wordu nebo Excelu se vloží včetně
-formátování — rámečků, barevného záhlaví, barev segmentů a zvýrazněného řádku
-„Celkem“ — plus tabulka klíčových ukazatelů.
+V boxu **„Výstup a sestava“** na konci kalkulace (i v detailu v historii) jsou
+dvě kopírovací tlačítka:
+
+- **„📋 Kopírovat kalkulaci“** — výsledek kalkulace jako **formátovaná tabulka**
+  (rámečky, barevné záhlaví, barvy segmentů, zvýrazněný řádek „Celkem“) plus
+  tabulka klíčových ukazatelů.
+- **„📋 Kopírovat nábytek po segmentech“** — přehled nábytku z uloženého layoutu
+  po segmentech a zónách (prvek, počet kusů, WPL) včetně součtů za segment
+  a za celou pobočku. Dokud není layout uložený, je tlačítko nedostupné.
+
+Vložením přes Ctrl+V do MS Teams, Outlooku, Wordu nebo Excelu se obojí vloží
+včetně formátování.
 
 Do schránky se zapisují dva formáty současně:
 
@@ -275,7 +288,7 @@ a doporučení prostor“**:
 
 ### Co jde do PDF
 
-Obsah PDF se řídí boxem **„Co se má vygenerovat do PDF“** (viz níže) — skupina
+Obsah PDF se řídí boxem **„Výstup a sestava“** (viz níže) — skupina
 *Návštěvnost a doporučení prostor* má tři volby:
 
 - **Doporučení prostor a srovnání s kalkulací** — tabulka všech tří variant
@@ -308,7 +321,40 @@ Pokud report danou pobočku neobsahuje (nebo ještě není naimportovaný žádn
 sekce jen upozorní, že doporučení prostor chybí, a kalkulace proběhne beze
 změny.
 
-## Co se má vygenerovat do PDF (nastavení na jednom místě)
+## Výstup a sestava (všechno generování na jednom místě)
+
+**Poslední blok kalkulace** (a stejně tak detailu v historii) se jmenuje
+**„Výstup a sestava“** a je v něm pohromadě všechno, čím se z kalkulace něco
+dostane „venku“ — nikde jinde v aplikaci už žádné exportní tlačítko není:
+
+| Prvek | K čemu je |
+| --- | --- |
+| **Rozsah PDF** (4 přepínače) | co se má vygenerovat — viz tabulka níže |
+| **Zaškrtávátka po skupinách** | jednotlivé kapitoly v rámci zvoleného rozsahu |
+| **Poznámka do PDF** | volný text, který se vytiskne na konec sestavy |
+| **„Vygenerovat PDF“** | vytvoří PDF podle zvoleného rozsahu a zaškrtávátek |
+| **„📋 Kopírovat kalkulaci“** | výsledek do schránky (Teams, Word, Excel) |
+| **„📋 Kopírovat nábytek po segmentech“** | přehled nábytku z layoutu do schránky |
+| **„Potvrdit / uzavřít kalkulaci“** | přepnutí stavu + štítek se stavem |
+
+Rozsahy PDF:
+
+| Rozsah | Co je v souboru | Název souboru |
+| --- | --- | --- |
+| **Celá sestava** | kalkulace + návštěvnost + layout | `sestava_<calculation_key>.pdf` |
+| **Jen kalkulace** | kalkulace bez návštěvnosti a bez layoutu | `kalkulace_<…>.pdf` |
+| **Jen návštěvnost a doporučení prostor** | pouze analýza návštěv | `navstevnost_<…>.pdf` |
+| **Jen sestavení layoutu** | pouze layout a jeho přehledy | `layout_<…>.pdf` |
+
+Rozsah, pro který nejsou data (návštěvnost bez naimportovaného reportu, layout
+bez uložení), je nedostupný a nelze ho zvolit. Skupiny zaškrtávátek, které do
+zvoleného rozsahu nepatří, se při exportu ignorují — není tedy potřeba nic
+odškrtávat. Nastavení i poznámku si aplikace pamatuje, takže zůstanou i po
+překreslení výsledku nebo po uložení layoutu.
+
+**Bloky v aplikaci jdou ve stejném pořadí jako body levé timeline:** kalkulace
+a výsledek → ukazatele a analýzy → sestavení layoutu → kapacitní shrnutí →
+výstup a sestava.
 
 Kapitoly jdou v PDF v tomto pořadí: hlavička se **světle šedým boxíkem
 s detaily** (název a ID pobočky, otevírací doba, klíče, datum, referenční data)
@@ -317,12 +363,7 @@ s detaily** (název a ID pobočky, otevírací doba, klíče, datum, referenčn�
 sestavě) → **Návštěvnost a doporučení prostor** → **Kapacitní shrnutí** →
 upozornění a poznámka.
 
-Pod kalkulací (i v detailu kalkulace v historii) je box **„Co se má vygenerovat
-do PDF“**, ve kterém je pohromadě všechno, co lze do PDF zapnout nebo vypnout,
-plus poznámka do PDF a tlačítka pro export. Stejné nastavení používá
-**„Exportovat PDF s kalkulací“**, **„Generovat celou sestavu“** (kalkulace +
-layout) i **„Exportovat PDF layoutu“**. Nastavení si aplikace pamatuje, takže
-zůstane i po překreslení výsledku nebo při přepnutí na jinou kalkulaci.
+Zapnout či vypnout lze tyto kapitoly:
 
 | Skupina | Volba | Výchozí |
 | --- | --- | --- |
@@ -601,15 +642,12 @@ pravidel či ručně). Na pozice je rozdělit nelze — v takové zóně žádn�
 negeneruje, takže neexistuje podíl, kterým by se dělil. Vykazují se proto zvlášť,
 aby součty odpovídaly skutečnému obsahu layoutu a žádný prvek „nezmizel“.
 
-### Generovat celou sestavu (kalkulace + layout v jednom PDF)
+### Export layoutu do PDF
 
-Tlačítkem **„Generovat celou sestavu (kalkulace + layout)“** se vyexportuje
-jeden PDF dokument, který obsahuje obojí — nejprve celou kalkulaci FTE → WPL
-(stejný obsah jako „Exportovat PDF s přehledem WPL“, včetně zaškrtnuté volby
-klíčových ukazatelů a poznámky) a na další stránce sestavení layoutu (včetně
-kompletního přehledu WPL po zónách a segmentech). Soubor se jmenuje
-`sestava_<calculation_key>.pdf`. Samostatné exporty kalkulace i layoutu zůstávají
-zachované.
+Layout nemá vlastní exportní tlačítko — vytiskne se z boxu **„Výstup a sestava“**
+na konci kalkulace, buď samostatně (rozsah „Jen sestavení layoutu“), nebo jako
+součást celé sestavy společně s kalkulací a návštěvností. Podrobně viz
+„Výstup a sestava“ výše.
 
 ## Barevné schéma a ikony segmentů
 
@@ -621,10 +659,30 @@ je vložený font DejaVu Sans neobsahuje). Barvy, ikony i pořadí segmentů lze
 
 ## Stav kalkulace: rozpracovaná / potvrzená
 
-Každá spočítaná kalkulace má stav — nově vytvořená je vždy **„Rozpracovaná“**. U výsledku kalkulace
-i v detailu v historii je tlačítko, kterým lze kalkulaci **potvrdit / uzavřít** (nebo naopak vrátit
-zpět do rozpracované). Stav se zobrazuje jako štítek u výsledku, v detailu kalkulace i v přehledu
-kalkulací dané pobočky v historii.
+Každá spočítaná kalkulace má stav — nově vytvořená je vždy **„Rozpracovaná“**. Tlačítko
+**„Potvrdit / uzavřít kalkulaci“** je **na samém konci**, v boxu „Výstup a sestava“ (v aplikaci
+i v detailu v historii) — tedy až za nastavením generování, jako poslední krok. Stejným tlačítkem
+lze kalkulaci vrátit zpět do rozpracované.
+
+Stav se zobrazuje jako štítek u výsledku, v boxu „Výstup a sestava“, v detailu kalkulace i v přehledu
+kalkulací dané pobočky v historii — a **potvrzené kalkulace mají v historii navíc zelený svislý
+proužek** vlevo u položky, takže jsou v seznamu vidět na první pohled.
+
+## Kdo dělá co: role podle názvů pozic
+
+Všechna čísla „na bankéře“ (schůzky, servisní operace, pokladna) se počítají
+podle **konkrétních názvů pozic z checklistu**, ne podle segmentu:
+
+| Role | Pozice | Kde se používá |
+| --- | --- | --- |
+| **Schůzky (osobní bankéři)** | `osobní bankéř - junior`, `osobní bankéř - medior`, `osobní bankéř - senior`, `osobní bankéř - master` | denní návštěvy a schůzky na bankéře, tři kontroly kapacity jednaček, řádek „bankéři na schůzky“ v kapacitním shrnutí |
+| **Servisní operace** | hlavně `bankéř klientské péče - medior`, dále `osobní bankéř - junior` | obsluha na hale (Lenka / Theke), servisní místa a fast tracky |
+| **Pokladna** | `bankéř klientské péče - junior` | jen tam, kde je pokladna a pobočka **není** cashless |
+
+`osobní bankéř - junior` se tak objevuje ve dvou rolích (schůzky i servis), ale
+do celkového počtu lidí na hale se počítá **jen jednou**. Pozice, které nejsou
+v tabulce (například `pobočkový specialista - provoz`), se do výpočtů na bankéře
+nepočítají vůbec.
 
 ## Struktura checklistu (segmenty, pozice, nábytek, Excel šablona)
 

@@ -1499,7 +1499,8 @@ function renderResults(result) {
     ${warnHtml}
     <p class="muted">Calculation key: <code>${esc(result.calculation_key)}</code> · Load key: <code>${esc(result.load_key)}</code></p>
     ${result.duvod ? `<p class="muted">Důvod kalkulace: <strong>${esc(result.duvod)}</strong></p>` : ""}
-    <div class="status-row">${statusBadgeHtml(status)} ${statusToggleButtonHtml(status)}</div>
+    <div class="status-row">${statusBadgeHtml(status)}
+      <span class="muted">stav se přepíná na konci, v části „Výstup a sestava“</span></div>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Segment</th><th>FTE celkem</th><th>Pozice (FTE)</th>
@@ -1512,26 +1513,77 @@ function renderResults(result) {
     ${renderYearCapacityHtml(computeYearCapacity({ stats, visitor, calcResult: result }))}
     ${noAbsenceVariantHtml(result)}
     ${visitor ? renderVisitorSectionHtml(visitor, { stats, inputRows: result.inputRows })
-      : renderVisitorMissingHtml(result.pobocka_nazev, result.pobocka_id)}
-    ${pdfOptionsBoxHtml("", { hasVisitor: !!visitor })}`;
-  document.getElementById("btnExportPdf").addEventListener("click", () => {
-    exportCalculationPdf(result, collectPdfOptions(""));
-  });
-  document.getElementById("btnCopyResult").addEventListener("click", () => copyResultToClipboard(result, stats));
-  document.getElementById("btnToggleStatus").addEventListener("click", () => {
-    setCalculationStatus(result.calculation_key, status === "potvrzena" ? "rozpracovana" : "potvrzena");
-    renderResults(result);
-    renderHistoryList();
-  });
+      : renderVisitorMissingHtml(result.pobocka_nazev, result.pobocka_id)}`;
 
   document.getElementById("layoutPanel").style.display = "block";
-  renderLayoutSection("layoutArea", result.rows, {
-    calculation_key: result.calculation_key, pobocka_id: result.pobocka_id, pobocka_nazev: result.pobocka_nazev, stats,
-    // Data kalkulace pro "Generovat celou sestavu" (kalkulace + layout v jednom PDF)
-    calcResult: result, pdfOptionsSuffix: "",
+  const meta = {
+    calculation_key: result.calculation_key, pobocka_id: result.pobocka_id, pobocka_nazev: result.pobocka_nazev,
+    stats, calcResult: result, pdfOptionsSuffix: "",
+  };
+  renderLayoutSection("layoutArea", result.rows, meta);
+
+  // Výstup a sestava jsou poslední blok — stejné pořadí jako v timeline vlevo.
+  document.getElementById("outputPanel").style.display = "block";
+  renderOutputSection("outputArea", "", {
+    result, stats, visitor, meta, segmentRows: result.rows,
+    onStatusChange: () => { renderResults(result); renderHistoryList(); },
   });
 
   renderCalcTimeline(result);
+}
+
+/* ------------------- Výstup a sestava (poslední blok) ---------------------- */
+// Jedno místo pro všechno generování: co se má vygenerovat, v jakém rozsahu,
+// kopírování do schránky a potvrzení kalkulace.
+// Kontext pro překreslení boxu (po uložení layoutu se mění dostupný rozsah).
+const outputSectionCtx = {};
+
+function refreshOutputSection(suffix) {
+  const ctx = outputSectionCtx[suffix === undefined ? "" : suffix];
+  if (!ctx) return;
+  // Poznámka a vybraný rozsah se překreslením neztratí.
+  const noteEl = document.getElementById(`pdfNote${ctx.suffix}`);
+  const scopeEl = document.querySelector(`input[name="pdfScope${ctx.suffix}"]:checked`);
+  const keep = { note: noteEl ? noteEl.value : "", scope: scopeEl ? scopeEl.value : null };
+  renderOutputSection(ctx.containerId, ctx.suffix, ctx, keep);
+}
+
+function renderOutputSection(containerId, suffix, ctx, keep) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const { result, stats, visitor, meta, segmentRows, onStatusChange } = ctx;
+  outputSectionCtx[suffix] = { containerId, suffix, result, stats, visitor, meta, segmentRows, onStatusChange };
+  const status = getCalculationStatus(result.calculation_key);
+  const layoutRows = getExistingLayout(result.calculation_key);
+
+  container.innerHTML = pdfOptionsBoxHtml(suffix, {
+    hasVisitor: !!visitor, hasLayout: layoutRows.length > 0, status,
+  });
+
+  if (keep) {
+    const noteEl = container.querySelector(`#pdfNote${suffix}`);
+    if (noteEl && keep.note) noteEl.value = keep.note;
+    if (keep.scope) {
+      const radio = container.querySelector(`input[name="pdfScope${suffix}"][value="${keep.scope}"]`);
+      if (radio && !radio.disabled) radio.checked = true;
+    }
+  }
+
+  container.querySelector(`#btnExportPdf${suffix}`).addEventListener("click", () => {
+    exportPdfByScope(result, layoutRows, meta, segmentRows, collectPdfOptions(suffix));
+  });
+  container.querySelector(`#btnCopyResult${suffix}`).addEventListener("click", () => copyResultToClipboard(result, stats));
+  const btnFurniture = container.querySelector(`#btnCopyFurniture${suffix}`);
+  if (layoutRows.length) {
+    btnFurniture.addEventListener("click", () => copyFurnitureToClipboard(layoutRows, result));
+  } else {
+    btnFurniture.disabled = true;
+    btnFurniture.title = "Nejprve uložte layout.";
+  }
+  container.querySelector(`#btnToggleStatus${suffix}`).addEventListener("click", () => {
+    setCalculationStatus(result.calculation_key, status === "potvrzena" ? "rozpracovana" : "potvrzena");
+    if (onStatusChange) onStatusChange();
+  });
 }
 
 /* ------------------ Vertikální timeline vedle kalkulace -------------------- */
@@ -1563,9 +1615,9 @@ function calcTimelineSteps(result) {
     { key: "kapacita", title: "Kapacitní shrnutí",
       note: "stačí to na špičku?",
       target: "#layoutArea .cap-box", state: layoutSaved ? "done" : "todo" },
-    { key: "vystup", title: "Výstup a nastavení PDF",
-      note: "co se vygeneruje do sestavy",
-      target: "#resultsArea .pdf-box", state: layoutSaved ? "current" : "todo" },
+    { key: "vystup", title: "Výstup a sestava",
+      note: "co se vygeneruje, kopírování, potvrzení",
+      target: "#outputArea .pdf-box", fallback: "#outputPanel", state: layoutSaved ? "current" : "todo" },
   ];
 }
 
@@ -1694,10 +1746,10 @@ function buildResultClipboardText(result, stats) {
   return out.join("\n");
 }
 
-async function copyResultToClipboard(result, stats) {
-  const html = buildResultClipboardHtml(result, stats);
-  const text = buildResultClipboardText(result, stats);
-
+// Zkopíruje do schránky HTML i čistý text současně (Teams/Outlook/Word si
+// vezmou HTML, ostatní text). Používá se pro výsledek kalkulace i pro přehled
+// nábytku z layoutu.
+async function copyToClipboardBoth(html, text, okMsg) {
   // Preferovaná cesta: asynchronní Clipboard API s oběma formáty současně.
   try {
     if (navigator.clipboard && typeof window.ClipboardItem === "function") {
@@ -1705,7 +1757,7 @@ async function copyResultToClipboard(result, stats) {
         "text/html": new Blob([html], { type: "text/html" }),
         "text/plain": new Blob([text], { type: "text/plain" }),
       })]);
-      toast("Výsledek zkopírován — vložte do Teams přes Ctrl+V.", "ok");
+      toast(okMsg, "ok");
       return true;
     }
   } catch (e) {
@@ -1729,13 +1781,82 @@ async function copyResultToClipboard(result, stats) {
     const ok = document.execCommand("copy");
     sel.removeAllRanges();
     holder.remove();
-    if (ok) { toast("Výsledek zkopírován — vložte do Teams přes Ctrl+V.", "ok"); return true; }
+    if (ok) { toast(okMsg, "ok"); return true; }
     throw new Error("execCommand('copy') vrátil false");
   } catch (e) {
     console.error(e);
     toast("Kopírování do schránky se nezdařilo: " + e.message, "err");
     return false;
   }
+}
+
+function copyResultToClipboard(result, stats) {
+  return copyToClipboardBoth(buildResultClipboardHtml(result, stats),
+    buildResultClipboardText(result, stats),
+    "Výsledek zkopírován — vložte do Teams přes Ctrl+V.");
+}
+
+// Přehled nábytku po segmentech a zónách do schránky — formátovaná tabulka
+// pro Teams/Outlook/Word i varianta v čistém textu.
+function buildFurnitureClipboardHtml(layoutRows, result) {
+  const TD = "border:1px solid #c9d2de; padding:5px 9px; font-size:12px;";
+  const TH = `${TD} background:#2770f0; color:#ffffff; font-weight:700; text-align:left;`;
+  const num = "text-align:right; white-space:nowrap;";
+  const bySeg = {};
+  const order = [];
+  layoutRows.forEach((r) => {
+    if (!bySeg[r.segment]) { bySeg[r.segment] = []; order.push(r.segment); }
+    bySeg[r.segment].push(r);
+  });
+  const rowsHtml = order.map((segment) => {
+    const items = bySeg[segment];
+    const pieces = items.reduce((a, r) => a + (r.piece_count || 0), 0);
+    const wpl = items.reduce((a, r) => a + (r.wpl_assigned || 0), 0);
+    return items.map((r, i) => `<tr>
+        ${i === 0 ? `<td style="${TD} font-weight:700;" rowspan="${items.length}">${esc(segment)}</td>` : ""}
+        <td style="${TD}">${esc(ZONE_LABELS[r.zone] || r.zone)}</td>
+        <td style="${TD}">${esc(r.furniture)}</td>
+        <td style="${TD}${num}">${fmtPieces(r.piece_count)}</td>
+        <td style="${TD}${num}">${fmt1(r.wpl_assigned)}</td></tr>`).join("")
+      + `<tr><td style="${TD} background:#eef3fb; font-weight:700;" colspan="3">Celkem ${esc(segment)}</td>
+        <td style="${TD}${num} background:#eef3fb; font-weight:700;">${fmtPieces(pieces)}</td>
+        <td style="${TD}${num} background:#eef3fb; font-weight:700;">${fmt1(wpl)}</td></tr>`;
+  }).join("");
+  const totalPieces = layoutRows.reduce((a, r) => a + (r.piece_count || 0), 0);
+  const totalWpl = layoutRows.reduce((a, r) => a + (r.wpl_assigned || 0), 0);
+
+  return `<div style="font-family:Segoe UI,Arial,sans-serif; color:#1c2530;">
+    <p style="font-size:15px; font-weight:700; margin:0 0 4px;">Nábytek po segmentech a zónách</p>
+    <p style="font-size:12px; margin:0 0 10px;"><strong>${esc(result.pobocka_nazev || "")}</strong>
+      (ID ${esc(result.pobocka_id || "")}) · ${new Date().toLocaleString("cs-CZ")}</p>
+    <table style="border-collapse:collapse;" cellspacing="0" cellpadding="0">
+      <thead><tr><th style="${TH}">Segment</th><th style="${TH}">Zóna</th><th style="${TH}">Nábytkový prvek</th>
+        <th style="${TH}${num}">Počet ks</th><th style="${TH}${num}">WPL</th></tr></thead>
+      <tbody>${rowsHtml}
+        <tr><td style="${TD} background:#eafcef; font-weight:700;" colspan="3">Celkem za pobočku</td>
+          <td style="${TD}${num} background:#eafcef; font-weight:700;">${fmtPieces(totalPieces)}</td>
+          <td style="${TD}${num} background:#eafcef; font-weight:700;">${fmt1(totalWpl)}</td></tr>
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function buildFurnitureClipboardText(layoutRows, result) {
+  const out = [`Nábytek po segmentech a zónách — ${result.pobocka_nazev || ""} (ID ${result.pobocka_id || ""})`, ""];
+  out.push(["Segment", "Zóna", "Nábytkový prvek", "Počet ks", "WPL"].join("\t"));
+  layoutRows.forEach((r) => {
+    out.push([r.segment, ZONE_LABELS[r.zone] || r.zone, r.furniture, fmtPieces(r.piece_count), fmt1(r.wpl_assigned)].join("\t"));
+  });
+  out.push(["Celkem", "", "", fmtPieces(layoutRows.reduce((a, r) => a + (r.piece_count || 0), 0)),
+    fmt1(layoutRows.reduce((a, r) => a + (r.wpl_assigned || 0), 0))].join("\t"));
+  return out.join("\n");
+}
+
+function copyFurnitureToClipboard(layoutRows, result) {
+  if (!layoutRows || !layoutRows.length) { toast("Layout ještě není uložený.", "err"); return; }
+  return copyToClipboardBoth(buildFurnitureClipboardHtml(layoutRows, result),
+    buildFurnitureClipboardText(layoutRows, result),
+    "Přehled nábytku zkopírován — vložte přes Ctrl+V.");
 }
 
 // Zobrazí formát pobočky, doporučení pro layout a poměrové ukazatele (WPL/FTE,
@@ -1922,12 +2043,25 @@ function computeCapacityCheck({ stats, visitor, calcResult, layoutRows }) {
       have: bankerFte.sales * presence, fte: bankerFte.sales, presence,
       plain: "Kolik bankéřů musí být ve špičce naráz u klientů.",
     });
-    if (bankerFte.service > 0 || m.mc.peakP95Svc > 0) {
+    if (bankerFte.serviceTotal > 0 || m.mc.peakP95Svc > 0) {
       people.push({
-        key: "bkp", label: "Servisní zóna (bankéři klientské péče)",
+        key: "bkp", label: "Servisní obsluha (BKP medior + OB junior)",
         need: m.mc.peakP95Svc, needNormal: Math.min(normalSvc, m.mc.peakP95Svc),
-        have: bankerFte.service * presence, fte: bankerFte.service, presence,
+        have: bankerFte.serviceTotal * presence, fte: bankerFte.serviceTotal, presence,
         plain: "Kolik lidí musí ve špičce naráz obsluhovat rychlé požadavky.",
+      });
+    }
+    // Pokladna — jen když má pobočka hotovostní provoz (není cashless).
+    const cashPeak = m.hours.reduce((a, r) => Math.max(a, r.hotovost), 0);
+    if (m.d.has_cash || bankerFte.cashier > 0 || cashPeak > 0) {
+      const cashNeed = (peakP95(cashPeak) * cWalkinMins) / 60;
+      people.push({
+        key: "cash", label: "Pokladna (bankéř klientské péče - junior)",
+        need: cashNeed, needNormal: Math.min((cashPeak * cWalkinMins) / 60, cashNeed),
+        have: bankerFte.cashier * presence, fte: bankerFte.cashier, presence,
+        plain: m.d.has_cash === false && !bankerFte.cashier
+          ? "Pobočka je dle reportu bez hotovosti — pokladník není potřeba."
+          : "Kolik lidí musí ve špičce naráz obsluhovat hotovostní operace.",
       });
     }
     people.forEach((p) => {
@@ -2417,9 +2551,26 @@ function pdfOptionChecked(def) {
   return stored === undefined ? def.def : stored;
 }
 
+// Rozsah generování — přednastavené celky, které se dají vygenerovat samostatně.
+const PDF_SCOPES = [
+  { key: "vse", label: "Celá sestava", note: "kalkulace + layout + návštěvnost + kapacitní shrnutí",
+    groups: ["calc", "visitor", "layout"] },
+  { key: "kalkulace", label: "Jen kalkulace", note: "pozice, WPL po zónách, ukazatele, roční kapacita",
+    groups: ["calc"] },
+  { key: "navstevnost", label: "Jen návštěvnost a doporučení prostor", note: "doporučení, grafy, návštěvy na bankéře",
+    groups: ["visitor"] },
+  { key: "layout", label: "Jen sestavení layoutu", note: "přehled WPL, nábytek po zónách, analýza",
+    groups: ["layout"] },
+];
+
+function pdfScopeGroups(scope) {
+  const found = PDF_SCOPES.find((x) => x.key === scope);
+  return found ? found.groups : PDF_SCOPES[0].groups;
+}
+
 // Vrátí HTML boxu s nastavením PDF. `hasVisitor` vypne skupinu návštěvnosti,
 // pokud pro pobočku žádná data z reportu nejsou.
-function pdfOptionsBoxHtml(suffix, { hasVisitor = false } = {}) {
+function pdfOptionsBoxHtml(suffix, { hasVisitor = false, hasLayout = false, status = "rozpracovana" } = {}) {
   const groupHtml = PDF_OPTION_GROUPS.map((group) => {
     const disabled = group.key === "visitor" && !hasVisitor;
     const items = PDF_OPTION_DEFS.filter((d) => d.group === group.key).map((d) => `
@@ -2435,22 +2586,41 @@ function pdfOptionsBoxHtml(suffix, { hasVisitor = false } = {}) {
     </fieldset>`;
   }).join("");
 
+  const scopeHtml = PDF_SCOPES.map((sc, i) => {
+    const disabled = (sc.key === "navstevnost" && !hasVisitor) || (sc.key === "layout" && !hasLayout);
+    return `<label class="pdf-scope-item${disabled ? " pdf-opt-off" : ""}">
+      <input type="radio" name="pdfScope${suffix}" value="${sc.key}"${i === 0 ? " checked" : ""}
+        ${disabled ? " disabled" : ""}>
+      <span><strong>${esc(sc.label)}</strong><span class="muted">${esc(sc.note)}</span></span></label>`;
+  }).join("");
+
+  const confirmed = status === "potvrzena";
+
   return `<div class="pdf-box">
-    <h3>Co se má vygenerovat do PDF</h3>
-    <p class="muted">Nastavení platí pro <strong>„Exportovat PDF s kalkulací“</strong> i pro
-      <strong>„Generovat celou sestavu“</strong> (kalkulace + layout). Detail návštěv po hodinách
-      a kontrolní varianta bez nepřítomnosti se do PDF netisknou nikdy.</p>
+    <h3>Co se má vygenerovat</h3>
+    <p class="muted">Vyberte rozsah, případně si v podrobném nastavení odškrtněte jednotlivé části.
+      Detail návštěv po hodinách a kontrolní varianta bez nepřítomnosti se do PDF netisknou nikdy.</p>
+    <div class="pdf-scope">${scopeHtml}</div>
     <div class="pdf-opt-grid">${groupHtml}</div>
     <div class="pdf-box-note">
       <label class="muted" for="pdfNote${suffix}">Poznámka do PDF (nepovinné):</label>
       <textarea id="pdfNote${suffix}" rows="2"></textarea>
     </div>
     <div class="row" style="margin-top:12px;">
-      <button class="btn secondary" id="btnExportPdf${suffix}">Exportovat PDF s kalkulací</button>
-      <button class="btn secondary" id="btnCopyResult${suffix}">📋 Kopírovat výsledek do schránky</button>
+      <button class="btn" id="btnExportPdf${suffix}">Vygenerovat PDF</button>
+      <button class="btn secondary" id="btnCopyResult${suffix}">📋 Kopírovat kalkulaci</button>
+      <button class="btn secondary" id="btnCopyFurniture${suffix}">📋 Kopírovat nábytek po segmentech</button>
     </div>
-    <p class="muted" style="margin:6px 0 0;">Spojenou sestavu (kalkulace + layout v jednom PDF)
-      vygenerujete tlačítkem v sekci sestavení layoutu — použije stejné nastavení.</p>
+    <p class="muted" style="margin:8px 0 0;">Kopírování do schránky vloží formátovanou tabulku —
+      do MS Teams, Outlooku, Wordu i Excelu.</p>
+    <div class="pdf-box-status">
+      ${statusBadgeHtml(status)}
+      <button class="btn ${confirmed ? "secondary" : ""}" id="btnToggleStatus${suffix}">${confirmed
+        ? "Vrátit do rozpracované" : "Potvrdit / uzavřít kalkulaci"}</button>
+      <span class="muted">${confirmed
+        ? "Kalkulace je uzavřená — v historii je označená zeleným proužkem."
+        : "Po potvrzení se kalkulace v historii označí zeleným proužkem."}</span>
+    </div>
   </div>`;
 }
 
@@ -2476,7 +2646,32 @@ function collectPdfOptions(suffix) {
   });
   const noteEl = document.getElementById(`pdfNote${suffix}`);
   out.note = noteEl ? noteEl.value.trim() : "";
+
+  // Rozsah generování zamaskuje skupiny, které do vybraného celku nepatří.
+  const scopeEl = document.querySelector(`input[name="pdfScope${suffix}"]:checked`);
+  out.scope = scopeEl ? scopeEl.value : "vse";
+  const groups = pdfScopeGroups(out.scope);
+  PDF_OPTION_DEFS.forEach((d) => { if (!groups.includes(d.group)) out[d.key] = false; });
   return out;
+}
+
+// Vygeneruje PDF podle vybraného rozsahu.
+function exportPdfByScope(result, layoutRows, meta, segmentRows, options) {
+  const scope = options.scope || "vse";
+  const key = meta.calculation_key || result.calculation_key || "export";
+  if (scope === "layout") {
+    exportLayoutPdf(layoutRows, meta, segmentRows, options);
+    toast("PDF layoutu bylo vygenerováno.", "ok");
+    return;
+  }
+  const pdf = newPdfDoc();
+  const withLayout = scope === "vse" && layoutRows && layoutRows.length;
+  drawCalculationPdf(pdf, 18, result, options, withLayout
+    ? (doc) => { doc.addPage(); return drawLayoutPdf(doc, 18, layoutRows, meta, segmentRows, options); }
+    : null);
+  const prefix = scope === "vse" ? "sestava" : scope === "navstevnost" ? "navstevnost" : "kalkulace";
+  pdf.save(`${prefix}_${key}.pdf`);
+  toast(`PDF (${PDF_SCOPES.find((x) => x.key === scope).label.toLowerCase()}) bylo vygenerováno.`, "ok");
 }
 
 /* --------------------------------- PDF ------------------------------------ */
@@ -2632,11 +2827,6 @@ function setCalculationStatus(calculationKey, status) {
 function statusBadgeHtml(status) {
   const confirmed = status === "potvrzena";
   return `<span class="badge ${confirmed ? "ok" : "warn"}">${confirmed ? "Potvrzená / uzavřená" : "Rozpracovaná"}</span>`;
-}
-
-function statusToggleButtonHtml(status) {
-  const confirmed = status === "potvrzena";
-  return `<button class="btn secondary small" id="btnToggleStatus">${confirmed ? "Vrátit do rozpracované" : "Potvrdit / uzavřít kalkulaci"}</button>`;
 }
 
 function getBenchmark(formatTyp) {
@@ -2951,13 +3141,18 @@ const VISITOR_KEEP_KEYS = ["name", "fte", "bankers", "svc_fte", "has_svc", "cash
   "poc_kli", "total", "by_type", "by_hour", "by_weekday", "n_days", "n_days_wd", "has_time",
   "annual_open_days", "ph_tyden", "is_vikend", "od_days", "branch_format", "rooms", "mc", "mc_boost"];
 
-// Pozice, které se pro ukazatel „denní návštěvy na bankéře“ počítají jako
-// bankéři obsluhující klienta. „Podpora firemních bankéřů“ ke klientovi nesedá,
-// „bankéř klientské péče“ (BKP) je servisní zóna — vede se zvlášť, aby šlo
-// ukazatel spočítat i jen za obchodní bankéře.
-const BANKER_POSITION_RE = /bank[éěe]ř/i;
-const BANKER_SKIP_RE = /podpora/i;
-const BANKER_SERVICE_RE = /klientské péče/i;
+// Role u klienta se určují podle přesných názvů pozic z checklistu:
+//   • schůzky (osobní bankéři) — osobní bankéř junior / medior / senior / master,
+//   • servisní obsluha — hlavně bankéř klientské péče - medior, servis zvládne
+//     i osobní bankéř - junior (proto je v obou rolích),
+//   • pokladna (pobočka s hotovostí, tedy ne cashless) — bankéř klientské péče
+//     - junior.
+const ROLE_POSITIONS = {
+  ob: ["osobní bankéř - junior", "osobní bankéř - medior", "osobní bankéř - senior", "osobní bankéř - master"],
+  serviceCore: ["bankéř klientské péče - medior"],
+  serviceAlso: ["osobní bankéř - junior"],
+  cashier: ["bankéř klientské péče - junior"],
+};
 
 const WEEKDAY_NAMES = ["Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle"];
 
@@ -3159,19 +3354,34 @@ function summarizeVisitorMc(mc, consts) {
   };
 }
 
-// FTE bankéřů zadaných v kalkulaci (z pozic checklistu).
+// FTE v jednotlivých rolích u klienta podle pozic zadaných v kalkulaci.
+// „osobní bankéř - junior“ se počítá do schůzek i do servisní obsluhy, do
+// celkového počtu ale jen jednou.
 function computeBankerFte(inputRows) {
+  const norm = (v) => String(v || "").trim().toLowerCase();
+  const inRole = (pozice, role) => ROLE_POSITIONS[role].includes(norm(pozice));
   const rows = [];
   (inputRows || []).forEach((r) => {
-    const pozice = String(r.pozice || "");
-    if (!BANKER_POSITION_RE.test(pozice) || BANKER_SKIP_RE.test(pozice)) return;
     const fte = Number(r.fte) || 0;
     if (fte <= 0) return;
-    rows.push({ segment: r.segment, pozice, fte, service: BANKER_SERVICE_RE.test(pozice) });
+    const roles = ["ob", "serviceCore", "serviceAlso", "cashier"].filter((role) => inRole(r.pozice, role));
+    if (!roles.length) return;
+    rows.push({ segment: r.segment, pozice: String(r.pozice), fte, roles,
+      ob: roles.includes("ob"),
+      service: roles.includes("serviceCore") || roles.includes("serviceAlso"),
+      cashier: roles.includes("cashier") });
   });
-  const total = rows.reduce((a, r) => a + r.fte, 0);
-  const service = rows.filter((r) => r.service).reduce((a, r) => a + r.fte, 0);
-  return { rows, total, service, sales: total - service };
+  const sum = (fn) => rows.filter(fn).reduce((a, r) => a + r.fte, 0);
+  const sales = sum((r) => r.ob);
+  const serviceCore = sum((r) => r.roles.includes("serviceCore"));
+  const serviceAlso = sum((r) => r.roles.includes("serviceAlso"));
+  const cashier = sum((r) => r.cashier);
+  return {
+    rows, sales, serviceCore, serviceAlso, cashier,
+    serviceTotal: serviceCore + serviceAlso,
+    // Celkem bez dvojího počítání: osobní bankéři + BKP medior + BKP junior.
+    total: sales + serviceCore + cashier,
+  };
 }
 
 // Otevírací doba pobočky podle reportu — z ní je vidět i to, jestli je pobočka
@@ -3765,15 +3975,15 @@ function computeMeetingChecks({ stats, m, bankerFte, counts, calcResult }) {
   const checks = [];
 
   // 1) Kapacita bankéřů
-  const bankers = bankerFte.sales > 0 ? bankerFte.sales : bankerFte.total;
+  const bankers = bankerFte.sales > 0 ? bankerFte.sales : bankerFte.total; // schůzky dělají osobní bankéři
   if (bankers > 0) {
     const meetingsPerDay = bankers * MEETING_CHECK_MODEL.MEETINGS_PER_BANKER_DAY;
     checks.push(mk("bankers", 1, "Aby bankéři stihli 5 schůzek denně",
-      `Každý z ${vFmt1(bankers)} bankéřů v kalkulaci má denně odbavit `
+      `Každý z ${vFmt1(bankers)} osobních bankéřů v kalkulaci má denně odbavit `
       + `${MEETING_CHECK_MODEL.MEETINGS_PER_BANKER_DAY} schůzky (${MEETING_CHECK_MODEL.MEETING_MINS} min schůzka `
       + `+ ${MEETING_CHECK_MODEL.PREP_MINS} min příprava = ${slotMins} min).`,
       meetingsPerDay,
-      `${vFmt1(bankers)} bankéřů × ${MEETING_CHECK_MODEL.MEETINGS_PER_BANKER_DAY} schůzek × ${slotMins} min `
+      `${vFmt1(bankers)} osobních bankéřů × ${MEETING_CHECK_MODEL.MEETINGS_PER_BANKER_DAY} schůzek × ${slotMins} min `
       + `÷ ${Math.round(openMinutes)} min otevřeno`));
   }
 
@@ -3879,9 +4089,9 @@ function renderVisitorBankersHtml(m, inputRows) {
     ${card("Denní návštěvy na bankéře", bankers.total > 0 ? vFmt1(perBanker(bankers.total)) : "—",
       bankers.total > 0 ? `${vFmt1(perDay)} návštěv/den ÷ ${vFmt1(bankers.total)} FTE bankéřů z kalkulace`
         : "v kalkulaci není žádná pozice bankéře")}
-    ${bankers.service > 0 ? card("Jen obchodní bankéři (bez BKP)",
-      bankers.sales > 0 ? vFmt1(perBanker(bankers.sales)) : "—",
-      `${vFmt1(perDay)} návštěv/den ÷ ${vFmt1(bankers.sales)} FTE`) : ""}
+    ${bankers.sales > 0 ? card("Jen osobní bankéři (schůzky)",
+      vFmt1(perBanker(bankers.sales)),
+      `${vFmt1(perDay)} návštěv/den ÷ ${vFmt1(bankers.sales)} FTE osobních bankéřů`) : ""}
     ${reportBankers > 0 ? card("Dle stavu v reportu", vFmt1(perBanker(reportBankers)),
       `${vFmt1(perDay)} návštěv/den ÷ ${vFmt1(reportBankers)} FTE bankéřů OB dle reportu`) : ""}
     ${card("Otevírací doba dle reportu", opening.hoursPerWeek ? `${vFmt1(opening.hoursPerWeek)} h` : "—",
@@ -3893,11 +4103,15 @@ function renderVisitorBankersHtml(m, inputRows) {
         <thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Typ</th></tr></thead>
         <tbody>${bankers.rows.map((r) => `<tr><td>${segmentBadgeHtml(r.segment)}</td>
           <td>${esc(r.pozice)}</td><td class="num">${vFmt1(r.fte)}</td>
-          <td>${r.service ? "servisní (BKP)" : "obchodní"}</td></tr>`).join("")}
+          <td>${esc([r.ob ? "schůzky" : null, r.service ? "servis" : null,
+            r.cashier ? "pokladna" : null].filter(Boolean).join(" + "))}</td></tr>`).join("")}
           <tr class="total-row"><td>Celkem</td><td></td><td class="num">${vFmt1(bankers.total)}</td>
-            <td>${vFmt1(bankers.sales)} obchodní${bankers.service > 0 ? ` · ${vFmt1(bankers.service)} servisní` : ""}</td></tr>
+            <td>${vFmt1(bankers.sales)} schůzky · ${vFmt1(bankers.serviceTotal)} servis${bankers.serviceAlso > 0
+              ? ` (z toho ${vFmt1(bankers.serviceAlso)} OB junior)` : ""}${bankers.cashier > 0
+              ? ` · ${vFmt1(bankers.cashier)} pokladna` : ""}</td></tr>
         </tbody></table></div>`
-    : `<p class="muted">V kalkulaci není žádná pozice s „bankéř“ — ukazatel návštěv na bankéře nelze spočítat.</p>`;
+    : `<p class="muted">V kalkulaci není žádná z pozic obsluhujících klienta (osobní bankéř junior/medior/senior/master,
+        bankéř klientské péče medior/junior) — ukazatel návštěv na bankéře nelze spočítat.</p>`;
 
   const openingTable = opening.days.length
     ? `<div class="table-wrap"><table class="visitor-table">
@@ -4311,9 +4525,11 @@ function drawVisitorBankersPdf(pdf, startY, m, inputRows, marginX, pageBottom) {
       + `${opening.annualOpenDays ? `, ${vFmtInt(opening.annualOpenDays)} otevíracích dnů/rok` : ""}`,
     `Návštěvy: ${vFmtInt(m.d.total)} za ${vFmtInt(m.d.n_days)} dnů = ${dash(perDay)} návštěv na otevírací den`,
     `Bankéři z kalkulace: ${vFmt1(bankers.total)} FTE`
-      + `${bankers.service > 0 ? ` (z toho ${vFmt1(bankers.sales)} obchodních a ${vFmt1(bankers.service)} servisních BKP)` : ""}`,
+      + ` (schůzky ${vFmt1(bankers.sales)}, servis ${vFmt1(bankers.serviceTotal)}`
+      + `${bankers.serviceAlso > 0 ? ` včetně ${vFmt1(bankers.serviceAlso)} OB junior` : ""}`
+      + `${bankers.cashier > 0 ? `, pokladna ${vFmt1(bankers.cashier)}` : ""})`,
     `Denní návštěvy na bankéře: ${dash(perBanker(bankers.total))}`
-      + `${bankers.service > 0 ? ` · jen obchodní bankéři: ${dash(perBanker(bankers.sales))}` : ""}`
+      + `${bankers.sales > 0 ? ` · jen osobní bankéři: ${dash(perBanker(bankers.sales))}` : ""}`
       + `${Number(m.d.bankers) > 0 ? ` · dle stavu bankéřů v reportu (${vFmt1(m.d.bankers)} FTE): ${dash(perBanker(Number(m.d.bankers)))}` : ""}`,
   ].forEach((line) => {
     pdf.splitTextToSize(line, 182).forEach((l) => { newPageIfNeeded(6); pdf.text(l, marginX, y); y += 5; });
@@ -5178,11 +5394,11 @@ function renderLayoutForm(container, segmentRows, meta, existingRows) {
     container.innerHTML = `<p class="muted">Pro tuto kalkulaci nejsou v databázi definované žádné nábytkové prvky — sestavení layoutu se neprovádí.</p>`;
     return;
   }
-  container.innerHTML = `<div class="cap-box-holder"></div>
-    ${groupsHtml}
+  container.innerHTML = `${groupsHtml}
     <div class="row" style="margin-top:14px;">
       <button class="btn" id="btnSaveLayout">Uložit layout</button>
-    </div>`;
+    </div>
+    <div class="cap-box-holder"></div>`;
   wireLayoutFormListeners(container);
 
   // Kapacitní shrnutí se přepočítává rovnou při zadávání počtů kusů, aby
@@ -5253,7 +5469,9 @@ function saveLayoutAssignment(container, meta, segmentRows) {
   persistDatabase();
   toast("Layout byl uložen.", "ok");
   renderLayoutReadonly(container, getExistingLayout(meta.calculation_key), meta, segmentRows);
-  // Timeline vedle kalkulace odráží, jestli je layout uložený.
+  // Uložený layout zpřístupní rozsah „jen layout“, kopírování nábytku a překlopí
+  // timeline vedle kalkulace.
+  refreshOutputSection(meta.pdfOptionsSuffix || "");
   if (container.id === "layoutArea" && meta.calcResult) renderCalcTimeline(meta.calcResult);
 }
 
@@ -5545,49 +5763,24 @@ function renderLayoutReadonly(container, rows, meta, segmentRows) {
 
   const overview = computeWplOverview(segmentRows, rows, meta.calcResult?.celkem);
   container.innerHTML = `
-    ${capacityCheckHtmlFor(meta, rows)}
     <div class="layout-group">${renderWplOverviewHtml(overview)}</div>
     ${groupsHtml}
     ${renderZoneAnalysisHtml(overview, rows)}
     ${renderPositionFurnitureHtml(meta.calcResult, rows)}
     <div class="row" style="margin-top:14px;">
-      <button class="btn" id="btnExportFullReport">Generovat celou sestavu (kalkulace + layout)</button>
-      <button class="btn secondary" id="btnExportLayoutPdf">Exportovat PDF layoutu</button>
       <button class="btn secondary" id="btnEditLayout">Upravit layout</button>
-    </div>`;
+    </div>
+    ${capacityCheckHtmlFor(meta, rows)}
+    <p class="muted">Generování PDF, kopírování do schránky a potvrzení kalkulace najdete v části
+      <strong>„Výstup a sestava“</strong> na konci.</p>`;
   // Hledání v rámci `container` — viz poznámka v renderLayoutForm().
-  container.querySelector("#btnExportLayoutPdf").addEventListener("click", () =>
-    exportLayoutPdf(rows, meta, segmentRows, collectPdfOptions(meta.pdfOptionsSuffix || "")));
   container.querySelector("#btnEditLayout").addEventListener("click", () => renderLayoutForm(container, segmentRows, meta, rows));
-
-  const btnFull = container.querySelector("#btnExportFullReport");
-  if (meta.calcResult) {
-    btnFull.addEventListener("click", () => {
-      exportFullReportPdf(meta.calcResult, rows, meta, segmentRows,
-        collectPdfOptions(meta.pdfOptionsSuffix || ""));
-    });
-  } else {
-    // Bez dat kalkulace (neočekávaný stav) nelze spojenou sestavu sestavit.
-    btnFull.disabled = true;
-    btnFull.title = "Spojenou sestavu lze vygenerovat jen z detailu kalkulace.";
-  }
 }
 
 function exportLayoutPdf(rows, meta, segmentRows, options) {
   const pdf = newPdfDoc();
   drawLayoutPdf(pdf, 18, rows, meta, segmentRows, options);
   pdf.save(`layout_${meta.calculation_key || "export"}.pdf`);
-}
-
-// Spojená sestava — kalkulace i layout v jednom PDF dokumentu.
-function exportFullReportPdf(result, layoutRows, meta, segmentRows, options) {
-  const pdf = newPdfDoc();
-  drawCalculationPdf(pdf, 18, result, options, (doc) => {
-    doc.addPage();
-    return drawLayoutPdf(doc, 18, layoutRows, meta, segmentRows, options);
-  });
-  pdf.save(`sestava_${meta.calculation_key || result.calculation_key || "export"}.pdf`);
-  toast("Celá sestava (kalkulace + layout) byla vygenerována.", "ok");
 }
 
 // Vykreslí kompletní přehled WPL po zónách a segmentech (stejná čísla jako
@@ -5837,7 +6030,8 @@ function showBranchCalculations(pobockaId, pobockaNazev) {
   el.innerHTML = `
     <button class="btn secondary small" id="btnBackToBranches">← Zpět na přehled poboček</button>
     <h3 style="margin-top:14px;">${esc(pobockaNazev)} (ID ${esc(pobockaId)}) — ${czechCalcCount(calcs.length)}</h3>
-    ${calcs.map((c) => `<div class="history-item" data-calc="${esc(c.calculation_key)}" data-load="${esc(c.load_key)}">
+    ${calcs.map((c) => `<div class="history-item${c.status === "potvrzena" ? " confirmed" : ""}"
+      data-calc="${esc(c.calculation_key)}" data-load="${esc(c.load_key)}">
       <div><span class="muted">${new Date(c.created_at).toLocaleString("cs-CZ")}</span>
         ${c.duvod ? `<span class="muted"> · ${esc(c.duvod)}</span>` : ""} ${statusBadgeHtml(c.status)}</div>
       <div class="key">${esc(c.calculation_key)}</div>
@@ -5888,7 +6082,8 @@ function showHistoryDetail(calculationKey, loadKey) {
     <p class="muted">${branch ? `${esc(branch.pobocka_nazev)} (ID ${esc(branch.pobocka_id)}) · otevírací doba ${esc(branch.oteviraci_doba)} h/týden` : ""}</p>
     <p>Load key: <code>${esc(loadKey)}</code><br>Calculation key: <code>${esc(calculationKey)}</code></p>
     ${resultRows[0] && resultRows[0].duvod ? `<p class="muted">Důvod kalkulace: <strong>${esc(resultRows[0].duvod)}</strong></p>` : ""}
-    <div class="status-row">${statusBadgeHtml(status)} ${statusToggleButtonHtml(status)}</div>
+    <div class="status-row">${statusBadgeHtml(status)}
+      <span class="muted">stav se přepíná na konci, v části „Výstup a sestava“</span></div>
     <h3>Vstupní data z checklistu</h3>
     <div class="table-wrap"><table><thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Vytížení WPL</th></tr></thead>
     <tbody>${inputHtml}</tbody></table></div>
@@ -5902,22 +6097,20 @@ function showHistoryDetail(calculationKey, loadKey) {
     ${noAbsenceVariantHtml(calcResult)}
     ${visitor ? renderVisitorSectionHtml(visitor, { stats, inputRows: mappedInputRows })
       : renderVisitorMissingHtml(branch?.pobocka_nazev, branch?.pobocka_id)}
-    ${pdfOptionsBoxHtml("History", { hasVisitor: !!visitor })}
     <h3 style="margin-top:22px;">Sestavení layoutu${layoutRulesHelpHtml()}</h3>
-    <div id="historyLayoutArea"></div>`;
+    <div id="historyLayoutArea"></div>
+    <h3 style="margin-top:22px;">Výstup a sestava</h3>
+    <div id="historyOutputArea"></div>`;
 
-  document.getElementById("btnExportPdfHistory").addEventListener("click", () => {
-    exportCalculationPdf(calcResult, collectPdfOptions("History"));
-  });
-  document.getElementById("btnCopyResultHistory").addEventListener("click", () => copyResultToClipboard(calcResult, stats));
-  document.getElementById("btnToggleStatus").addEventListener("click", () => {
-    setCalculationStatus(calculationKey, status === "potvrzena" ? "rozpracovana" : "potvrzena");
-    showHistoryDetail(calculationKey, loadKey);
-  });
-
-  renderLayoutSection("historyLayoutArea", rowsNoTotal, {
+  const historyMeta = {
     calculation_key: calculationKey, pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev, stats,
     calcResult, pdfOptionsSuffix: "History",
+  };
+  renderLayoutSection("historyLayoutArea", rowsNoTotal, historyMeta);
+
+  renderOutputSection("historyOutputArea", "History", {
+    result: calcResult, stats, visitor, meta: historyMeta, segmentRows: rowsNoTotal,
+    onStatusChange: () => { showHistoryDetail(calculationKey, loadKey); renderHistoryList(); },
   });
 
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });

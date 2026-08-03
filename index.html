@@ -111,6 +111,8 @@
     display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;
   }
   .history-item:hover{border-color:var(--accent); background:#fafcff;}
+  /* Potvrzená (uzavřená) kalkulace — zelený proužek vlevo. */
+  .history-item.confirmed{border-left:5px solid var(--ok); background:#f8fdf9;}
   .history-item .key{font-size:11.5px; color:var(--muted); font-family:monospace;}
   .filterbox{margin-bottom:10px;}
   .filterbox input{padding:7px 10px; border:1px solid var(--border); border-radius:6px; width:280px;}
@@ -448,6 +450,19 @@
   label.pdf-opt:hover{color:var(--accent-dark);}
   label.pdf-opt.pdf-opt-off{color:var(--muted); cursor:not-allowed;}
   .pdf-box-note{margin-top:10px; max-width:520px;}
+  .pdf-scope{display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); gap:8px; margin:12px 0 4px;}
+  .pdf-scope-item{
+    display:flex; gap:8px; align-items:flex-start; background:#fff; border:1px solid var(--border);
+    border-radius:8px; padding:8px 10px; font-size:12.5px; cursor:pointer;
+  }
+  .pdf-scope-item:hover{border-color:var(--accent);}
+  .pdf-scope-item input{margin-top:2px;}
+  .pdf-scope-item span span{display:block; color:var(--muted); font-size:11px; margin-top:2px;}
+  .pdf-scope-item.pdf-opt-off{opacity:.5; cursor:not-allowed;}
+  .pdf-box-status{
+    margin-top:14px; padding-top:12px; border-top:1px dashed var(--border);
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  }
 
   /* --- Skrytá kontrolní varianta bez nepřítomnosti (nikdy se netiskne) --- */
   .hidden-variant{
@@ -607,6 +622,11 @@
         obsazena, a uložte layout. Část hodnot je předvyplněná podle pravidel (najeďte myší na „?“ u nadpisu).
         Po uložení lze vyexportovat PDF se sestavou nábytku po zónách a segmentech.</p>
         <div id="layoutArea"></div>
+      </div>
+
+      <div class="panel" id="outputPanel" style="display:none;">
+        <h2>Výstup a sestava</h2>
+        <div id="outputArea"></div>
       </div>
     </div>
   </div>
