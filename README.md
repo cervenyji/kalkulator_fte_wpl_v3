@@ -132,6 +132,24 @@ Kliknutím na pobočku se zobrazí seznam všech jejích kalkulací v čase; kli
 na konkrétní kalkulaci pak její detail (vstupní data, výsledek, referenční
 data i sestavený layout).
 
+## Vertikální timeline u kalkulace
+
+Vedle výsledku kalkulace je vlevo **svislá osa postupu**, která ukazuje, kde se
+zpracování zrovna nachází a co ještě čeká:
+
+1. **Kalkulace a výsledek** — s celkovým FTE → WPL,
+2. **Klíčové ukazatele a kapacita** — formát pobočky, benchmark, roční kapacita,
+3. **Analýza návštěvnosti** — doporučení prostor a Monte Carlo (nedostupné,
+   pokud pro pobočku není report),
+4. **Sestavení layoutu** — dokud není uložený, je označený jako aktuální krok,
+5. **Kapacitní shrnutí** — stačí to na špičku?,
+6. **Výstup a nastavení PDF** — co se vygeneruje do sestavy.
+
+Body mají tři stavy (hotovo zeleně, aktuální modře, čeká šedě), kliknutím se
+odroluje na příslušnou část a bod, který je zrovna vidět, se sám zvýrazní.
+Po uložení layoutu se stavy překlopí (layout hotový → aktuálním krokem je
+výstup).
+
 ## Klíčové ukazatele a benchmark
 
 Pod výsledkem kalkulace se zobrazí:
@@ -206,6 +224,14 @@ a doporučení prostor“**:
   | **Monte Carlo — varianta a)** | špičková P95 poptávka ze simulace reportu: `⌈P95 souběžných schůzek⌉` a `⌈P95 souběžných obsluh⌉` |
   | **Monte Carlo — varianta b)** | stejná simulace s návštěvností vyšší o 20 % |
 
+  U každé varianty je zároveň vidět, **jak by byl doporučený počet míst
+  využitý**: kolik návštěv je dnes (u varianty b) i s čím model počítá, tedy
+  +20 %), jaké je vytížení ve špičce v procentech a **kolik návštěv denně by
+  muselo přijít, aby byla místa využitá na 90 %** (v závorce rozdíl proti
+  dnešku). Např. u Strakonic: Monte Carlo a) doporučuje 9 zasedacích místností,
+  ty jsou dnes ve špičce využité z 92 % a na 90 % by odpovídalo 22.0 schůzek
+  denně (dnes 22.4).
+
   **Ve zbytku aplikace i sestavy (karty nahoře, srovnání s kalkulací, kapacitní
   shrnutí, graf) se pracuje s variantou Monte Carlo a)** — v tabulce je
   zvýrazněná. Pokud report pro pobočku Monte Carlo nemá (a tedy zbývá jen první
@@ -240,9 +266,12 @@ a doporučení prostor“**:
   přepočet na bankéře.
 - **Monte Carlo model průměrného dne** (rozbalovací) — pravděpodobné hodiny
   přetížení za den, pokrytí poptávky, počet bankéřů OB pro 95% pokrytí,
-  špičková P95 poptávka a kapacita (denní i hodinová), a tabulka po hodinách:
-  λ jednotlivých typů, P95 poptávka OB a servisu v FTE a vytížení P50 / P95
-  včetně pravděpodobnosti přetížení.
+  špičková P95 poptávka a kapacita (denní i hodinová) a **stejné dva grafy jako
+  v PDF**: *P95 FTE poptávka po hodinách (6h–21h)* s kapacitou vykreslenou
+  přerušovanou čárou a *Distribuce celkové denní FTE poptávky* (histogram
+  simulovaných dnů, šedá čára = kapacita, zelená = P95 poptávky, zvlášť pro OB
+  tým a servisní zónu). Přesná čísla po hodinách zůstávají v tabulce schované
+  pod grafy.
 
 ### Co jde do PDF
 

@@ -273,6 +273,7 @@
   .visitor-table th{font-size:11.5px;}
   .visitor-table .num{text-align:right; white-space:nowrap;}
   .visitor-table tr.visitor-peak td{background:#eef3fb; font-weight:600;}
+  .variant-table td .muted{display:block; font-weight:400; font-size:11px; margin-top:2px;}
   .visitor-bar-cell{width:120px; padding:0 8px;}
   .visitor-bar{display:block; height:9px; border-radius:5px; background:var(--accent); min-width:1px;}
   .visitor-details{margin-top:14px; border:1px solid var(--border); border-radius:8px; padding:10px 12px; background:#fff;}
@@ -283,6 +284,50 @@
   .visitor-cool{color:var(--ok); font-weight:600;}
   .visitor-neutral{color:var(--accent-dark); font-weight:600;}
   #visitorList tr.visitor-row{cursor:pointer;}
+
+  /* --- Vertikální timeline vedle kalkulace --- */
+  .calc-flow{display:flex; align-items:flex-start; gap:18px;}
+  .calc-flow-main{flex:1 1 auto; min-width:0;}
+  .calc-timeline{
+    flex:0 0 218px; position:sticky; top:14px; background:var(--panel); border:1px solid var(--border);
+    border-radius:10px; padding:14px 12px 10px;
+  }
+  .calc-timeline h3{margin:0 0 10px; font-size:11.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em;}
+  .ctl-item{
+    position:relative; display:block; width:100%; text-align:left; background:none; border:none;
+    padding:0 0 16px 26px; cursor:pointer; font-family:inherit; color:var(--text);
+  }
+  .ctl-item:last-child{padding-bottom:2px;}
+  .ctl-item::before{
+    content:""; position:absolute; left:7px; top:3px; width:11px; height:11px; border-radius:50%;
+    background:#fff; border:2px solid var(--border); z-index:1;
+  }
+  .ctl-item::after{
+    content:""; position:absolute; left:12px; top:14px; bottom:0; width:2px; background:var(--border);
+  }
+  .ctl-item:last-child::after{display:none;}
+  .ctl-item.done::before{background:var(--ok); border-color:var(--ok);}
+  .ctl-item.done::after{background:var(--ok);}
+  .ctl-item.current::before{background:var(--accent); border-color:var(--accent); box-shadow:0 0 0 3px rgba(39,112,240,.18);}
+  .ctl-item.todo{color:var(--muted);}
+  .ctl-item.disabled{cursor:default; opacity:.55;}
+  .ctl-title{display:block; font-size:12.5px; font-weight:700; line-height:1.3;}
+  .ctl-note{display:block; font-size:11px; color:var(--muted); margin-top:2px;}
+  .ctl-item.active .ctl-title{color:var(--accent-dark);}
+  .ctl-item:hover:not(.disabled) .ctl-title{color:var(--accent-dark);}
+  @media (max-width:900px){
+    .calc-flow{flex-direction:column;}
+    .calc-timeline{position:static; flex:1 1 auto; width:100%;}
+  }
+
+  /* --- Grafy Monte Carla v aplikaci --- */
+  .mc-charts{margin-top:12px;}
+  .mc-chart-title{font-weight:700; font-size:13px; margin-top:12px;}
+  .mc-chart-note{font-size:11.5px; color:var(--muted); margin-bottom:4px;}
+  .mc-svg{width:100%; height:auto; display:block; background:#fff; border:1px solid var(--border); border-radius:8px;}
+  .mc-hist-row{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+  .mc-hist-title{font-size:11.5px; font-weight:700; margin-bottom:3px;}
+  @media (max-width:720px){.mc-hist-row{grid-template-columns:1fr;}}
 
   /* --- Roční kapacita (barevné pruhy pod kalkulací) --- */
   .ycap-box{margin-top:18px; border:1px solid var(--border); border-radius:10px; padding:14px 16px; background:#fafcff;}
@@ -547,17 +592,23 @@
     </div>
   </div>
 
-  <div class="panel" id="resultsPanel" style="display:none;">
-    <h2>Výsledek kalkulace</h2>
-    <div id="resultsArea"></div>
-  </div>
+  <!-- Výsledek kalkulace, layout a nastavení výstupu s vertikální timeline vlevo. -->
+  <div class="calc-flow" id="calcFlow" style="display:none;">
+    <aside class="calc-timeline" id="calcTimeline" aria-label="Postup zpracování kalkulace"></aside>
+    <div class="calc-flow-main">
+      <div class="panel" id="resultsPanel" style="display:none;">
+        <h2>Výsledek kalkulace</h2>
+        <div id="resultsArea"></div>
+      </div>
 
-  <div class="panel" id="layoutPanel" style="display:none;">
-    <h2>Sestavení layoutu<span id="layoutRulesHelp"></span></h2>
-    <p class="muted">Pro každou zónu se spočítaným požadavkem WPL vyberte, kolika kusy jakého nábytku bude
-    obsazena, a uložte layout. Část hodnot je předvyplněná podle pravidel (najeďte myší na „?“ u nadpisu).
-    Po uložení lze vyexportovat PDF se sestavou nábytku po zónách a segmentech.</p>
-    <div id="layoutArea"></div>
+      <div class="panel" id="layoutPanel" style="display:none;">
+        <h2>Sestavení layoutu<span id="layoutRulesHelp"></span></h2>
+        <p class="muted">Pro každou zónu se spočítaným požadavkem WPL vyberte, kolika kusy jakého nábytku bude
+        obsazena, a uložte layout. Část hodnot je předvyplněná podle pravidel (najeďte myší na „?“ u nadpisu).
+        Po uložení lze vyexportovat PDF se sestavou nábytku po zónách a segmentech.</p>
+        <div id="layoutArea"></div>
+      </div>
+    </div>
   </div>
 </section>
 

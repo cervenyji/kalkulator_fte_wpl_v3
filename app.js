@@ -1172,6 +1172,7 @@ async function handleExcelFile(file) {
   document.getElementById("excelPreview").innerHTML = "";
   document.getElementById("resultsPanel").style.display = "none";
   document.getElementById("layoutPanel").style.display = "none";
+  document.getElementById("calcFlow").style.display = "none";
   if (!requireDb()) return;
   try {
     const buf = await file.arrayBuffer();
@@ -1307,6 +1308,7 @@ function goToWizardStep(n) {
   if (n < 3) {
     document.getElementById("resultsPanel").style.display = "none";
     document.getElementById("layoutPanel").style.display = "none";
+    document.getElementById("calcFlow").style.display = "none";
   }
   updateStepper();
 }
@@ -1327,6 +1329,7 @@ async function handleCommitManual() {
   document.getElementById("excelPreview").innerHTML = "";
   document.getElementById("resultsPanel").style.display = "none";
   document.getElementById("layoutPanel").style.display = "none";
+  document.getElementById("calcFlow").style.display = "none";
   if (!requireDb()) return;
 
   const pobocka_nazev = document.getElementById("manualPobockaName").value.trim();
@@ -1483,6 +1486,7 @@ function round1(n) { return Math.round(n * 10) / 10; }
 function renderResults(result) {
   const panel = document.getElementById("resultsPanel");
   panel.style.display = "block";
+  document.getElementById("calcFlow").style.display = "flex";
   const warnHtml = result.warnings.length
     ? `<div class="msg warn">${result.warnings.map(esc).join("<br>")}</div>` : "";
 
@@ -1526,6 +1530,85 @@ function renderResults(result) {
     // Data kalkulace pro "Generovat celou sestavu" (kalkulace + layout v jednom PDF)
     calcResult: result, pdfOptionsSuffix: "",
   });
+
+  renderCalcTimeline(result);
+}
+
+/* ------------------ Vertikální timeline vedle kalkulace -------------------- */
+// Levý pruh vedle výsledku kalkulace: v jakém bodě zpracování se uživatel
+// nachází — kalkulace → analýza a detaily → sestavení layoutu → výstup.
+// Kliknutím se odroluje na příslušnou část, aktivní bod se zvýrazňuje podle
+// toho, co je zrovna vidět.
+
+let calcTimelineObserver = null;
+
+function calcTimelineSteps(result) {
+  const layoutSaved = result && result.calculation_key
+    ? getExistingLayout(result.calculation_key).length > 0 : false;
+  const hasVisitor = !!document.querySelector("#resultsArea .visitor-section .visitor-cards");
+  return [
+    { key: "vysledek", title: "Kalkulace a výsledek",
+      note: `${fmt1(result.celkem.total_positions)} FTE → ${fmt1(ZONES.reduce((a, z) => a + (result.celkem[z] || 0), 0))} WPL`,
+      target: "#resultsArea", state: "done" },
+    { key: "ukazatele", title: "Klíčové ukazatele a kapacita",
+      note: "formát pobočky, benchmark, roční kapacita",
+      target: "#resultsArea .ycap-box", fallback: "#resultsArea .kpi-table", state: "done" },
+    { key: "navstevnost", title: "Analýza návštěvnosti",
+      note: hasVisitor ? "doporučení prostor, Monte Carlo" : "bez reportu návštěvnosti",
+      target: "#resultsArea .visitor-section", state: hasVisitor ? "done" : "todo",
+      disabled: !document.querySelector("#resultsArea .visitor-section") },
+    { key: "layout", title: "Sestavení layoutu",
+      note: layoutSaved ? "layout uložený" : "vyberte nábytek a uložte",
+      target: "#layoutPanel", state: layoutSaved ? "done" : "current" },
+    { key: "kapacita", title: "Kapacitní shrnutí",
+      note: "stačí to na špičku?",
+      target: "#layoutArea .cap-box", state: layoutSaved ? "done" : "todo" },
+    { key: "vystup", title: "Výstup a nastavení PDF",
+      note: "co se vygeneruje do sestavy",
+      target: "#resultsArea .pdf-box", state: layoutSaved ? "current" : "todo" },
+  ];
+}
+
+function renderCalcTimeline(result) {
+  const el = document.getElementById("calcTimeline");
+  if (!el || !result) return;
+  const steps = calcTimelineSteps(result);
+  el.innerHTML = `<h3>Postup</h3>${steps.map((st, i) => `
+    <button type="button" class="ctl-item ${st.state}${st.disabled ? " disabled" : ""}"
+      data-target="${esc(st.target)}"${st.fallback ? ` data-fallback="${esc(st.fallback)}"` : ""}
+      ${st.disabled ? "disabled" : ""}>
+      <span class="ctl-title">${i + 1}. ${esc(st.title)}</span>
+      <span class="ctl-note">${esc(st.note)}</span>
+    </button>`).join("")}`;
+
+  el.querySelectorAll(".ctl-item:not(.disabled)").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const target = document.querySelector(btn.dataset.target)
+        || (btn.dataset.fallback ? document.querySelector(btn.dataset.fallback) : null);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+
+  // Zvýraznění bodu, který je zrovna vidět.
+  if (calcTimelineObserver) calcTimelineObserver.disconnect();
+  const watched = [];
+  el.querySelectorAll(".ctl-item").forEach((btn) => {
+    const target = document.querySelector(btn.dataset.target)
+      || (btn.dataset.fallback ? document.querySelector(btn.dataset.fallback) : null);
+    if (target) watched.push([target, btn]);
+  });
+  if (!watched.length || typeof IntersectionObserver !== "function") return;
+  calcTimelineObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      const pair = watched.find(([t]) => t === entry.target);
+      if (!pair) return;
+      if (entry.isIntersecting) {
+        el.querySelectorAll(".ctl-item.active").forEach((b) => b.classList.remove("active"));
+        pair[1].classList.add("active");
+      }
+    });
+  }, { rootMargin: "-20% 0px -65% 0px" });
+  watched.forEach(([target]) => calcTimelineObserver.observe(target));
 }
 
 /* ------------- Kopírování výsledku do schránky (MS Teams apod.) ------------- */
@@ -3199,6 +3282,25 @@ function computeRoomVariants(metrics) {
       + `bezhotovostních × ${walkMins} min proti ${Math.round(openMinutes)} min otevřeno `
       + `→ ${avgMeetingRooms} / ${avgServiceDesks}`;
   }
+  // Kolik schůzek / klientů bez objednání je dnes a kolik by jich muselo být,
+  // aby doporučený počet míst byl využitý na 90 %. Vychází z lineárního vztahu
+  // mezi denním počtem návštěv a souběžnou obsazeností ve špičce.
+  const meetingsNowDay = (d.by_type && d.n_days)
+    ? ((Number(d.by_type.online) || 0) + (Number(d.by_type.fyzicka) || 0)) / d.n_days : null;
+  const walkinsNowDay = (d.by_type && d.n_days) ? (Number(d.by_type.bezhot) || 0) / d.n_days : null;
+  const TARGET_UTIL = 0.9;
+  const load = (nowDay, assumedFactor, peakConcurrency, places) => {
+    if (nowDay === null || !peakConcurrency || !places) return null;
+    const assumed = nowDay * assumedFactor;
+    return {
+      nowDay,
+      assumedDay: assumed,
+      peakConcurrency,
+      utilPct: (peakConcurrency / places) * 100,
+      for90: (assumed * (TARGET_UTIL * places)) / peakConcurrency,
+    };
+  };
+
   variants.push({
     key: "real",
     label: "Reálná data (skutečné návštěvy a kapacita)",
@@ -3209,28 +3311,32 @@ function computeRoomVariants(metrics) {
       + `a λ ${vFmt2(rooms.peak_bezhot_lam)} → P95 ${vFmt2(rooms.p95_bezhot)} × ${walkMins} min ÷ 60`
       + (avgDetail ? `; ${avgDetail}` : ""),
     avgMeetingRooms, avgServiceDesks,
+    meetingLoad: load(meetingsNowDay, 1, (rooms.p95_mtg * mtgMins) / 60, rooms.meeting_rooms),
+    walkinLoad: load(walkinsNowDay, 1, (rooms.p95_bezhot * walkMins) / 60, rooms.service_desks),
   });
 
   // 2) a 3) Monte Carlo — kolik míst musí být naráz obsazeno ve špičce
-  const mcVariant = (mc, key, label, short, note) => {
+  const mcVariant = (mc, key, label, short, note, factor) => {
     if (!mc) return null;
+    const meetingRooms = Math.ceil(mc.peakP95Ob);
+    const serviceDesks = Math.ceil(mc.peakP95Svc);
     return {
-      key, label, short,
-      meetingRooms: Math.ceil(mc.peakP95Ob),
-      serviceDesks: Math.ceil(mc.peakP95Svc),
+      key, label, short, meetingRooms, serviceDesks,
       detail: `špičková P95 poptávka ze simulace: ${vFmt1(mc.peakP95Ob)} schůzek naráz`
         + `${mc.peakP95Svc > 0 ? ` a ${vFmt1(mc.peakP95Svc)} obsluh bez objednání` : ""}`
         + `${note ? ` (${note})` : ""}`,
+      meetingLoad: load(meetingsNowDay, factor, mc.peakP95Ob, meetingRooms),
+      walkinLoad: load(walkinsNowDay, factor, mc.peakP95Svc, serviceDesks),
     };
   };
   const mcA = mcVariant(metrics.mc, "mcA", "Monte Carlo — varianta a) základní", "Monte Carlo a)",
-    `${vFmtInt(metrics.mc ? metrics.mc.nIter : 0)} simulací`);
+    `${vFmtInt(metrics.mc ? metrics.mc.nIter : 0)} simulací`, 1);
   const mcB = mcVariant(metrics.mcBoost, "mcB", "Monte Carlo — varianta b) návštěvnost +20 %", "Monte Carlo b)",
-    "stejná simulace s o 20 % vyšší návštěvností");
+    "stejná simulace s o 20 % vyšší návštěvností", 1.2);
   if (mcA) variants.push(mcA);
   if (mcB) variants.push(mcB);
 
-  return { variants, primary: mcA || variants[0], hasMc: !!mcA };
+  return { variants, primary: mcA || variants[0], hasMc: !!mcA, meetingsNowDay, walkinsNowDay, targetUtil: TARGET_UTIL };
 }
 
 /* --------------------------- Zobrazení v aplikaci -------------------------- */
@@ -3285,18 +3391,35 @@ function renderVisitorSectionHtml(visitor, options = {}) {
   const mtgMins = m.consts.MEETING_MINS ?? VISITOR_CONSTS_DEFAULT.MEETING_MINS;
   const walkMins = m.consts.WALKIN_AVG_MINS ?? VISITOR_CONSTS_DEFAULT.WALKIN_AVG_MINS;
   const rv = m.roomVariants;
+  // Ke každé variantě: kolik návštěv je dnes (resp. s čím varianta počítá)
+  // a kolik by jich muselo být, aby byl doporučený počet míst využitý na 90 %.
+  const loadCell = (v, load, unit) => {
+    if (!load) return `<td class="num"><strong>${vFmtInt(v)}</strong></td>`;
+    const diff = load.for90 - load.nowDay;
+    return `<td class="num"><strong>${vFmtInt(v)}</strong>
+      <span class="muted">využití ${vFmtInt(load.utilPct)} %</span>
+      <span class="muted">dnes ${vFmt1(load.nowDay)} ${esc(unit)}/den${load.assumedDay !== load.nowDay
+        ? ` (model počítá ${vFmt1(load.assumedDay)})` : ""}</span>
+      <span class="muted">na 90 % využití: <strong>${vFmt1(load.for90)}</strong>/den
+        (${diff >= 0 ? "+" : ""}${vFmt1(diff)})</span></td>`;
+  };
+
   const roomsTable = `<h4>Doporučený počet míst — tři varianty</h4>
-    <div class="table-wrap"><table class="visitor-table">
-      <thead><tr><th>Varianta</th><th>Zasedací místnosti</th><th>Servisní místa</th><th>Z čeho vychází</th></tr></thead>
+    <div class="table-wrap"><table class="visitor-table variant-table">
+      <thead><tr><th>Varianta</th><th>Zasedací místnosti<br><span class="muted">a kolik schůzek unesou</span></th>
+        <th>Servisní místa<br><span class="muted">a kolik klientů bez objednání unesou</span></th>
+        <th>Z čeho vychází</th></tr></thead>
       <tbody>${rv.variants.map((v) => `<tr class="${v.key === rv.primary.key ? "visitor-peak" : ""}">
         <td><strong>${esc(v.label)}</strong>${v.key === rv.primary.key
           ? ' <span class="badge ok">použito v sestavě</span>' : ""}</td>
-        <td class="num"><strong>${vFmtInt(v.meetingRooms)}</strong></td>
-        <td class="num"><strong>${vFmtInt(v.serviceDesks)}</strong></td>
+        ${loadCell(v.meetingRooms, v.meetingLoad, "schůzek")}
+        ${loadCell(v.serviceDesks, v.walkinLoad, "klientů")}
         <td class="muted">${esc(v.detail)}</td></tr>`).join("")}</tbody>
     </table></div>
     <p class="muted">Schůzka se obsluhuje ${mtgMins} min, klient bez objednání ${walkMins} min.
       λ = průměrné příchody v nejfrekventovanější hodině, P95 = λ + 1.645·√λ (silný den, zhruba 1 den z 20).
+      „Na 90 % využití“ = kolik návštěv denně by muselo přijít, aby byl doporučený počet míst ve špičce
+      obsazený z 90 % (v závorce rozdíl proti dnešku).
       ${rv.hasMc
         ? "V dalších částech (kapacitní shrnutí, srovnání s kalkulací, grafy) se pracuje s variantou Monte Carlo a)."
         : "Report u této pobočky Monte Carlo neuvádí — v dalších částech se pracuje s variantou podle reálných dat."}
@@ -3838,6 +3961,124 @@ function renderVisitorCompareHtml(rooms, stats) {
       jako druhý pohled při sestavování layoutu.</p>`;
 }
 
+/* ------------- Grafy Monte Carla v aplikaci (SVG) -------------------------- */
+// Stejné dva grafy jako v PDF: křivka P95 poptávky po hodinách proti kapacitě
+// a histogram rozdělení celkové denní poptávky.
+
+function svgFteLineChart(mc, hasSvc, W = 520, H = 150) {
+  if (!mc || !mc.rows.length) return "";
+  const pl = 30;
+  const pr = 46;
+  const pt = 8;
+  const pb = 20;
+  const pw = W - pl - pr;
+  const ph = H - pt - pb;
+  const rows = mc.rows;
+  const n = rows.length;
+  const capOb = mc.obCapFte || 0;
+  const capSvc = mc.svcCapFte || 0;
+  const maxY = Math.max(...rows.map((r) => r.p95ObFte), ...(hasSvc ? rows.map((r) => r.p95SvcFte) : [0]),
+    capOb, hasSvc ? capSvc : 0) * 1.15 || 1;
+  const xs = (i) => pl + (n > 1 ? (i / (n - 1)) * pw : 0);
+  const ys = (v) => pt + ph * (1 - Math.min(v, maxY) / maxY);
+  const step = chartTickStep(maxY);
+
+  let grid = "";
+  for (let v = 0; v <= maxY * 1.02; v += step) {
+    const yy = ys(v).toFixed(1);
+    grid += `<line x1="${pl}" y1="${yy}" x2="${pl + pw}" y2="${yy}" stroke="#e2e8f0" stroke-width="1"/>`
+      + `<text x="${pl - 4}" y="${yy}" text-anchor="end" dominant-baseline="middle" font-size="9"
+         fill="#94a3b8">${Math.round(v * 100) / 100}</text>`;
+  }
+  const xLabels = rows.map((r, i) => (i % 2 === 0
+    ? `<text x="${xs(i).toFixed(1)}" y="${H - 5}" text-anchor="middle" font-size="9" fill="#94a3b8">${r.hour}h</text>`
+    : "")).join("");
+  const capLine = (value, color, label) => `<line x1="${pl}" y1="${ys(value).toFixed(1)}" x2="${pl + pw}"
+      y2="${ys(value).toFixed(1)}" stroke="${color}" stroke-width="1.6" stroke-dasharray="6,3"/>
+    <text x="${pl + pw + 3}" y="${ys(value).toFixed(1)}" dominant-baseline="middle" font-size="9"
+      fill="${color}">${label} ${vFmt1(value)}</text>`;
+  const line = (values, color, width) => `<path d="${values.map((v, i) =>
+    `${i === 0 ? "M" : "L"}${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join(" ")}"
+    fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round"/>`;
+  const obValues = rows.map((r) => r.p95ObFte);
+  const area = `<path d="${obValues.map((v, i) => `${i === 0 ? "M" : "L"}${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join(" ")}
+    L${xs(n - 1).toFixed(1)},${(pt + ph).toFixed(1)} L${pl},${(pt + ph).toFixed(1)} Z" fill="#2770f0" fill-opacity="0.07"/>`;
+
+  return `<svg viewBox="0 0 ${W} ${H}" class="mc-svg" role="img">
+    <rect x="${pl}" y="${pt}" width="${pw}" height="${ph}" fill="#f8faff" rx="3"/>
+    ${grid}${xLabels}
+    ${capLine(capOb, "#2563eb", "OB")}
+    ${hasSvc ? capLine(capSvc, "#d97706", "SVC") : ""}
+    ${area}
+    ${hasSvc ? line(rows.map((r) => r.p95SvcFte), "#d97706", 1.6) : ""}
+    ${line(obValues, "#2563eb", 2.2)}
+    <line x1="${pl}" y1="${pt}" x2="${pl}" y2="${pt + ph}" stroke="#94a3b8" stroke-width="1"/>
+    <line x1="${pl}" y1="${pt + ph}" x2="${pl + pw}" y2="${pt + ph}" stroke="#94a3b8" stroke-width="1"/>
+  </svg>`;
+}
+
+function svgHistChart(counts, edges, capV, p95V, color, W = 250, H = 120) {
+  if (!counts || !counts.length || !edges || edges.length < 2) return "";
+  const pl = 26;
+  const pr = 16;
+  const pt = 6;
+  const pb = 18;
+  const pw = W - pl - pr;
+  const ph = H - pt - pb;
+  const maxX = edges[edges.length - 1] || 1;
+  const maxC = Math.max(...counts, 1);
+  const xs = (v) => pl + (Math.min(v, maxX) / maxX) * pw;
+  const ys = (v) => pt + ph * (1 - v / maxC);
+  const bars = counts.map((c, i) => {
+    if (!c) return "";
+    const x1 = xs(edges[i]);
+    const w = Math.max(xs(edges[i + 1]) - x1 - 0.5, 0.6);
+    const yy = ys(c);
+    return `<rect x="${x1.toFixed(1)}" y="${yy.toFixed(1)}" width="${w.toFixed(1)}"
+      height="${(pt + ph - yy).toFixed(1)}" fill="${color}" fill-opacity="0.8"/>`;
+  }).join("");
+  const vline = (value, stroke) => (value > 0
+    ? `<line x1="${xs(value).toFixed(1)}" y1="${pt}" x2="${xs(value).toFixed(1)}" y2="${pt + ph}"
+        stroke="${stroke}" stroke-width="1.6" stroke-dasharray="4,3"/>`
+    : "");
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((t) => {
+    const v = t * maxX;
+    return `<text x="${xs(v).toFixed(1)}" y="${H - 5}" text-anchor="middle" font-size="9"
+      fill="#94a3b8">${vFmt1(v)}</text>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" class="mc-svg" role="img">
+    <rect x="${pl}" y="${pt}" width="${pw}" height="${ph}" fill="#f8faff" rx="3"/>
+    ${bars}${vline(capV, "#475569")}${vline(p95V, "#16a34a")}
+    <line x1="${pl}" y1="${pt}" x2="${pl}" y2="${pt + ph}" stroke="#94a3b8" stroke-width="1"/>
+    <line x1="${pl}" y1="${pt + ph}" x2="${pl + pw}" y2="${pt + ph}" stroke="#94a3b8" stroke-width="1"/>
+    ${ticks}
+  </svg>`;
+}
+
+// Oba grafy pohromadě i s popisky — používá se v sekci Monte Carla.
+function visitorMcChartsHtml(m, mc, hasSvc) {
+  return `<div class="mc-charts">
+    <div class="mc-chart-title">P95 FTE poptávka po hodinách (6h–21h)</div>
+    <div class="mc-chart-note">OB (modrá)${hasSvc ? " · servis BKP (oranžová)" : ""} · kapacita = přerušovaná čára
+      (FTE = bankéř × ${Math.round(mc.presencePct)} % přítomnost)</div>
+    ${svgFteLineChart(mc, hasSvc)}
+    <div class="mc-chart-title">Distribuce celkové denní FTE poptávky (bankéř-hodiny/den)</div>
+    <div class="mc-chart-note">Frekvence simulovaných dnů · šedá přerušovaná = kapacita · zelená = P95 poptávky</div>
+    <div class="mc-hist-row">
+      <div>
+        <div class="mc-hist-title" style="color:#2563eb;">OB tým (schůzky) — kapacita ${vFmt1(mc.obCapDay)} h ·
+          P95 ${vFmt1(mc.obP95Day)} h</div>
+        ${svgHistChart(mc.obHist, mc.obEdges, mc.obCapDay, mc.obP95Day, "#2563eb", hasSvc ? 250 : 520, 120)}
+      </div>
+      ${hasSvc ? `<div>
+        <div class="mc-hist-title" style="color:#d97706;">Servisní zóna (BKP) — kapacita ${vFmt1(mc.svcCapDay)} h ·
+          P95 ${vFmt1(mc.svcP95Day)} h</div>
+        ${svgHistChart(mc.svcHist, mc.svcEdges, mc.svcCapDay, mc.svcP95Day, "#d97706", 250, 120)}
+      </div>` : ""}
+    </div>
+  </div>`;
+}
+
 function renderVisitorMcHtml(m) {
   const mc = m.mc;
   const utilCls = (v) => (v >= 100 ? "visitor-hot" : v >= 85 ? "visitor-warm" : "visitor-cool");
@@ -3858,6 +4099,9 @@ function renderVisitorMcHtml(m) {
   const boostSum = m.mcBoost ? sum(m.mcBoost) : null;
   const summary = baseSum.map(([label, v], i) => summaryRow(label, v, boostSum ? boostSum[i][1] : "")).join("");
 
+  const hasSvc = !!(m.d.has_svc && mc.svcFte);
+  // Detailní hodinová tabulka je nahrazená grafy (stejnými jako v PDF); zůstává
+  // schovaná jako doplněk pro toho, kdo potřebuje přesná čísla.
   const hourRows = mc.rows.map((r) => `<tr>
     <td>${esc(visitorHourLabel(r.hour))}</td>
     <td class="num">${vFmt2(r.lamFyzicka)}</td><td class="num">${vFmt2(r.lamOnline)}</td>
@@ -3876,14 +4120,17 @@ function renderVisitorMcHtml(m) {
     <div class="table-wrap"><table class="visitor-table">
       <thead><tr><th>Ukazatel</th><th>Základní varianta</th>${m.mcBoost ? "<th>Varianta +20 %</th>" : ""}</tr></thead>
       <tbody>${summary}</tbody></table></div>
-    <h4>Poptávka a vytížení po hodinách</h4>
-    <div class="table-wrap"><table class="visitor-table">
-      <thead><tr><th>Hodina</th><th>λ fyzická</th><th>λ online</th><th>λ bezhot.</th>
-        <th>P95 OB FTE</th><th>P95 servis FTE</th><th>Vytížení P50</th><th>Vytížení P95</th>
-        <th>Přetížení</th></tr></thead>
-      <tbody>${hourRows}</tbody></table></div>
-    <p class="muted">Vytížení = poptávka / kapacita v dané hodině (P50 = medián, P95 = 95. percentil simulací).
-      „Přetížení“ je podíl simulací, ve kterých poptávka v dané hodině přeteče kapacitu.</p>
+    ${visitorMcChartsHtml(m, mc, hasSvc)}
+    <details class="visitor-details" style="margin-top:12px;">
+      <summary>Přesná čísla po hodinách (tabulka)</summary>
+      <div class="table-wrap" style="margin-top:8px;"><table class="visitor-table">
+        <thead><tr><th>Hodina</th><th>λ fyzická</th><th>λ online</th><th>λ bezhot.</th>
+          <th>P95 OB FTE</th><th>P95 servis FTE</th><th>Vytížení P50</th><th>Vytížení P95</th>
+          <th>Přetížení</th></tr></thead>
+        <tbody>${hourRows}</tbody></table></div>
+      <p class="muted">Vytížení = poptávka / kapacita v dané hodině (P50 = medián, P95 = 95. percentil simulací).
+        „Přetížení“ je podíl simulací, ve kterých poptávka v dané hodině přeteče kapacitu.</p>
+    </details>
   </details>`;
 }
 
@@ -4488,17 +4735,26 @@ function drawVisitorPdf(pdf, startY, visitor, marginX, pageBottom, stats, opts) 
   const walkMins = m.consts.WALKIN_AVG_MINS ?? VISITOR_CONSTS_DEFAULT.WALKIN_AVG_MINS;
   drawTable(
     ["Varianta", "Zasedací místnosti", "Servisní místa", "Z čeho vychází"],
-    [46, 26, 24, 86],
-    rv.variants.map((v) => ({
-      vals: [v.label, String(v.meetingRooms), String(v.serviceDesks), v.detail],
-      variant: v.key === rv.primary.key ? "highlight" : null,
-    })),
+    [40, 42, 42, 58],
+    rv.variants.map((v) => {
+      const cell = (places, load, unit) => (load
+        ? `${places}\nvyužití ${Math.round(load.utilPct)} % · dnes ${vFmt1(load.nowDay)} ${unit}/den`
+          + `${load.assumedDay !== load.nowDay ? ` (model ${vFmt1(load.assumedDay)})` : ""}`
+          + `\nna 90 %: ${vFmt1(load.for90)}/den`
+        : String(places));
+      return {
+        vals: [v.label, cell(v.meetingRooms, v.meetingLoad, "schůzek"),
+          cell(v.serviceDesks, v.walkinLoad, "klientů"), v.detail],
+        variant: v.key === rv.primary.key ? "highlight" : null,
+      };
+    }),
   );
   y += 3;
   pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.5);
   pdf.setTextColor(120, 120, 120);
   pdf.splitTextToSize(`Schůzka se obsluhuje ${mtgMins} min, klient bez objednání ${walkMins} min. `
     + "λ = průměrné příchody v nejfrekventovanější hodině, P95 = λ + 1.645·√λ (silný den, zhruba 1 den z 20). "
+    + "„Na 90 %“ = kolik návštěv denně by muselo přijít, aby byl doporučený počet míst ve špičce obsazený z 90 %. "
     + (rv.hasMc
       ? "Ve zbytku sestavy se pracuje s variantou Monte Carlo a) — zvýrazněný řádek."
       : "Report u této pobočky Monte Carlo neuvádí — ve zbytku sestavy se pracuje s variantou podle reálných dat."),
@@ -4997,6 +5253,8 @@ function saveLayoutAssignment(container, meta, segmentRows) {
   persistDatabase();
   toast("Layout byl uložen.", "ok");
   renderLayoutReadonly(container, getExistingLayout(meta.calculation_key), meta, segmentRows);
+  // Timeline vedle kalkulace odráží, jestli je layout uložený.
+  if (container.id === "layoutArea" && meta.calcResult) renderCalcTimeline(meta.calcResult);
 }
 
 // Kompletní přehled WPL po zónách a segmentech vč. FTE a poměru WPL/FTE
