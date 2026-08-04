@@ -99,31 +99,69 @@ V záložce „Referenční data“ lze přímo v prohlížeči upravovat:
 
 Úpravy se uloží tlačítkem „Uložit tabulku…“ přímo do databáze.
 
+### Vyhledávání a filtrování v tabulkách
+
+Nad každou editovatelnou tabulkou v záložkách **„Referenční data“**
+a **„Struktura checklistu“** je vyhledávací pole (absence, časové dotace pozic,
+segmenty, nábytek); u nábytku je navíc **výběr zóny**, který se s hledaným
+textem kombinuje. Hledá se **po slovech** a nezávisle na velikosti písmen —
+„bankéř medior“ najde řádky obsahující obojí bez ohledu na pořadí. U nábytku
+text prohledává segment, název prvku i název zóny.
+
+Pod tabulkou je vždy vidět, kolik řádků je zobrazeno z celkového počtu. Filtr
+slouží **jen k prohlížení**: řádky, které mu nevyhovují, se nezahazují —
+**uložení tabulky zapíše i je**, takže filtrovat lze bez rizika ztráty dat.
+
+### Kopírování vyfiltrovaného nábytku do schránky
+
+V záložce „Struktura checklistu“ v části **Nábytek** je tlačítko
+**„📋 Kopírovat zobrazené prvky“**, které zkopíruje **právě zobrazené
+(vyfiltrované) řádky** jako formátovanou tabulku (segment, zóna, nábytek,
+WPL na kus, verze) — vložením přes Ctrl+V do Wordu, Teams nebo Excelu se vloží
+včetně formátování, v Excelu se rozpadne do sloupců. V hlavičce je popsaný
+použitý filtr a počet prvků. Kopírují se hodnoty tak, jak jsou ve formuláři —
+tedy i rozepsané, ještě neuložené úpravy.
+
 ### Historie referenčních dat (verzování)
 
-Každé uložení výše vytvoří novou **verzi** referenčních dat (pokud se skutečně
-něco změnilo — uložení beze změny žádnou duplicitní verzi nevytvoří). Verze se
-ukládají do tabulky `ref_data_versions` a jsou k prohlédnutí v sekci „Historie
-referenčních dat“ dole na záložce „Referenční data“.
+Verzují se **tři** sady referenčních dat:
+
+| Data | Kde se upravují | Snapshot ve verzi |
+| --- | --- | --- |
+| **Absence po segmentech** | Referenční data | `absence_json` |
+| **Časové dotace pozic** | Referenční data / Struktura checklistu | `dotace_json` |
+| **Nábytkové prvky** (`furniture_to_zone`) | Struktura checklistu → Nábytek | `furniture_json` |
+
+Každé uložení kterékoli z nich vytvoří novou **verzi** referenčních dat (pokud
+se skutečně něco změnilo — uložení beze změny žádnou duplicitní verzi
+nevytvoří). Verze se ukládají do tabulky `ref_data_versions` a jsou
+k prohlédnutí v sekci „Historie referenčních dat“ dole na záložce „Referenční
+data“; nábytek je tam kvůli počtu řádků v rozbalovacím bloku.
 
 Každá spočítaná kalkulace si zaznamená, se kterou verzí referenčních dat byla
 spočítána (sloupec `ref_version_id` v tabulce `calculations`). U výsledku
 kalkulace i v historii kalkulací tak najdete rozbalovací odkaz „Referenční
-data použitá při této kalkulaci“, který ukáže přesné hodnoty absence a
-časových dotací platné v okamžiku výpočtu — i zpětně, po dalších úpravách.
+data použitá při této kalkulaci“, který ukáže přesné hodnoty absence, časových
+dotací i nábytkových prvků platné v okamžiku výpočtu — i zpětně, po dalších
+úpravách.
 
 #### Sloupec „Verze“ u jednotlivých řádků
 
-Obě tabulky referenčních dat mají navíc informativní (needitovatelný) sloupec
-**„Verze“**, který u každého řádku ukazuje, ve **které verzi referenčních dat
-řádek naposledy vznikl nebo se změnil** (sloupec `ref_version_id` v tabulkách
-`absence` a `casove_dotace`). Při uložení se stamp posune jen u řádků, které se
-skutečně změnily — nedotčené řádky si ponechají svou původní verzi, takže je
-hned vidět, co se v které verzi měnilo. Uložení beze změny nevytvoří novou verzi
-ani neposune žádný stamp.
+Všechny tři tabulky (absence, časové dotace, nábytek) mají navíc informativní
+(needitovatelný) sloupec **„Verze“**, který u každého řádku ukazuje, ve **které
+verzi referenčních dat řádek naposledy vznikl nebo se změnil** (sloupec
+`ref_version_id` v tabulkách `absence`, `casove_dotace` a `furniture_to_zone`).
+Při uložení se stamp posune jen u řádků, které se skutečně změnily — nedotčené
+řádky si ponechají svou původní verzi, takže je hned vidět, co se v které verzi
+měnilo. Uložení beze změny nevytvoří novou verzi ani neposune žádný stamp.
+U nábytku se řádek považuje za změněný, když se u něj změní **WPL na kus**;
+nový prvek nebo prvek s přepsaným názvem, segmentem či zónou je novým řádkem
+(a dostane tedy aktuální verzi).
 
 U databází uložených starší verzí aplikace se řádky při připojení označí verzí
-platnou v tom okamžiku (její snapshot tyto hodnoty skutečně obsahuje).
+platnou v tom okamžiku (její snapshot tyto hodnoty skutečně obsahuje) —
+u nábytku se do této verze zároveň doplní jeho snapshot, aby byl detail verze
+úplný.
 
 ## Historie kalkulací
 
@@ -693,7 +731,12 @@ Excel checklist i celá kalkulace:
 - **Pozice** — stejná data a stejný editor jako v „Referenčních datech“ (tabulka `casove_dotace`);
   nová/upravená pozice se okamžitě promítne i tam a naopak.
 - **Nábytek** — nábytkové prvky pro sestavení layoutu po segmentech a zónách (tabulka
-  `furniture_to_zone`), nyní přímo editovatelné (dosud jen needitovatelná seedovaná data).
+  `furniture_to_zone`), přímo editovatelné. Prvky se **verzují** jako ostatní referenční data
+  (sloupec „Verze“, viz „Historie referenčních dat“), jdou **filtrovat** textem i podle zóny
+  a zobrazené (vyfiltrované) prvky lze tlačítkem **„📋 Kopírovat zobrazené prvky“** vzít
+  do schránky jako tabulku.
+
+Všechny tři tabulky mají nad sebou vyhledávací pole — viz „Vyhledávání a filtrování v tabulkách“.
 
 Tlačítkem **„Generovat Excel šablonu“** se z aktuálního obsahu těchto tří tabulek vygeneruje
 `.xlsx`, který **vypadá i funguje stejně jako vzorový checklist** — se dvěma listy:

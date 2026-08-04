@@ -114,8 +114,10 @@
   /* Potvrzená (uzavřená) kalkulace — zelený proužek vlevo. */
   .history-item.confirmed{border-left:5px solid var(--ok); background:#f8fdf9;}
   .history-item .key{font-size:11.5px; color:var(--muted); font-family:monospace;}
-  .filterbox{margin-bottom:10px;}
+  .filterbox{margin-bottom:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;}
   .filterbox input{padding:7px 10px; border:1px solid var(--border); border-radius:6px; width:280px;}
+  .filterbox select{padding:7px 10px; border:1px solid var(--border); border-radius:6px; background:#fff;}
+  .filter-summary{font-size:12px;}
   #toast-area{position:fixed; bottom:16px; right:16px; display:flex; flex-direction:column; gap:8px; z-index:999;}
   .toast{padding:10px 14px; border-radius:8px; font-size:13px; color:#fff; box-shadow:0 4px 14px rgba(0,0,0,.15); max-width:340px;}
   .toast.ok{background:#0bb43f;} .toast.err{background:#d03636;} .toast.warn{background:#c98a06;}
@@ -650,6 +652,7 @@
   <div class="panel">
     <h2>Absence po segmentech</h2>
     <p class="muted">Nepřítomnost a homeoffice v % — používá se pro přepočet efektivně odpracovaných hodin.</p>
+    <div class="filterbox"><input type="text" id="absenceFilter" placeholder="🔍 Hledat segment…"></div>
     <div id="absenceTable"></div>
     <div class="row" style="margin-top:10px;">
       <button class="btn secondary small" id="btnAddAbsenceRow">+ Přidat segment</button>
@@ -708,6 +711,7 @@
     <h2>Segmenty</h2>
     <p class="muted">Definujte segmenty, jejich pořadí, barvu a ikonu — používá se v celé aplikaci (tabulky,
       layout, PDF exporty) i při generování Excel šablony.</p>
+    <div class="filterbox"><input type="text" id="segmentsFilter" placeholder="🔍 Hledat klíč nebo název segmentu…"></div>
     <div id="segmentsTable"></div>
     <div class="row" style="margin-top:10px;">
       <button class="btn secondary small" id="btnAddSegmentRow">+ Přidat segment</button>
@@ -729,11 +733,25 @@
   <div class="panel">
     <h2>Nábytek</h2>
     <p class="muted">Nábytkové prvky pro sestavení layoutu, po segmentech a zónách — stejná data jako v
-      layoutu kalkulace (tabulka <code>furniture_to_zone</code>).</p>
+      layoutu kalkulace (tabulka <code>furniture_to_zone</code>). Nábytkové prvky se <strong>verzují</strong>
+      stejně jako absence a časové dotace — sloupec „Verze“ ukazuje, ve které verzi referenčních dat řádek
+      naposledy vznikl nebo se změnil.</p>
+    <div class="filterbox">
+      <input type="text" id="furnitureFilter" placeholder="🔍 Hledat segment, zónu nebo název prvku…">
+      <select id="furnitureZoneFilter" title="Filtrovat podle zóny">
+        <option value="">Všechny zóny</option>
+        <option value="service_zone">Service zone</option>
+        <option value="meeting_zone">Meeting zone</option>
+        <option value="backoffice_zone">Backoffice zone</option>
+        <option value="office_room">Office room</option>
+      </select>
+    </div>
     <div id="furnitureTable"></div>
     <div class="row" style="margin-top:10px;">
       <button class="btn secondary small" id="btnAddFurnitureRow">+ Přidat nábytek</button>
       <button class="btn small" id="btnSaveFurniture">Uložit tabulku nábytku</button>
+      <button class="btn secondary small" id="btnCopyFurnitureRef"
+        title="Zkopíruje do schránky tabulku právě zobrazených (vyfiltrovaných) nábytkových prvků">📋 Kopírovat zobrazené prvky</button>
     </div>
   </div>
   <div class="panel">

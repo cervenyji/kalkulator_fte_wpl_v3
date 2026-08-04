@@ -83,7 +83,8 @@ def main():
         created_at TEXT,
         note TEXT,
         absence_json TEXT,
-        dotace_json TEXT
+        dotace_json TEXT,
+        furniture_json TEXT
     )
     """)
 
@@ -93,7 +94,8 @@ def main():
         segment TEXT,
         furniture TEXT,
         zone TEXT,
-        wpl_counter REAL
+        wpl_counter REAL,
+        ref_version_id INTEGER
     )
     """)
 

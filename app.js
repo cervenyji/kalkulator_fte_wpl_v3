@@ -62,14 +62,16 @@ CREATE TABLE IF NOT EXISTS ref_data_versions (
   created_at TEXT,
   note TEXT,
   absence_json TEXT,
-  dotace_json TEXT
+  dotace_json TEXT,
+  furniture_json TEXT
 );
 CREATE TABLE IF NOT EXISTS furniture_to_zone (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   segment TEXT,
   furniture TEXT,
   zone TEXT,
-  wpl_counter REAL
+  wpl_counter REAL,
+  ref_version_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS layouts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,6 +139,8 @@ function migrateSchema(dbi) {
   // Verze referenčních dat, ve které daný řádek naposledy vznikl nebo se změnil.
   try { dbi.run("ALTER TABLE absence ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
   try { dbi.run("ALTER TABLE casove_dotace ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
+  try { dbi.run("ALTER TABLE furniture_to_zone ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
+  try { dbi.run("ALTER TABLE ref_data_versions ADD COLUMN furniture_json TEXT"); } catch (e) { /* sloupec už existuje */ }
   const furnitureCount = dbAll("SELECT COUNT(*) AS n FROM furniture_to_zone", [], dbi)[0].n;
   if (furnitureCount === 0) {
     const ins = dbi.prepare("INSERT INTO furniture_to_zone (segment, furniture, zone, wpl_counter) VALUES (?, ?, ?, ?)");
@@ -853,6 +857,7 @@ function createNewDatabase() {
   // Výchozí referenční data patří do první verze.
   dbRun("UPDATE absence SET ref_version_id = ?", [versionId]);
   dbRun("UPDATE casove_dotace SET ref_version_id = ?", [versionId]);
+  dbRun("UPDATE furniture_to_zone SET ref_version_id = ?", [versionId]);
   refreshSegmentMetaCache();
 }
 
@@ -867,6 +872,13 @@ function loadDatabaseFromBytes(bytes) {
   // stamp posunou jen u řádků, které se opravdu změní.
   dbRun("UPDATE absence SET ref_version_id = ? WHERE ref_version_id IS NULL", [versionId]);
   dbRun("UPDATE casove_dotace SET ref_version_id = ? WHERE ref_version_id IS NULL", [versionId]);
+  dbRun("UPDATE furniture_to_zone SET ref_version_id = ? WHERE ref_version_id IS NULL", [versionId]);
+  // Verze uložené před zavedením verzování nábytku snapshot nábytku neobsahují.
+  // U té, se kterou se databáze připojila, ho doplníme podle aktuálního stavu —
+  // ten se od jejího vzniku nemohl změnit (jinak by výše vznikla verze nová),
+  // takže je zařazení správné a detail verze je pak úplný.
+  dbRun("UPDATE ref_data_versions SET furniture_json = ? WHERE id = ? AND furniture_json IS NULL",
+    [JSON.stringify(snapshotRefData().furniture), versionId]);
   backfillCalculationStats(); // dopočítá ukazatele pro kalkulace uložené před zavedením benchmarku
   refreshSegmentMetaCache();
 }
@@ -1921,6 +1933,8 @@ function refVersionDetailsHtml(refVersionId) {
       ${renderReadonlyAbsenceTable(version.absence)}
       <h3>Časové dotace pozic</h3>
       ${renderReadonlyDotaceTable(version.dotace)}
+      <h3>Nábytkové prvky</h3>
+      ${renderReadonlyFurnitureTable(version.furniture)}
     </div>
   </details>`;
 }
@@ -6124,7 +6138,11 @@ function snapshotRefData() {
   const dotace = dbAll(`SELECT segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room
     FROM casove_dotace ORDER BY segment, pozice`)
     .map((r) => [r.segment, r.pozice, r.service_zone, r.meeting_zone, r.backoffice_zone, r.office_room]);
-  return { absence, dotace };
+  // Nábytkové prvky jsou také referenční data — určují, co lze v layoutu přiřadit
+  // a kolik WPL jeden kus pokryje, takže se verzují stejně jako absence a dotace.
+  const furniture = dbAll("SELECT segment, zone, furniture, wpl_counter FROM furniture_to_zone ORDER BY segment, zone, furniture")
+    .map((r) => [r.segment, r.zone, r.furniture, r.wpl_counter]);
+  return { absence, dotace, furniture };
 }
 
 // Zajistí, že poslední uložená verze referenčních dat odpovídá aktuálnímu stavu
@@ -6136,12 +6154,14 @@ function ensureRefVersionUpToDate(noteIfNew) {
   const snap = snapshotRefData();
   const absenceJson = JSON.stringify(snap.absence);
   const dotaceJson = JSON.stringify(snap.dotace);
-  const latest = dbAll("SELECT id, absence_json, dotace_json FROM ref_data_versions ORDER BY id DESC LIMIT 1")[0];
-  if (latest && latest.absence_json === absenceJson && latest.dotace_json === dotaceJson) {
+  const furnitureJson = JSON.stringify(snap.furniture);
+  const latest = dbAll("SELECT id, absence_json, dotace_json, furniture_json FROM ref_data_versions ORDER BY id DESC LIMIT 1")[0];
+  if (latest && latest.absence_json === absenceJson && latest.dotace_json === dotaceJson
+    && (latest.furniture_json || furnitureJson) === furnitureJson) {
     return latest.id;
   }
-  db.run("INSERT INTO ref_data_versions (created_at, note, absence_json, dotace_json) VALUES (?, ?, ?, ?)",
-    [nowIso(), noteIfNew || "Změna referenčních dat", absenceJson, dotaceJson]);
+  db.run("INSERT INTO ref_data_versions (created_at, note, absence_json, dotace_json, furniture_json) VALUES (?, ?, ?, ?, ?)",
+    [nowIso(), noteIfNew || "Změna referenčních dat", absenceJson, dotaceJson, furnitureJson]);
   return dbAll("SELECT last_insert_rowid() AS id")[0].id;
 }
 
@@ -6150,11 +6170,13 @@ function listRefVersions() {
 }
 
 function getRefVersionById(id) {
-  const row = dbAll("SELECT id, created_at, note, absence_json, dotace_json FROM ref_data_versions WHERE id = ?", [id])[0];
+  const row = dbAll("SELECT id, created_at, note, absence_json, dotace_json, furniture_json FROM ref_data_versions WHERE id = ?", [id])[0];
   if (!row) return null;
   return {
     id: row.id, created_at: row.created_at, note: row.note,
     absence: JSON.parse(row.absence_json), dotace: JSON.parse(row.dotace_json),
+    // Verze uložené před zavedením verzování nábytku ho neobsahují.
+    furniture: row.furniture_json ? JSON.parse(row.furniture_json) : null,
   };
 }
 
@@ -6174,6 +6196,24 @@ function renderReadonlyDotaceTable(rows) {
   return `<div class="table-wrap"><table>
     <thead><tr><th>Segment</th><th>Pozice</th><th>ServiceZ %</th><th>MeetingZ %</th><th>BackofficeZ %</th><th>OfficeRoom %</th></tr></thead>
     <tbody>${body}</tbody></table></div>`;
+}
+
+// Nábytek je v detailu verze schovaný v rozbalovacím bloku — řádků je hodně
+// (přes 100), takže by jinak přehled verze zahltil.
+function renderReadonlyFurnitureTable(rows) {
+  if (!rows) {
+    return `<p class="muted">Tato verze vznikla ještě před zavedením verzování nábytkových prvků,
+      proto jejich stav neobsahuje.</p>`;
+  }
+  const body = rows.map(([segment, zone, furniture, wpl]) => `<tr>
+    <td>${segmentBadgeHtml(segment)}</td><td>${esc(ZONE_LABELS[zone] || zone)}</td>
+    <td>${esc(furniture)}</td><td>${fmt1(wpl)}</td>
+  </tr>`).join("");
+  return `<details><summary style="cursor:pointer; color:var(--muted);">Nábytkové prvky
+      (${rows.length}) — rozbalit</summary>
+    <div class="table-wrap" style="margin-top:8px;"><table>
+    <thead><tr><th>Segment</th><th>Zóna</th><th>Nábytek</th><th>WPL / kus</th></tr></thead>
+    <tbody>${body}</tbody></table></div></details>`;
 }
 
 function renderRefVersionsList() {
@@ -6199,8 +6239,54 @@ function showRefVersionDetail(id) {
     <h3>Absence po segmentech</h3>
     ${renderReadonlyAbsenceTable(version.absence)}
     <h3>Časové dotace pozic</h3>
-    ${renderReadonlyDotaceTable(version.dotace)}`;
+    ${renderReadonlyDotaceTable(version.dotace)}
+    <h3>Nábytkové prvky</h3>
+    ${renderReadonlyFurnitureTable(version.furniture)}`;
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+/* ---------- Vyhledávání a filtrování nad editovatelnými tabulkami ---------- */
+// Filtr je jen „prohlížecí“: řádky, které mu nevyhovují, se nezahazují — render
+// si je uloží do datasetu kontejneru (`hiddenRows`) a uložení tabulky je zapíše
+// zpět spolu s tím, co je vidět. Stav filtrů drží tableFilterState, takže
+// překreslení tabulky (uložení, změna databáze) filtr neshodí.
+const tableFilterState = {};
+
+function tableFilterValue(key) { return tableFilterState[key] || ""; }
+
+// Hledá se po slovech — „mmma theke“ najde řádek obsahující obojí, bez ohledu
+// na pořadí a velikost písmen.
+function splitByFilter(key, rows, textOf) {
+  const terms = tableFilterValue(key).split(/\s+/).filter(Boolean);
+  if (!terms.length) return { shown: rows, hidden: [] };
+  const shown = []; const hidden = [];
+  rows.forEach((r) => {
+    const hay = String(textOf(r)).toLowerCase();
+    (terms.every((t) => hay.includes(t)) ? shown : hidden).push(r);
+  });
+  return { shown, hidden };
+}
+
+function filterSummaryHtml(key, shown, total, word) {
+  const active = !!tableFilterValue(key);
+  return `<p class="muted filter-summary" style="margin-top:6px;">Zobrazeno <strong>${shown}</strong>
+    z ${total} ${word}.${active ? " Uložení zapíše i řádky skryté filtrem — filtr slouží jen k prohlížení."
+    : ""}${active && shown === 0 ? " <strong>Filtru nic neodpovídá.</strong>" : ""}</p>`;
+}
+
+function wireTableFilter(inputId, key, render) {
+  const el = document.getElementById(inputId);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    tableFilterState[key] = el.value.trim().toLowerCase();
+    render();
+  });
+}
+
+// Řádky skryté filtrem, uložené při renderu do datasetu kontejneru tabulky.
+function hiddenFilterRows(containerId) {
+  const el = document.getElementById(containerId);
+  return JSON.parse((el && el.dataset.hiddenRows) || "[]");
 }
 
 /* --------------------------- Referenční data ------------------------------ */
@@ -6209,13 +6295,16 @@ function renderAbsenceTable() {
   const el = document.getElementById("absenceTable");
   if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
   const rows = dbAll("SELECT segment, nepritomnost, homeoffice, ref_version_id FROM absence ORDER BY segment");
+  const { shown, hidden } = splitByFilter("absence", rows, (r) => r.segment);
   el.innerHTML = `<div class="table-wrap"><table>
     <thead><tr><th>Segment</th><th>Nepřítomnost (%)</th><th>Homeoffice (%)</th>
       <th title="Verze referenčních dat, ve které řádek naposledy vznikl nebo se změnil">Verze</th><th></th></tr></thead>
     <tbody id="absenceTbody">
-      ${rows.map(absenceRowHtml).join("")}
-    </tbody></table></div>`;
+      ${shown.map(absenceRowHtml).join("")}
+    </tbody></table></div>
+    ${filterSummaryHtml("absence", shown.length, rows.length, "segmentů")}`;
   wireDeleteButtons("absenceTbody");
+  el.dataset.hiddenRows = JSON.stringify(hidden);
 }
 
 // Sloupec „Verze“ je jen informativní (needitovatelný) — stamp se přepočítává
@@ -6253,6 +6342,7 @@ function saveAbsenceTable() {
     const homeoffice = toNumberOrNull(tr.querySelector('[data-field="homeoffice"]').value);
     data.push([segment, nepritomnost ?? 0, homeoffice ?? 0]);
   }
+  hiddenFilterRows("absenceTable").forEach((r) => data.push([r.segment, r.nepritomnost, r.homeoffice]));
 
   // Pro evidenci verzí u jednotlivých řádků si nejdřív zapamatujeme původní stav:
   // nezměněné řádky si ponechají svůj původní stamp, změněné a nové dostanou až
@@ -6301,27 +6391,24 @@ function dotaceKey(segment, pozice) { return `${segment}||${pozice}`; }
 // `casove_dotace` — factory dovolí mít dvě samostatné DOM instance (vlastní
 // filtr, vlastní tbody), aniž by se logika duplikovala.
 function makeDotaceEditor(tableId, filterId, tbodyId) {
-  let filterText = "";
+  const filterKey = tableId;
 
   function render() {
     const el = document.getElementById(tableId);
     if (!el) return;
     if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
     const rows = dbAll("SELECT id, segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room, ref_version_id FROM casove_dotace ORDER BY segment, pozice");
-    const filtered = filterText
-      ? rows.filter((r) => `${r.segment} ${r.pozice}`.toLowerCase().includes(filterText))
-      : rows;
+    const { shown, hidden } = splitByFilter(filterKey, rows, (r) => `${r.segment} ${r.pozice}`);
     el.innerHTML = `<div class="table-wrap"><table>
       <thead><tr><th>Segment</th><th>Pozice</th><th>ServiceZ %</th><th>MeetingZ %</th><th>BackofficeZ %</th><th>OfficeRoom %</th>
         <th title="Verze referenčních dat, ve které řádek naposledy vznikl nebo se změnil">Verze</th><th></th></tr></thead>
       <tbody id="${tbodyId}">
-        ${filtered.map(dotaceRowHtml).join("")}
+        ${shown.map(dotaceRowHtml).join("")}
       </tbody></table></div>
-      <p class="muted" style="margin-top:6px;">Zobrazeno ${filtered.length} z ${rows.length} pozic.
-        ${filterText ? "Uložení uloží pouze zobrazené (filtrované) řádky spolu se skrytými — filtr slouží jen k prohlížení." : ""}</p>`;
+      ${filterSummaryHtml(filterKey, shown.length, rows.length, "pozic")}`;
     wireDeleteButtons(tbodyId);
-    // pro uložení potřebujeme i skryté (filtrované) řádky -> uchováme je v dataset
-    el.dataset.hiddenRows = JSON.stringify(filterText ? rows.filter((r) => !filtered.includes(r)) : []);
+    // pro uložení potřebujeme i řádky skryté filtrem -> uchováme je v datasetu
+    el.dataset.hiddenRows = JSON.stringify(hidden);
   }
 
   function save() {
@@ -6340,8 +6427,8 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
         toNumberOrNull(tr.querySelector('[data-field="office_room"]').value),
       ]);
     }
-    const hidden = JSON.parse(document.getElementById(tableId).dataset.hiddenRows || "[]");
-    hidden.forEach((r) => data.push([r.segment, r.pozice, r.service_zone, r.meeting_zone, r.backoffice_zone, r.office_room]));
+    hiddenFilterRows(tableId).forEach((r) => data.push([r.segment, r.pozice, r.service_zone,
+      r.meeting_zone, r.backoffice_zone, r.office_room]));
 
     // Evidence verze u jednotlivých řádků — viz saveAbsenceTable(): nezměněné
     // řádky si ponechají původní stamp, změněné a nové dostanou číslo nové verze.
@@ -6368,7 +6455,7 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
       "UPDATE casove_dotace SET ref_version_id = ? WHERE segment = ? AND pozice = ?", [versionId, segment, pozice]));
 
     persistDatabase(true);
-    filterText = "";
+    tableFilterState[filterKey] = "";
     const filterInput = document.getElementById(filterId);
     if (filterInput) filterInput.value = "";
     dotaceEditorMain.render();
@@ -6384,7 +6471,7 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
     wireDeleteButtons(tbodyId);
   }
 
-  function setFilter(v) { filterText = v.trim().toLowerCase(); render(); }
+  function setFilter(v) { tableFilterState[filterKey] = v.trim().toLowerCase(); render(); }
 
   return { render, save, addRow, setFilter };
 }
@@ -6416,10 +6503,13 @@ function renderSegmentsTable() {
   if (!el) return;
   if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
   const rows = dbAll("SELECT segment_key, nazev, sort_order, color, icon FROM segments ORDER BY sort_order, segment_key");
+  const { shown, hidden } = splitByFilter("segments", rows, (r) => `${r.segment_key} ${r.nazev || ""}`);
   el.innerHTML = `<div class="table-wrap"><table>
     <thead><tr><th>Klíč segmentu</th><th>Název</th><th>Pořadí</th><th>Barva</th><th>Ikona</th><th></th></tr></thead>
-    <tbody id="segmentsTbody">${rows.map(segmentRowHtml).join("")}</tbody></table></div>`;
+    <tbody id="segmentsTbody">${shown.map(segmentRowHtml).join("")}</tbody></table></div>
+    ${filterSummaryHtml("segments", shown.length, rows.length, "segmentů")}`;
   wireDeleteButtons("segmentsTbody");
+  el.dataset.hiddenRows = JSON.stringify(hidden);
 }
 
 function saveSegmentsTable() {
@@ -6437,6 +6527,7 @@ function saveSegmentsTable() {
       tr.querySelector('[data-field="icon"]').value.trim() || "📋",
     ]);
   }
+  hiddenFilterRows("segmentsTable").forEach((r) => data.push([r.segment_key, r.nazev, r.sort_order, r.color, r.icon]));
   dbRun("DELETE FROM segments");
   const ins = db.prepare("INSERT INTO segments (segment_key, nazev, sort_order, color, icon) VALUES (?, ?, ?, ?, ?)");
   data.forEach((r) => ins.run(r));
@@ -6454,19 +6545,35 @@ function furnitureRowHtml(r) {
     <td><select data-field="zone">${zoneOptions}</select></td>
     <td><input type="text" value="${esc(r.furniture)}" data-field="furniture"></td>
     <td><input type="number" step="0.5" value="${r.wpl_counter ?? 0}" data-field="wpl_counter"></td>
+    ${refVersionCellHtml(r.ref_version_id)}
     <td><button class="btn secondary small btn-del">✕</button></td>
   </tr>`;
 }
+
+// Identita nábytkového prvku pro porovnání změn mezi uloženími (kvůli evidenci
+// verze u jednotlivých řádků) — stejný princip jako dotaceKey().
+function furnitureKey(segment, zone, furniture) { return `${segment}||${zone}||${furniture}`; }
 
 function renderFurnitureTable() {
   const el = document.getElementById("furnitureTable");
   if (!el) return;
   if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
-  const rows = dbAll("SELECT id, segment, zone, furniture, wpl_counter FROM furniture_to_zone ORDER BY segment, zone, id");
+  const all = dbAll(`SELECT id, segment, zone, furniture, wpl_counter, ref_version_id
+    FROM furniture_to_zone ORDER BY segment, zone, id`);
+  // Zóna se filtruje samostatným výběrem, text hledá v segmentu, názvu prvku
+  // i v názvu zóny — obojí se skládá (jako AND).
+  const zoneFilter = tableFilterState.furnitureZone || "";
+  const rows = zoneFilter ? all.filter((r) => r.zone === zoneFilter) : all;
+  const { shown, hidden } = splitByFilter("furniture", rows,
+    (r) => `${r.segment} ${r.furniture} ${ZONE_LABELS[r.zone] || r.zone}`);
   el.innerHTML = `<div class="table-wrap"><table>
-    <thead><tr><th>Segment</th><th>Zóna</th><th>Nábytek</th><th>WPL / kus</th><th></th></tr></thead>
-    <tbody id="furnitureTbody">${rows.map(furnitureRowHtml).join("")}</tbody></table></div>`;
+    <thead><tr><th>Segment</th><th>Zóna</th><th>Nábytek</th><th>WPL / kus</th>
+      <th title="Verze referenčních dat, ve které řádek naposledy vznikl nebo se změnil">Verze</th><th></th></tr></thead>
+    <tbody id="furnitureTbody">${shown.map(furnitureRowHtml).join("")}</tbody></table></div>
+    ${filterSummaryHtml("furniture", shown.length, all.length, "nábytkových prvků")}`;
   wireDeleteButtons("furnitureTbody");
+  // Skryté řádky = jak ty odfiltrované textem, tak ty vyřazené výběrem zóny.
+  el.dataset.hiddenRows = JSON.stringify([...hidden, ...all.filter((r) => !rows.includes(r))]);
 }
 
 function saveFurnitureTable() {
@@ -6482,13 +6589,94 @@ function saveFurnitureTable() {
       toNumberOrNull(tr.querySelector('[data-field="wpl_counter"]').value) ?? 0,
     ]);
   }
+  hiddenFilterRows("furnitureTable").forEach((r) => data.push([r.segment, r.furniture, r.zone, r.wpl_counter]));
+
+  // Evidence verze u jednotlivých řádků — viz saveAbsenceTable(): nezměněné
+  // řádky si ponechají původní stamp, změněné a nové dostanou číslo nové verze.
+  const old = {};
+  dbAll("SELECT segment, zone, furniture, wpl_counter, ref_version_id FROM furniture_to_zone")
+    .forEach((r) => { old[furnitureKey(r.segment, r.zone, r.furniture)] = r; });
+  const changed = data.filter(([segment, furniture, zone, wpl]) => {
+    const prev = old[furnitureKey(segment, zone, furniture)];
+    return !prev || prev.wpl_counter !== wpl;
+  }).map(([segment, furniture, zone]) => [segment, zone, furniture]);
+
   dbRun("DELETE FROM furniture_to_zone");
-  const ins = db.prepare("INSERT INTO furniture_to_zone (segment, furniture, zone, wpl_counter) VALUES (?, ?, ?, ?)");
-  data.forEach((r) => ins.run(r));
+  const ins = db.prepare(`INSERT INTO furniture_to_zone (segment, furniture, zone, wpl_counter, ref_version_id)
+    VALUES (?, ?, ?, ?, ?)`);
+  data.forEach((r) => {
+    const prev = old[furnitureKey(r[0], r[2], r[1])];
+    ins.run([...r, prev ? prev.ref_version_id : null]);
+  });
   ins.free();
+
+  const versionId = ensureRefVersionUpToDate("Úprava: nábytkové prvky");
+  changed.forEach(([segment, zone, furniture]) => dbRun(
+    `UPDATE furniture_to_zone SET ref_version_id = ?
+     WHERE segment = ? AND zone = ? AND furniture = ?`, [versionId, segment, zone, furniture]));
+
   persistDatabase(true);
   renderFurnitureTable();
-  toast("Tabulka nábytku byla uložena.", "ok");
+  renderRefVersionsList();
+  toast("Tabulka nábytku byla uložena a zaznamenána nová verze referenčních dat.", "ok");
+}
+
+/* ---- Kopírování zobrazených (vyfiltrovaných) nábytkových prvků do schránky -- */
+// Kopíruje se přesně to, co je v tabulce vidět — včetně rozepsaných, ještě
+// neuložených úprav (hodnoty se čtou z formuláře, ne z databáze).
+function visibleFurnitureRows() {
+  return [...document.querySelectorAll("#furnitureTbody tr")].map((tr) => ({
+    segment: tr.querySelector('[data-field="segment"]').value.trim(),
+    zone: tr.querySelector('[data-field="zone"]').value,
+    furniture: tr.querySelector('[data-field="furniture"]').value.trim(),
+    wpl: toNumberOrNull(tr.querySelector('[data-field="wpl_counter"]').value) ?? 0,
+    version: (tr.querySelector(".ref-version-cell") || {}).innerText || "",
+  })).filter((r) => r.segment || r.furniture);
+}
+
+function furnitureFilterDescription() {
+  const parts = [];
+  const zone = tableFilterState.furnitureZone;
+  if (zone) parts.push(`zóna ${ZONE_LABELS[zone] || zone}`);
+  if (tableFilterValue("furniture")) parts.push(`hledaný text „${tableFilterValue("furniture")}“`);
+  return parts.length ? `filtr: ${parts.join(", ")}` : "bez filtru — všechny prvky";
+}
+
+function buildFurnitureRefClipboardHtml(rows) {
+  const T = "border:1px solid #c9ced6; padding:5px 8px;";
+  const head = `<tr style="background:#eef2f7;">${["Segment", "Zóna", "Nábytek", "WPL / kus", "Verze"]
+    .map((h) => `<th style="${T} text-align:left; font-weight:bold;">${esc(h)}</th>`).join("")}</tr>`;
+  const body = rows.map((r) => {
+    const meta = getSegmentMeta(r.segment);
+    return `<tr>
+      <td style="${T} background:${meta.color}22;"><strong>${esc(r.segment)}</strong></td>
+      <td style="${T}">${esc(ZONE_LABELS[r.zone] || r.zone)}</td>
+      <td style="${T}">${esc(r.furniture)}</td>
+      <td style="${T} text-align:right;">${fmt1(r.wpl)}</td>
+      <td style="${T} text-align:center;">${esc(r.version.trim())}</td>
+    </tr>`;
+  }).join("");
+  return `<div style="font-family:Segoe UI,Arial,sans-serif; font-size:12px;">
+    <p style="margin:0 0 6px;"><strong>Nábytkové prvky (referenční data)</strong> — ${esc(furnitureFilterDescription())},
+      ${rows.length} ${rows.length === 1 ? "prvek" : "prvků"}</p>
+    <table style="border-collapse:collapse;"><thead>${head}</thead><tbody>${body}</tbody></table>
+  </div>`;
+}
+
+function buildFurnitureRefClipboardText(rows) {
+  const lines = [`Nábytkové prvky (referenční data) — ${furnitureFilterDescription()}`,
+    ["Segment", "Zóna", "Nábytek", "WPL / kus", "Verze"].join("\t")];
+  rows.forEach((r) => lines.push([r.segment, ZONE_LABELS[r.zone] || r.zone, r.furniture,
+    fmt1(r.wpl), r.version.trim()].join("\t")));
+  return lines.join("\n");
+}
+
+function copyFurnitureRefToClipboard() {
+  if (!requireDb()) return;
+  const rows = visibleFurnitureRows();
+  if (!rows.length) { toast("Tabulka nábytku je prázdná — není co kopírovat.", "warn"); return; }
+  copyToClipboardBoth(buildFurnitureRefClipboardHtml(rows), buildFurnitureRefClipboardText(rows),
+    `Zkopírováno ${rows.length} zobrazených nábytkových prvků — vložte přes Ctrl+V.`);
 }
 /* ------------- Generování .xlsx šablony checklistu (CHL + VSTUPY) ---------- */
 // Šablona se sestavuje tak, aby vypadala i fungovala jako vzorový checklist:
@@ -7133,6 +7321,7 @@ async function init() {
     wireDeleteButtons("absenceTbody");
   });
   document.getElementById("btnSaveAbsence").addEventListener("click", saveAbsenceTable);
+  wireTableFilter("absenceFilter", "absence", renderAbsenceTable);
   document.getElementById("btnAddDotaceRow").addEventListener("click", dotaceEditorMain.addRow);
   document.getElementById("btnSaveDotace").addEventListener("click", dotaceEditorMain.save);
   document.getElementById("dotaceFilter").addEventListener("input", (e) => dotaceEditorMain.setFilter(e.target.value));
@@ -7145,11 +7334,18 @@ async function init() {
     wireDeleteButtons("segmentsTbody");
   });
   document.getElementById("btnSaveSegments").addEventListener("click", saveSegmentsTable);
+  wireTableFilter("segmentsFilter", "segments", renderSegmentsTable);
   document.getElementById("btnAddFurnitureRow").addEventListener("click", () => {
     document.getElementById("furnitureTbody").insertAdjacentHTML("beforeend", furnitureRowHtml({ segment: "", zone: ZONES[0], furniture: "", wpl_counter: 0 }));
     wireDeleteButtons("furnitureTbody");
   });
   document.getElementById("btnSaveFurniture").addEventListener("click", saveFurnitureTable);
+  document.getElementById("btnCopyFurnitureRef").addEventListener("click", copyFurnitureRefToClipboard);
+  wireTableFilter("furnitureFilter", "furniture", renderFurnitureTable);
+  document.getElementById("furnitureZoneFilter").addEventListener("change", (e) => {
+    tableFilterState.furnitureZone = e.target.value;
+    renderFurnitureTable();
+  });
   document.getElementById("btnGenerateTemplate").addEventListener("click", generateChecklistTemplate);
 
   const visitorInput = document.getElementById("visitorReportInput");
