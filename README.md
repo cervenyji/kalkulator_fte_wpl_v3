@@ -739,7 +739,14 @@ Excel checklist i celá kalkulace:
 Všechny tři tabulky mají nad sebou vyhledávací pole — viz „Vyhledávání a filtrování v tabulkách“.
 
 Tlačítkem **„Generovat Excel šablonu“** se z aktuálního obsahu těchto tří tabulek vygeneruje
-`.xlsx`, který **vypadá i funguje stejně jako vzorový checklist** — se dvěma listy:
+`.xlsx`, který **vypadá i funguje stejně jako vzorový checklist**. Soubor se jmenuje
+**`checklist_sablona_refdata-v<číslo verze>.xlsx`** — číslo je verze referenčních dat, ze kterých
+byla šablona vygenerována, takže je z názvu hned poznat, jaký obsah (pozice, nábytek, absence)
+v ní je. Stejná informace je i v patičce listu CHL v řádku „Vygenerováno:“ (datum, čas a verze).
+
+Šablona má tři listy, ale **vidět je jen `CHL`** — `VSTUPY` i pomocný list `Pobočky` jsou skryté,
+aby pobočku nepletly. Skrytí nijak neovlivňuje vzorce, rozbalovací menu ani zpětné načtení souboru
+do aplikace; případné odkrytí je v Excelu na pravé tlačítko na oušku listu.
 
 - **`CHL`** — list, do kterého vyplňuje pobočka. Obsahuje kompletní rozvržení vzoru:
   - hlavičku s titulkem (`=_xlfn.CONCAT("CHECKLIST"," - ",C3)`) a polem pro celkový počet WPL,
@@ -754,7 +761,10 @@ Tlačítkem **„Generovat Excel šablonu“** se z aktuálního obsahu těchto 
   - sekce **SAZO**, **BUSINESS ZONE** (FRONT OFFICE — service a meeting zone) a **BACK OFFICE**
     s nábytkem po segmentech a zónách, sloupci „POČET“ / „WPL“ / „POZNÁMKA“,
   - **SUMMARY** s dopočtem počtu ATM a WPL, sekci **VYBAVENÍ** (bankovní technika, ostatní
-    vybavení, náhradní provoz), blok doplňujících informací a řádky Load key / Calculation key.
+    vybavení, náhradní provoz), blok doplňujících informací a řádky Load key / Calculation key /
+    Vygenerováno (datum + verze referenčních dat),
+  - sloupec **`K` s rozšířenými poznámkami je seskupený a defaultně sbalený (skrytý)** —
+    rozbalí se tlačítkem `+` nad sloupcem `J`, kde je i svislý popisek „ROZŠÍŘENÉ POZNÁMKY ▼“.
 - **`VSTUPY`** — list, který si hodnoty z CHL jen **stahuje vzorci** (`=CHL!G1`, `=CHL!C3`,
   `=CHL!I3`, `=CHL!H10`, `=$C$4`, u cestovních `=IF(CHL!B80=0,"",…)`) do přesně té podoby, kterou
   čte `parseVstupySheet()` (C1–C4 + řádky od 6, sloupce A–D). Aplikace parsuje výhradně tento list
@@ -769,7 +779,14 @@ bez úprav znovu načíst zpět do aplikace (záložka „Nový výpočet“ →
 
 Šablona je **skutečně naformátovaná** podle vzoru — barevné nadpisy sekcí (tmavě modrá `#235377`),
 tyrkysové popisky segmentů a součtů, šedé popisky zón, modré písmo vyplňovaných buněk, velká
-tyrkysová čísla u hodin, sloučené buňky, šířky sloupců i výšky řádků. Vendorovaná knihovna SheetJS
+tyrkysová čísla u hodin, sloučené buňky, šířky sloupců i výšky řádků. Navíc oproti vzoru:
+
+- **na tmavém podbarvení je písmo bílé** (modrý titulkový řádek 1 i tmavě modré hlavičky sekcí),
+  aby byl text čitelný; na světlých a tyrkysových výplních zůstává tmavé,
+- **vyplňované buňky v hlavičce mají světle šedé podbarvení** — sloučené `C:D` a sloupec `I`
+  v řádcích 3–8, takže je vidět, kam se zapisuje,
+- **sloupce `G` a `H` jsou širší** (19,86), aby se do nich vešly popisky „POČET FTE AKTUÁLNĚ“
+  a „POČET FTE VÝHLED“. Vendorovaná knihovna SheetJS
 (komunitní edice) umí formátování buněk sice přečíst, ale při zápisu (`XLSX.write`) ho vždy zahazuje
 (ověřeno přímým testem) — proto se šablona nesestavuje přes SheetJS, ale přes vlastní minimalistický
 zapisovač `.xlsx` (`xlsx_writer.js`), který .xlsx (ZIP + OOXML XML) sestaví přímo. Shoda se vzorem je

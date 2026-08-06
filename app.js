@@ -6705,13 +6705,18 @@ const CHL_C = {
   segment: "FF00A4A2",   // tyrkysová — popisek segmentu, velká čísla hodin
   sum: "FF00A4A3",       // tyrkysová — hodnoty součtů
   zone: "FFE7E6E6",      // světle šedá — popisek zóny
+  headerCell: "FFF2F2F2", // světle šedá — vyplňované buňky v hlavičce (C:D a I, ř. 3–8)
   input: "FF0070C0",     // barva písma vyplňovaných buněk
+  onDark: "FFFFFFFF",    // písmo na tmavém podbarvení (title, section)
 };
 const CHL_COL_WIDTHS = [
   { index: 1, width: 11.7109375 }, { index: 2, width: 14.28515625 }, { index: 3, width: 14.42578125 },
   { index: 4, width: 9.28515625 }, { index: 5, width: 8.7109375 }, { index: 6, width: 19.42578125 },
-  { index: 7, width: 20.5703125 }, { index: 9, width: 25.140625 }, { index: 10, width: 4.7109375 },
-  { index: 11, width: 91.140625 },
+  { index: 7, width: 19.86 }, { index: 8, width: 19.86 }, { index: 9, width: 25.140625 },
+  // J je „souhrnný“ sloupec skupiny (nese tlačítko +/−), K jsou rozšířené
+  // poznámky — seskupené a defaultně sbalené (skryté).
+  { index: 10, width: 4.7109375, collapsed: true },
+  { index: 11, width: 91.140625, outlineLevel: 1, hidden: true },
 ];
 const VSTUPY_COL_WIDTHS = [
   { index: 1, width: 11.42578125 }, { index: 2, width: 57.140625 },
@@ -6743,6 +6748,11 @@ const CHL_VYBAVENI = [
 
 function generateChecklistTemplate() {
   if (!requireDb()) return;
+
+  // Verze referenčních dat, ze kterých šablona vzniká — jde do názvu souboru
+  // i do patičky listu CHL, aby bylo zpětně jasné, s jakým obsahem (pozice,
+  // nábytek, absence) byl checklist vygenerován.
+  const refVersionId = ensureRefVersionUpToDate("Stav při generování Excel šablony");
 
   const segments = dbAll("SELECT segment_key FROM segments ORDER BY sort_order, segment_key").map((r) => r.segment_key);
   const segOrder = {};
@@ -6796,25 +6806,33 @@ function generateChecklistTemplate() {
   /* ------------------------------- styly ---------------------------------- */
   const sb = createStyleBook();
   const A = (size, bold, color) => ({ name: "Arial", size, bold: !!bold, color: color || null });
+  // Písmo na tmavém podbarvení (modrá `title`, tmavě modrá `section`) je bílé,
+  // aby byl text čitelný; na světlých a tyrkysových výplních zůstává tmavé.
+  const W = CHL_C.onDark;
   const st = {
-    title: sb.style({ font: A(12, true), fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } }),
-    titleCtr: sb.style({ font: A(12, true), fill: CHL_C.title, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
-    titleCtrN: sb.style({ font: A(12), fill: CHL_C.title, border: "lrtb", alignment: { h: "center", v: "center" } }),
+    title: sb.style({ font: A(12, true, W), fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } }),
+    titleCtr: sb.style({ font: A(12, true, W), fill: CHL_C.title, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
+    titleCtrN: sb.style({ font: A(12, false, W), fill: CHL_C.title, border: "lrtb", alignment: { h: "center", v: "center" } }),
     // „Vygenerováno“ je ve vzoru Calibri a bez levého rámečku (navazuje na H1)
-    genLabel: sb.style({ font: { name: "Calibri", size: 12, bold: true }, fill: CHL_C.title, border: "rtb", alignment: { h: "center", v: "center" } }),
-    sectionCtrNW: sb.style({ font: A(9), fill: CHL_C.section, border: "lrtb", alignment: { h: "center", v: "center" } }),
-    noteHead: sb.style({ font: { name: "Aptos Display", size: 18 }, fill: CHL_C.title, border: "lrtb", alignment: { v: "center" } }),
+    genLabel: sb.style({ font: { name: "Calibri", size: 12, bold: true, color: W }, fill: CHL_C.title, border: "rtb", alignment: { h: "center", v: "center" } }),
+    sectionCtrNW: sb.style({ font: A(9, false, W), fill: CHL_C.section, border: "lrtb", alignment: { h: "center", v: "center" } }),
+    noteHead: sb.style({ font: { name: "Aptos Display", size: 18, color: W }, fill: CHL_C.title, border: "lrtb", alignment: { v: "center" } }),
+    // Svislý popisek ve sloupci J nemá výplň — zůstává tmavý, jinak by zmizel.
     noteSide: sb.style({ font: { name: "Aptos Display", size: 10 }, border: "lr", alignment: { h: "center", v: "center", wrap: true } }),
-    section: sb.style({ font: A(9, true), fill: CHL_C.section, border: "lrtb", alignment: { h: "left", v: "center" } }),
-    sectionCtr: sb.style({ font: A(9), fill: CHL_C.section, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
-    sectionCtrB: sb.style({ font: A(9, true), fill: CHL_C.section, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
-    sumBlank: sb.style({ font: A(9, true), fill: CHL_C.section, border: "lrtb", alignment: { h: "center", v: "center" } }),
+    section: sb.style({ font: A(9, true, W), fill: CHL_C.section, border: "lrtb", alignment: { h: "left", v: "center" } }),
+    sectionCtr: sb.style({ font: A(9, false, W), fill: CHL_C.section, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
+    sectionCtrB: sb.style({ font: A(9, true, W), fill: CHL_C.section, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
+    sumBlank: sb.style({ font: A(9, true, W), fill: CHL_C.section, border: "lrtb", alignment: { h: "center", v: "center" } }),
     label: sb.style({ font: A(9, true), border: "lrtb", alignment: { h: "left", v: "center" } }),
     value: sb.style({ font: A(9, true, CHL_C.title), border: "lrtb", alignment: { h: "center", v: "center" } }),
+    // Vyplňované buňky v hlavičce (sloučené C:D a sloupec I, řádky 3–8)
+    // mají světle šedé podbarvení, aby bylo vidět, kam se zapisuje.
+    valueGrey: sb.style({ font: A(9, true, CHL_C.title), fill: CHL_C.headerCell, border: "lrtb", alignment: { h: "center", v: "center" } }),
     bigNum: sb.style({ font: A(20, true, CHL_C.segment), border: "lrtb", alignment: { h: "center", v: "center" } }),
+    bigNumGrey: sb.style({ font: A(20, true, CHL_C.segment), fill: CHL_C.headerCell, border: "lrtb", alignment: { h: "center", v: "center" } }),
     segment: sb.style({ font: A(9, true), fill: CHL_C.segment, border: "lrtb", alignment: { h: "center", v: "center" } }),
     zone: sb.style({ font: A(8, true), fill: CHL_C.zone, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
-    sideLabel: sb.style({ font: A(9, true), fill: CHL_C.title, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
+    sideLabel: sb.style({ font: A(9, true, W), fill: CHL_C.title, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
     subLabel: sb.style({ font: A(9, true), border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
     item: sb.style({ font: A(9), border: "lrtb", alignment: { h: "left", v: "center" } }),
     input: sb.style({ font: A(9, true, CHL_C.input), border: "lrtb", alignment: { h: "center", v: "center" } }),
@@ -6865,14 +6883,14 @@ function generateChecklistTemplate() {
   ];
   detailRows.forEach(([label, r]) => {
     put("A", r, str(label, st.label)); put("B", r, str("", st.label)); merge("A", r, "B", r);
-    put("C", r, str("", st.value)); put("D", r, str("", st.value)); merge("C", r, "D", r);
+    put("C", r, str("", st.valueGrey)); put("D", r, str("", st.valueGrey)); merge("C", r, "D", r);
   });
   // "Režim obsluhy klientů:" je ve vzoru sloučený přes dva řádky (7-8)
   put("A", 7, str("Režim obsluhy klientů:", st.label)); put("B", 7, str("", st.label));
   put("A", 8, str("", st.label)); put("B", 8, str("", st.label));
   merges.push("A7:B8");
-  put("C", 7, str("", st.value)); put("D", 7, str("", st.value));
-  put("C", 8, str("", st.value)); put("D", 8, str("", st.value));
+  put("C", 7, str("", st.valueGrey)); put("D", 7, str("", st.valueGrey));
+  put("C", 8, str("", st.valueGrey)); put("D", 8, str("", st.valueGrey));
   merges.push("C7:D8");
 
   // Rozbalovací menu (ověření dat) v hlavičce. Seznam poboček je dlouhý, takže
@@ -6891,8 +6909,8 @@ function generateChecklistTemplate() {
     for (let r = r1; r <= r2; r++) for (const c of "EFGH") put(c, r, str("", st.label));
     put("E", r1, str(label, st.label));
     merges.push(`E${r1}:H${r2}`);
-    for (let r = r1; r <= r2; r++) put("I", r, num("", st.bigNum));
-    put("I", r1, num(40, st.bigNum));
+    for (let r = r1; r <= r2; r++) put("I", r, num("", st.bigNumGrey));
+    put("I", r1, num(40, st.bigNumGrey));
     merges.push(`I${r1}:I${r2}`);
   });
   for (let r = 3; r <= 9; r++) put("K", r, str("", st.plain));
@@ -7135,7 +7153,8 @@ function generateChecklistTemplate() {
   }
   merges.push(`A${noteFirst}:I${row - 1}`);
 
-  [["Load key:", ""], ["Calculation key:", ""], ["Vygenerováno:", ""], ["Odkaz na sharepoint item:", ""]]
+  const generatedAt = `${new Date().toLocaleString("cs-CZ")} · referenční data verze #${refVersionId}`;
+  [["Load key:", ""], ["Calculation key:", ""], ["Vygenerováno:", generatedAt], ["Odkaz na sharepoint item:", ""]]
     .forEach(([label, value]) => {
       rowHeights[row] = 17.1;
       put("A", row, str(label, st.label));
@@ -7150,8 +7169,8 @@ function generateChecklistTemplate() {
   // Hodnoty se stahují vzorci z CHL; parseVstupySheet() čte C1–C4 a od řádku 6
   // sloupce A–D, takže rozvržení tohoto listu musí zůstat přesně takto.
   const vs = {};
-  const vstupyHeader = sb.style({ font: { name: "Arial", size: 10 }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
-  const vstupyHeaderB = sb.style({ font: { name: "Arial", size: 10, bold: true }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
+  const vstupyHeader = sb.style({ font: { name: "Arial", size: 10, color: W }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
+  const vstupyHeaderB = sb.style({ font: { name: "Arial", size: 10, bold: true, color: W }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
   const vstupyCell = sb.style({ border: "lrtb", alignment: { h: "left", v: "center" } });
 
   [["ID pobočky", "CHL!G1"], ["Název pobočky", "CHL!C3"],
@@ -7190,7 +7209,7 @@ function generateChecklistTemplate() {
 
   /* --------- Pomocný list se seznamem poboček (zdroj rozbalovacího menu) ---- */
   const pob = {};
-  const pobHeader = sb.style({ font: { name: "Arial", size: 10, bold: true }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
+  const pobHeader = sb.style({ font: { name: "Arial", size: 10, bold: true, color: W }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
   const pobCell = sb.style({ font: { name: "Arial", size: 9 }, border: "lrtb", alignment: { h: "left", v: "center" } });
   ["Název pobočky", "ID pobočky", "Region"].forEach((h, i) => { pob[`${"ABC"[i]}1`] = str(h, pobHeader); });
   pobockyRows.forEach((r, i) => {
@@ -7206,12 +7225,17 @@ function generateChecklistTemplate() {
   const chlSheet = {
     name: "CHL", cells: chl, cols: CHL_COL_WIDTHS, merges,
     rowHeights, defaultRowHeight: 15, freezeRows: 9, validations,
+    // tlačítko pro rozbalení skupiny (sloupec K) vlevo od ní, u popisku v J
+    summaryRight: false,
   };
+  // Pobočka vyplňuje jen CHL; VSTUPY (odkud aplikace čte) i pomocný seznam
+  // poboček jsou skryté, aby ji nepletly. Skrytí neovlivní ani vzorce, ani
+  // rozbalovací menu, ani zpětné načtení souboru do aplikace.
   const vstupySheet = {
-    name: "VSTUPY", cells: vs, cols: VSTUPY_COL_WIDTHS, defaultRowHeight: 15, freezeRows: 5,
+    name: "VSTUPY", cells: vs, cols: VSTUPY_COL_WIDTHS, defaultRowHeight: 15, freezeRows: 5, hidden: true,
   };
   const pobockySheet = {
-    name: POBOCKY_SHEET, cells: pob, defaultRowHeight: 15, freezeRows: 1,
+    name: POBOCKY_SHEET, cells: pob, defaultRowHeight: 15, freezeRows: 1, hidden: true,
     cols: [{ index: 1, width: 42 }, { index: 2, width: 14 }, { index: 3, width: 26 }],
   };
 
@@ -7219,15 +7243,17 @@ function generateChecklistTemplate() {
   const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = "checklist_sablona.xlsx";
+  a.href = url; a.download = `checklist_sablona_refdata-v${refVersionId}.xlsx`;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 
   const positionCount = positionSegments.reduce((n, s) => n + positionsBySegment[s].length, 0);
   const furnitureCount = frontOffice.concat(backOffice)
     .reduce((n, b) => n + b.zones.reduce((m, z) => m + z.items.length, 0), 0);
-  toast(`Excel šablona vygenerována (${positionCount} pozic, ${furnitureCount} nábytkových prvků). ` +
-    `Pobočka vyplňuje list CHL, do listu VSTUPY se hodnoty stahují automaticky.`, "ok");
+  renderRefVersionsList();
+  toast(`Excel šablona vygenerována z referenčních dat verze #${refVersionId} ` +
+    `(${positionCount} pozic, ${furnitureCount} nábytkových prvků). Pobočka vyplňuje list CHL, ` +
+    `skrytý list VSTUPY si hodnoty stahuje automaticky.`, "ok");
 }
 
 /* --------------------------------- Tabs ------------------------------------ */

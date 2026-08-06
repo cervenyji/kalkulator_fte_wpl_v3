@@ -15,8 +15,9 @@
 
    Podporuje: řetězce (inline), čísla, vzorce, pojmenované styly (font
    name/size/bold/barva, výplň, ohraničení po jednotlivých stranách,
-   zarovnání + zalamování), šířky sloupců, výšky řádků, sloučené buňky
-   a zamrznuté řádky.
+   zarovnání + zalamování), šířky sloupců, výšky řádků, sloučené buňky,
+   zamrznuté řádky, seskupení (outline) a skrytí sloupců i skrytí celých
+   listů.
    ========================================================================= */
 
 /* ------------------------------- ZIP (stored) ------------------------------ */
@@ -223,14 +224,17 @@ function createStyleBook() {
 /* --------------------------------- Sheet XML -------------------------------- */
 
 // cells:  { "A1": { v, t: "str"|undefined, f: "vzorec bez =", s: styleIndex } }
-// cols:   [{ index (1-based), width }]
+// cols:   [{ index (1-based), width, outlineLevel, hidden, collapsed }]
+//         outlineLevel + hidden = seskupený (sbalitelný) a defaultně sbalený
+//         sloupec; `collapsed` patří na sousední „souhrnný“ sloupec, u kterého
+//         Excel vykreslí tlačítko +/−
 // merges: ["A1:F1", ...]
 // rowHeights: { 1: 39.75, ... }
 // freezeRows: počet zamrznutých řádků odshora
 // validations: [{ sqref, values: ["a","b"] }] nebo [{ sqref, formula: "'List'!$A$2:$A$9" }]
 //              -> ověření dat typu "seznam" (rozbalovací menu v buňce)
 function sheetXml(sheet) {
-  const { cells, cols, merges, rowHeights, freezeRows, defaultRowHeight, validations } = sheet;
+  const { cells, cols, merges, rowHeights, freezeRows, defaultRowHeight, validations, summaryRight } = sheet;
   const byRow = {};
   Object.keys(cells).forEach((addr) => {
     const { row } = parseCellAddr(addr);
@@ -265,7 +269,9 @@ function sheetXml(sheet) {
   }).join("");
 
   const colsXml = (cols && cols.length)
-    ? `<cols>${cols.map((c) => `<col min="${c.index}" max="${c.index}" width="${c.width}" customWidth="1"/>`).join("")}</cols>`
+    ? `<cols>${cols.map((c) => `<col min="${c.index}" max="${c.index}" width="${c.width}" customWidth="1"` +
+      `${c.outlineLevel ? ` outlineLevel="${c.outlineLevel}"` : ""}${c.hidden ? ' hidden="1"' : ""}` +
+      `${c.collapsed ? ' collapsed="1"' : ""}/>`).join("")}</cols>`
     : "";
   const mergesXml = (merges && merges.length)
     ? `<mergeCells count="${merges.length}">${merges.map((m) => `<mergeCell ref="${m}"/>`).join("")}</mergeCells>`
@@ -273,7 +279,14 @@ function sheetXml(sheet) {
   const paneXml = freezeRows
     ? `<sheetViews><sheetView workbookViewId="0"><pane ySplit="${freezeRows}" topLeftCell="A${freezeRows + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
     : `<sheetViews><sheetView workbookViewId="0"/></sheetViews>`;
-  const fmtXml = `<sheetFormatPr defaultRowHeight="${defaultRowHeight || 15}"/>`;
+  const outlineLevelCol = (cols || []).reduce((m, c) => Math.max(m, c.outlineLevel || 0), 0);
+  const fmtXml = `<sheetFormatPr defaultRowHeight="${defaultRowHeight || 15}"` +
+    `${outlineLevelCol ? ` outlineLevelCol="${outlineLevelCol}"` : ""}/>`;
+  // sheetPr musí být první element listu (schéma CT_Worksheet). summaryRight
+  // říká, na které straně skupiny Excel vykreslí tlačítko pro sbalení.
+  const sheetPrXml = outlineLevelCol
+    ? `<sheetPr><outlinePr summaryBelow="1" summaryRight="${summaryRight === false ? 0 : 1}"/></sheetPr>`
+    : "";
 
   // Pořadí prvků v CT_Worksheet je dané schématem — dataValidations musí být
   // až za mergeCells, jinak Excel soubor odmítne jako poškozený.
@@ -288,6 +301,7 @@ function sheetXml(sheet) {
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
     `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+    sheetPrXml +
     `<dimension ref="A1:${colLetters(maxCol)}${maxRow}"/>` +
     paneXml + fmtXml + colsXml +
     `<sheetData>${rowsXml}</sheetData>` +
@@ -297,7 +311,8 @@ function sheetXml(sheet) {
 
 /* -------------------------------- Workbook ---------------------------------- */
 
-// sheets: [{ name, cells, cols, merges, rowHeights, freezeRows, defaultRowHeight }]
+// sheets: [{ name, cells, cols, merges, rowHeights, freezeRows, defaultRowHeight, hidden }]
+// hidden: list se v sešitu nezobrazí (jde odkrýt přes pravé tlačítko na oušku)
 function buildXlsxWorkbook(sheets, styleBook) {
   const encoder = new TextEncoder();
   const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
@@ -316,7 +331,8 @@ function buildXlsxWorkbook(sheets, styleBook) {
 
   const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
     `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
-    `<sheets>${sheets.map((s, i) => `<sheet name="${xmlEsc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("")}</sheets>` +
+    `<sheets>${sheets.map((s, i) => `<sheet name="${xmlEsc(s.name)}" sheetId="${i + 1}"` +
+      `${s.hidden ? ' state="hidden"' : ""} r:id="rId${i + 1}"/>`).join("")}</sheets>` +
     `</workbook>`;
 
   const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
