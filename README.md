@@ -99,6 +99,22 @@ V záložce „Referenční data“ lze přímo v prohlížeči upravovat:
 
 Úpravy se uloží tlačítkem „Uložit tabulku…“ přímo do databáze.
 
+### Vytížení zón u soupisu zaměstnanců (progress bar)
+
+Všude, kde je vidět **soupis zaměstnanců pobočky** — náhled checklistu před
+výpočtem, „Vstupní data z checklistu“ v detailu kalkulace a kapitola **„Přehled
+pozic z checklistu“ v PDF** — má každá pozice navíc **vodorovný pruh
+s rozdělením jejího času po zónách** podle časových dotací v referenčních datech
+(ServiceZ / MeetingZ / BackofficeZ / OfficeRoom).
+
+- Barvy jsou jednotné: 🟦 Service zone, 🟩 Meeting zone, 🟧 Backoffice zone,
+  🟪 Office room, šedá = nezařazený zbytek do 100 %.
+- V PDF je pruh vykreslený stejně, kapitola je nově **tabulka** (segment, pozice,
+  FTE, WPL, pruh) a buňka segmentu má **podbarvení jeho barvou** z nastavení
+  segmentů.
+- Pokud kalkulace zná svou **verzi referenčních dat**, bere se rozdělení ze
+  snapshotu té verze — pruh tedy ukazuje stav, se kterým se počítalo, ne dnešní.
+
 ### Vyhledávání a filtrování v tabulkách
 
 Nad každou editovatelnou tabulkou v záložkách **„Referenční data“**
@@ -111,6 +127,24 @@ text prohledává segment, název prvku i název zóny.
 Pod tabulkou je vždy vidět, kolik řádků je zobrazeno z celkového počtu. Filtr
 slouží **jen k prohlížení**: řádky, které mu nevyhovují, se nezahazují —
 **uložení tabulky zapíše i je**, takže filtrovat lze bez rizika ztráty dat.
+
+### Řazení, heatmapa a pruhy v časových dotacích
+
+Tabulka **Časové dotace pozic** (v „Referenčních datech“ i ve „Struktuře
+checklistu“) navíc umí:
+
+- **Řazení kliknutím na hlavičku** kteréhokoli sloupce (segment, pozice, čtyři
+  zóny i souhrnný sloupec „Vytížení zón“); druhé kliknutí obrátí směr, šipka
+  v hlavičce ukazuje aktuální řazení. Řazení je **jen zobrazovací** — uložení
+  zapíše řádky zpět v původním pořadí (podle `id`), takže se nerozhodí pořadí
+  pozic v generovaném checklistu.
+- **Heatmapu**: buňka s procentem je podbarvená barvou své zóny, tím sytěji, čím
+  vyšší je hodnota (100 % = nejsytější odstín). Prázdná nebo nulová hodnota
+  zůstává bílá.
+- **Pruh „Vytížení zón“** v každém řádku — stejný jako u soupisu zaměstnanců,
+  takže je na první pohled vidět, jestli dotace dávají dohromady 100 %.
+
+Heatmapa i pruh se přepočítávají **živě při psaní**, ještě před uložením.
 
 ### Kopírování vyfiltrovaného nábytku do schránky
 
@@ -737,6 +771,30 @@ Excel checklist i celá kalkulace:
   do schránky jako tabulku.
 
 Všechny tři tabulky mají nad sebou vyhledávací pole — viz „Vyhledávání a filtrování v tabulkách“.
+
+#### Nastavení Excel šablony
+
+Panel **„Nastavení Excel šablony“** (ukládá se do tabulky `app_settings`) řídí vzhled i chování
+generovaného souboru. Součástí je **živý náhled barev**, který ukazuje, jak budou vypadat hlavní
+prvky listu CHL.
+
+| Skupina | Nastavení |
+| --- | --- |
+| **Barvy šablony** | titulek a boční popisky, hlavičky sekcí, popisek segmentu, součtové buňky, popisek zóny, vyplňované buňky v hlavičce, písmo vyplňovaných buněk, písmo na tmavém podbarvení |
+| **Chování šablony** | barvit segmenty podle tabulky Segmenty, písmo šablony, počet volných řádků pro cestovní pozice, počet řádků pro doplňující informace, předvyplněná otevírací doba, šířka sloupců G a H, skrýt listy VSTUPY a Pobočky, sbalit sloupec K s poznámkami, ukotvit hlavičku CHL |
+
+Tlačítko **„Vrátit výchozí“** vrátí všechny hodnoty na původní podobu vzorového checklistu.
+
+#### Barvy segmentů v PDF a v Excel šabloně
+
+Barvy zadané v tabulce **Segmenty** se propisují do všech výstupů:
+
+- v **Excel šabloně** dostane popisek segmentu (v obsazenosti pobočky i u nábytku) přímo barvu
+  svého segmentu — písmo se automaticky přepne na bílé, pokud je barva tmavá. Vypnout to lze
+  volbou „Barvit segmenty podle tabulky Segmenty“ (pak platí jednotná barva „Popisek segmentu“),
+- v **PDF exportech** má buňka se segmentem světlý odstín své barvy (souhrnná tabulka WPL po
+  zónách, kompletní přehled WPL, analýza segmentů a zón, přehled pozic z checklistu) — vedle
+  dosavadního barevného čtverečku u názvu segmentu.
 
 Tlačítkem **„Generovat Excel šablonu“** se z aktuálního obsahu těchto tří tabulek vygeneruje
 `.xlsx`, který **vypadá i funguje stejně jako vzorový checklist**. Soubor se jmenuje

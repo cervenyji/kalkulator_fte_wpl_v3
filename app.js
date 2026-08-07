@@ -108,6 +108,10 @@ CREATE TABLE IF NOT EXISTS segments (
   color TEXT,
   icon TEXT
 );
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
 CREATE TABLE IF NOT EXISTS visitor_data (
   pobocka_id TEXT PRIMARY KEY,
   nazev TEXT,
@@ -158,6 +162,7 @@ function migrateSchema(dbi) {
     SEED_POBOCKY.forEach((r) => { ins.run(r); });
     ins.free();
   }
+  dbi.run(`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT)`);
   const segmentsCount = dbAll("SELECT COUNT(*) AS n FROM segments", [], dbi)[0].n;
   if (segmentsCount === 0) {
     const ins = dbi.prepare("INSERT INTO segments (segment_key, nazev, sort_order, color, icon) VALUES (?, ?, ?, ?, ?)");
@@ -752,10 +757,88 @@ function segmentBadgeHtml(key) {
   return `<span class="seg-badge" style="background:${m.color}22; color:${m.color}; border:1px solid ${m.color}66;">${m.icon} ${esc(key)}</span>`;
 }
 
+// Světlý odstín barvy segmentu (barva smíchaná s bílou) — používá se jako
+// podbarvení buněk se segmentem v PDF, aby bylo nastavení barev v „Segmentech“
+// vidět i v exportu, ale text zůstal čitelný.
+function segmentTintRgb(segmentKey, mix = 0.82) {
+  const [r, g, b] = hexToRgb(getSegmentMeta(segmentKey).color);
+  return [r, g, b].map((c) => Math.round(c + (255 - c) * mix));
+}
+
+// Je barva tmavá? (relativní jas podle vnímání) — podle toho se volí bílé nebo
+// tmavé písmo, aby text na barvě segmentu zůstal čitelný.
+function isDarkColor(hex) {
+  const [r, g, b] = hexToRgb(hex);
+  return (0.299 * r + 0.587 * g + 0.114 * b) < 150;
+}
+
 function hexToRgb(hex) {
   const h = String(hex || "#6b7684").replace("#", "");
   const n = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
   return [parseInt(n.slice(0, 2), 16) || 0, parseInt(n.slice(2, 4), 16) || 0, parseInt(n.slice(4, 6), 16) || 0];
+}
+
+/* ------------- Vytížení zón podle časových dotací (progress bar) ----------- */
+// Časová dotace pozice (ServiceZ / MeetingZ / BackofficeZ / OfficeRoom v %) se
+// vedle čísel ukazuje i jako vodorovný pruh — u soupisu zaměstnanců na pobočce
+// (v aplikaci i v PDF) a v tabulce časových dotací v referenčních datech.
+
+const ZONE_COLORS = {
+  service_zone: "#2770f0",     // modrá — obsluha na hale
+  meeting_zone: "#0bb43f",     // zelená — schůzky
+  backoffice_zone: "#f0a020",  // oranžová — backoffice
+  office_room: "#8b5cf6",      // fialová — kancelář
+};
+const ZONE_REST_COLOR = "#d8dde5"; // zbytek do 100 % (nezařazený čas)
+
+// Mapa "segment||pozice" -> rozdělení času po zónách. Pokud je k dispozici verze
+// referenčních dat kalkulace, bere se snapshot z ní (aby report odpovídal tomu,
+// s čím se počítalo); jinak aktuální tabulka casove_dotace.
+function dotaceSplitMap(refVersionId) {
+  const map = {};
+  const version = refVersionId ? getRefVersionById(refVersionId) : null;
+  if (version && version.dotace) {
+    version.dotace.forEach(([seg, poz, sv, me, bo, of]) => {
+      map[`${seg}||${poz}`] = { service_zone: sv || 0, meeting_zone: me || 0, backoffice_zone: bo || 0, office_room: of || 0 };
+    });
+    return map;
+  }
+  if (!db) return map;
+  dbAll(`SELECT segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room FROM casove_dotace`)
+    .forEach((r) => {
+      map[`${r.segment}||${r.pozice}`] = { service_zone: r.service_zone || 0, meeting_zone: r.meeting_zone || 0,
+        backoffice_zone: r.backoffice_zone || 0, office_room: r.office_room || 0 };
+    });
+  return map;
+}
+
+function zoneSplitTotal(split) {
+  return ZONES.reduce((sum, z) => sum + (Number(split && split[z]) || 0), 0);
+}
+
+// Vodorovný pruh s podílem zón. `split` je objekt { service_zone: %, ... }.
+function zoneSplitBarHtml(split, options = {}) {
+  if (!split) return `<span class="muted">bez časové dotace</span>`;
+  const total = zoneSplitTotal(split);
+  if (!total) return `<span class="muted">bez časové dotace</span>`;
+  const scale = Math.max(100, total); // přes 100 % se pruh nepřeteče, jen zhustí
+  const parts = ZONES.filter((z) => (Number(split[z]) || 0) > 0).map((z) => {
+    const v = Number(split[z]) || 0;
+    return `<span class="zbar-seg" style="width:${(v / scale) * 100}%; background:${ZONE_COLORS[z]};"
+      title="${esc(ZONE_LABELS[z])}: ${fmt1(v)} %">${v >= 12 ? `${Math.round(v)}` : ""}</span>`;
+  }).join("");
+  const rest = scale - total;
+  const restHtml = rest > 0.01
+    ? `<span class="zbar-seg zbar-rest" style="width:${(rest / scale) * 100}%;" title="Nezařazený čas: ${fmt1(rest)} %"></span>`
+    : "";
+  const note = total < 99.9 ? `<span class="zbar-note muted" title="Součet dotací je pod 100 %">${fmt1(total)} %</span>` : "";
+  return `<div class="zbar${options.compact ? " compact" : ""}">${parts}${restHtml}</div>${note}`;
+}
+
+function zoneLegendHtml(label = "Vytížení zón podle časových dotací:") {
+  return `<div class="zbar-legend muted">${esc(label)}
+    ${ZONES.map((z) => `<span><i style="background:${ZONE_COLORS[z]}"></i>${esc(ZONE_LABELS[z])}</span>`).join("")}
+    <span><i style="background:${ZONE_REST_COLOR}"></i>nezařazeno</span></div>`;
 }
 
 /* ---------------------------- Stav aplikace ---------------------------- */
@@ -853,6 +936,7 @@ function createNewDatabase() {
   const insSegments = db.prepare("INSERT INTO segments (segment_key, nazev, sort_order, color, icon) VALUES (?, ?, ?, ?, ?)");
   SEED_SEGMENTS.forEach((r) => { insSegments.run(r); });
   insSegments.free();
+  refreshSettingsCache();
   const versionId = ensureRefVersionUpToDate("Založení nové databáze");
   // Výchozí referenční data patří do první verze.
   dbRun("UPDATE absence SET ref_version_id = ?", [versionId]);
@@ -865,6 +949,7 @@ function loadDatabaseFromBytes(bytes) {
   const candidate = new SQL.Database(new Uint8Array(bytes));
   migrateSchema(candidate); // doplní chybějící tabulky/sloupce ze starších verzí aplikace, zbytek dat zachová
   db = candidate;
+  refreshSettingsCache();
   const versionId = ensureRefVersionUpToDate("Stav při připojení databáze");
   // Řádky referenčních dat z databází uložených před zavedením evidence verzí
   // u jednotlivých řádků dostanou verzi platnou při připojení — její snapshot
@@ -1086,6 +1171,73 @@ function requireDb() {
   return true;
 }
 
+/* ---------------------------- Nastavení aplikace --------------------------- */
+// Uživatelská nastavení (zatím vzhled a chování generované Excel šablony) žijí
+// v tabulce `app_settings` jako dvojice klíč/hodnota. Definice níže je zdroj
+// pravdy: podle ní se vykreslí formulář v „Struktuře checklistu“, z ní se berou
+// výchozí hodnoty a podle typu se hodnota převádí zpět na číslo/logickou hodnotu.
+
+const SETTINGS_DEFS = [
+  { key: "tpl_color_title", group: "colors", label: "Titulek a boční popisky", type: "color", def: "#2770f0" },
+  { key: "tpl_color_section", group: "colors", label: "Hlavičky sekcí", type: "color", def: "#235377" },
+  { key: "tpl_color_segment", group: "colors", label: "Popisek segmentu", type: "color", def: "#00a4a2" },
+  { key: "tpl_color_sum", group: "colors", label: "Součtové buňky", type: "color", def: "#00a4a3" },
+  { key: "tpl_color_zone", group: "colors", label: "Popisek zóny", type: "color", def: "#e7e6e6" },
+  { key: "tpl_color_headercell", group: "colors", label: "Vyplňované buňky v hlavičce", type: "color", def: "#f2f2f2" },
+  { key: "tpl_color_input", group: "colors", label: "Písmo vyplňovaných buněk", type: "color", def: "#0070c0" },
+  { key: "tpl_color_ondark", group: "colors", label: "Písmo na tmavém podbarvení", type: "color", def: "#ffffff" },
+
+  { key: "tpl_use_segment_colors", group: "tpl", label: "Barvit segmenty podle tabulky Segmenty", type: "bool", def: "1",
+    help: "Popisek segmentu v CHL dostane vlastní barvu segmentu místo jednotné tyrkysové." },
+  { key: "tpl_font", group: "tpl", label: "Písmo šablony", type: "text", def: "Arial" },
+  { key: "tpl_cestovni_rows", group: "tpl", label: "Volných řádků pro cestovní pozice", type: "int", def: "9", min: 0, max: 60 },
+  { key: "tpl_note_rows", group: "tpl", label: "Řádků pro doplňující informace", type: "int", def: "8", min: 1, max: 40 },
+  { key: "tpl_default_hours", group: "tpl", label: "Předvyplněná otevírací doba (h/týden)", type: "num", def: "40" },
+  { key: "tpl_col_width_gh", group: "tpl", label: "Šířka sloupců G a H", type: "num", def: "19.86" },
+  { key: "tpl_hide_helper_sheets", group: "tpl", label: "Skrýt listy VSTUPY a Pobočky", type: "bool", def: "1" },
+  { key: "tpl_collapse_notes", group: "tpl", label: "Sloupec K s poznámkami sbalit (skrýt)", type: "bool", def: "1" },
+  { key: "tpl_freeze_header", group: "tpl", label: "Ukotvit hlavičku listu CHL", type: "bool", def: "1" },
+];
+const SETTINGS_BY_KEY = {};
+SETTINGS_DEFS.forEach((d) => { SETTINGS_BY_KEY[d.key] = d; });
+
+let settingsCache = null;
+
+function refreshSettingsCache() {
+  settingsCache = {};
+  if (!db) return;
+  try {
+    dbAll("SELECT key, value FROM app_settings").forEach((r) => { settingsCache[r.key] = r.value; });
+  } catch (e) { /* tabulka ještě neexistuje (stará databáze před migrací) */ }
+}
+
+function getSetting(key) {
+  if (settingsCache === null) refreshSettingsCache();
+  const def = SETTINGS_BY_KEY[key];
+  const raw = settingsCache[key];
+  return raw === undefined || raw === null || raw === "" ? (def ? def.def : "") : raw;
+}
+
+function getSettingNum(key) {
+  const n = Number(String(getSetting(key)).replace(",", "."));
+  return Number.isFinite(n) ? n : Number(SETTINGS_BY_KEY[key].def);
+}
+
+function getSettingBool(key) { return getSetting(key) === "1"; }
+
+function setSettings(pairs) {
+  const ins = db.prepare("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+  Object.entries(pairs).forEach(([k, v]) => ins.run([k, String(v)]));
+  ins.free();
+  refreshSettingsCache();
+}
+
+// #rrggbb -> ARGB pro OOXML (FFRRGGBB)
+function hexToArgb(hex) {
+  const h = String(hex || "").replace("#", "").trim();
+  return `FF${(h.length === 6 ? h : "000000").toUpperCase()}`;
+}
+
 /* ---------------------------- Parsování Excelu ---------------------------- */
 
 function excelCell(ws, addr) {
@@ -1206,17 +1358,21 @@ async function handleExcelFile(file) {
 }
 
 function renderExcelPreview(parsed) {
+  const splits = dotaceSplitMap(null);
   const rowsHtml = parsed.rows.map((r) => `
     <tr>
-      <td>${esc(r.segment)}</td>
+      <td>${segmentBadgeHtml(r.segment)}</td>
       <td>${esc(r.pozice)}</td>
       <td>${fmt1(r.fte)}</td>
       <td>${r.wpl_load === null ? '<span class="muted">dle otevírací doby</span>' : fmt1(r.wpl_load)}</td>
+      <td>${zoneSplitBarHtml(splits[`${r.segment}||${r.pozice}`])}</td>
     </tr>`).join("");
   document.getElementById("excelPreview").innerHTML = `
+    ${zoneLegendHtml()}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Vytížení WPL (h/týden)</th></tr></thead>
+        <thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Vytížení WPL (h/týden)</th>
+          <th>Vytížení zón</th></tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
     </div>
@@ -2899,6 +3055,107 @@ function exportCalculationPdf(result, options) {
 // `drawMiddle(pdf, y)` je volitelný háček — spojená sestava jím vloží část
 // „Sestavení layoutu“ mezi klíčové ukazatele a návštěvnost, aby pořadí kapitol
 // v PDF odpovídalo tomu, jak se sestava čte.
+/* --------- Soupis zaměstnanců na pobočce s pruhem vytížení zón ------------- */
+// Místo prostého výpisu se pozice tisknou jako tabulka: segment (obarvený podle
+// nastavení Segmenty), pozice, FTE, WPL a vodorovný pruh s rozdělením času po
+// zónách podle časových dotací (ServiceZ / MeetingZ / BackofficeZ / OfficeRoom).
+function drawInputPositionsPdf(pdf, startY, result, marginX, pageBottom) {
+  let y = startY;
+  const splits = dotaceSplitMap(result.refVersionId);
+  const colW = [30, 62, 14, 14, 62];
+  const rowH = 6.2;
+  const tableW = colW.reduce((a, b) => a + b, 0);
+
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
+  pdf.text("Přehled pozic z checklistu", marginX, y); y += 6;
+
+  // Legenda zón
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.2);
+  let lx = marginX;
+  ZONES.forEach((z) => {
+    const [r, g, b] = hexToRgb(ZONE_COLORS[z]);
+    pdf.setFillColor(r, g, b);
+    pdf.rect(lx, y - 2.4, 2.6, 2.6, "F");
+    pdf.setTextColor(90, 98, 112);
+    pdf.text(ZONE_LABELS[z], lx + 3.6, y);
+    lx += pdf.getTextWidth(ZONE_LABELS[z]) + 10;
+  });
+  pdf.setTextColor(0, 0, 0);
+  y += 4.5;
+
+  const headers = ["Segment", "Pozice", "FTE", "WPL", "Vytížení zón (% času)"];
+  const drawHeader = () => {
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(7.6);
+    let x = marginX;
+    headers.forEach((h, i) => {
+      pdf.setFillColor(39, 112, 240);
+      pdf.setDrawColor(150, 160, 175);
+      pdf.rect(x, y, colW[i], rowH, "FD");
+      pdf.setTextColor(255, 255, 255);
+      pdf.text(h, x + 1.6, y + 4.2);
+      x += colW[i];
+    });
+    y += rowH;
+    pdf.setTextColor(0, 0, 0);
+  };
+  drawHeader();
+
+  result.inputRows.forEach((r) => {
+    if (y + rowH > pageBottom) { pdf.addPage(); y = 18; drawHeader(); }
+    const split = splits[`${r.segment}||${r.pozice}`];
+    const wplDisplay = r.wpl_load ?? result.oteviraci_doba;
+    const vals = [r.segment, r.pozice, fmt1(r.fte), fmt1(wplDisplay)];
+    let x = marginX;
+    vals.forEach((v, i) => {
+      // Buňka segmentu se podbarví jeho barvou ze „Segmentů“ (světlý odstín).
+      if (i === 0) {
+        const [sr, sg, sb] = segmentTintRgb(r.segment);
+        pdf.setFillColor(sr, sg, sb);
+      } else {
+        pdf.setFillColor(255, 255, 255);
+      }
+      pdf.setDrawColor(150, 160, 175);
+      pdf.rect(x, y, colW[i], rowH, "FD");
+      pdf.setTextColor(0, 0, 0);
+      pdf.setFont("DejaVuSans", i === 0 ? "bold" : "normal"); pdf.setFontSize(7.4);
+      pdf.text(String(v), x + 1.6, y + 4.2, { maxWidth: colW[i] - 3 });
+      x += colW[i];
+    });
+
+    // Pruh vytížení zón
+    pdf.setFillColor(255, 255, 255); pdf.setDrawColor(150, 160, 175);
+    pdf.rect(x, y, colW[4], rowH, "FD");
+    const total = zoneSplitTotal(split);
+    const barX = x + 1.6; const barW = colW[4] - 3.2; const barY = y + 1.4; const barH = rowH - 2.8;
+    if (!total) {
+      pdf.setTextColor(120, 128, 140); pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(6.6);
+      pdf.text("bez časové dotace", barX, y + 4.2);
+    } else {
+      const scale = Math.max(100, total);
+      pdf.setFillColor(...hexToRgb(ZONE_REST_COLOR));
+      pdf.rect(barX, barY, barW, barH, "F");
+      let bx = barX;
+      ZONES.forEach((z) => {
+        const v = Number(split[z]) || 0;
+        if (v <= 0) return;
+        const w = (v / scale) * barW;
+        pdf.setFillColor(...hexToRgb(ZONE_COLORS[z]));
+        pdf.rect(bx, barY, w, barH, "F");
+        if (w > 7) {
+          pdf.setTextColor(255, 255, 255); pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(5.6);
+          pdf.text(`${Math.round(v)}`, bx + w / 2, barY + barH - 0.7, { align: "center" });
+        }
+        bx += w;
+      });
+    }
+    pdf.setTextColor(0, 0, 0);
+    y += rowH;
+  });
+
+  pdf.setDrawColor(0, 0, 0);
+  return y + 5;
+}
+
 function drawCalculationPdf(pdf, startY, result, options, drawMiddle) {
   const opt = normalizePdfOptions(options);
   const note = opt.note;
@@ -2938,25 +3195,7 @@ function drawCalculationPdf(pdf, startY, result, options, drawMiddle) {
   y += 4;
 
   if (opt.inputPositions && (result.inputRows || []).length) {
-    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(12);
-    pdf.text("Přehled pozic z checklistu", marginX, y); y += 7;
-    pdf.setFontSize(9);
-    let lastSegment = null;
-    result.inputRows.forEach((r) => {
-      if (y > pageBottom) { pdf.addPage(); y = 18; }
-      if (r.segment !== lastSegment) {
-        pdf.setFont("DejaVuSans", "bold");
-        const [sr, sg, sb] = hexToRgb(getSegmentMeta(r.segment).color);
-        pdf.setFillColor(sr, sg, sb);
-        pdf.rect(marginX, y - 2.6, 3, 3, "F");
-        pdf.text(`Segment: ${r.segment}`, marginX + 4.5, y); y += 5.5;
-        lastSegment = r.segment;
-      }
-      const wplDisplay = r.wpl_load ?? result.oteviraci_doba;
-      pdf.setFont("DejaVuSans", "normal");
-      pdf.text(`- ${r.pozice}, FTE: ${fmt1(r.fte)}, WPL: ${fmt1(wplDisplay)}`, marginX + 4, y); y += 5.5;
-    });
-    y += 4;
+    y = drawInputPositionsPdf(pdf, y, result, marginX, pageBottom);
   }
 
   if (opt.summaryTable) {
@@ -2991,8 +3230,10 @@ function drawCalculationPdf(pdf, startY, result, options, drawMiddle) {
     pdf.setFont("DejaVuSans", fill ? "bold" : "normal"); pdf.setFontSize(9);
     let x = marginX;
     vals.forEach((v, i) => {
+      let cellFilled = fill;
       if (fill) pdf.setFillColor(200, 240, 210);
-      pdf.rect(x, y, colW[i], rowH, fill ? "FD" : "D");
+      else if (i === 0 && v !== "Celkem") { pdf.setFillColor(...segmentTintRgb(v)); cellFilled = true; }
+      pdf.rect(x, y, colW[i], rowH, cellFilled ? "FD" : "D");
       pdf.setTextColor(0, 0, 0);
       let textX = x + 2;
       if (i === 0 && v !== "Celkem") {
@@ -4476,12 +4717,15 @@ function drawPdfSimpleTable(pdf, { x, y, headers, colW, rows, fontSize = 7.4, ro
     return { cells, height: Math.max(rowH, padY + (maxLines - 1) * lineH + 2) };
   };
 
-  const drawCells = (vals, style) => {
+  // cellFills = { indexSloupce: [r,g,b] } — přebije podbarvení řádku; používá
+  // se pro buňky se segmentem, které dostanou barvu podle nastavení Segmenty.
+  const drawCells = (vals, style, cellFills) => {
     const { cells, height } = wrap(vals, style.bold);
     const [br, bg, bb] = PDF_TABLE_STYLE.border;
     let cx = x;
     cells.forEach((lines, i) => {
-      pdf.setFillColor(style.fill[0], style.fill[1], style.fill[2]);
+      const fill = (cellFills && cellFills[i]) || style.fill;
+      pdf.setFillColor(fill[0], fill[1], fill[2]);
       pdf.setDrawColor(br, bg, bb);
       pdf.setLineWidth(0.15);
       pdf.rect(cx, cy, colW[i], height, "FD");
@@ -4512,7 +4756,7 @@ function drawPdfSimpleTable(pdf, { x, y, headers, colW, rows, fontSize = 7.4, ro
       : (idx % 2 ? PDF_TABLE_STYLE.even : PDF_TABLE_STYLE.odd);
     const { height } = wrap(vals, style.bold);
     if (cy + height > pageBottom) { pdf.addPage(); cy = 18; drawHeader(); }
-    drawCells(vals, style);
+    drawCells(vals, style, Array.isArray(r) ? null : r.cellFills);
   });
   return cy;
 }
@@ -5834,8 +6078,10 @@ function drawWplOverviewPdf(pdf, startY, overview, marginX, pageBottom) {
     ];
     let x = marginX;
     vals.forEach((v, i) => {
+      let cellFilled = isTotal;
       if (isTotal) pdf.setFillColor(200, 240, 210);
-      pdf.rect(x, y, colW[i], rowH, isTotal ? "FD" : "D");
+      else if (i === 0) { pdf.setFillColor(...segmentTintRgb(v)); cellFilled = true; }
+      pdf.rect(x, y, colW[i], rowH, cellFilled ? "FD" : "D");
       pdf.setTextColor(0, 0, 0);
       let textX = x + 1.6;
       if (i === 0 && !isTotal) {
@@ -5961,13 +6207,14 @@ function drawZoneAnalysisPdf(pdf, startY, overview, layoutRows, marginX, pageBot
             ? [segCell, zoneCell, it.furniture, fmtPieces(it.piece_count),
               perPiece > 0 ? fmt1(perPiece) : "—", fmt1(it.wpl_assigned)]
             : [segCell, zoneCell, "Do této zóny nebyl přiřazen žádný nábytek.", "—", "—", "0.0"],
+          cellFills: segCell ? { 0: segmentTintRgb(segRow.segment) } : null,
         });
         segCell = "";
       });
     });
     tableRows.push({
       vals: [`Celkem ${segRow.segment}`, "", "", fmtPieces(segRow.piecesTotal), "", fmt1(segRow.assignedTotal)],
-      variant: "subtotal",
+      variant: "subtotal", cellFills: { 0: segmentTintRgb(segRow.segment, 0.7) },
     });
   });
   if (!tableRows.length) return startY;
@@ -6069,8 +6316,12 @@ function showHistoryDetail(calculationKey, loadKey) {
     ORDER BY (segment = 'Celkem'), id`, [calculationKey]);
   const branch = dbAll("SELECT pobocka_id, pobocka_nazev, oteviraci_doba FROM excel_loads WHERE load_key = ? LIMIT 1", [loadKey])[0];
 
-  const inputHtml = inputRows.map((r) => `<tr><td>${esc(r.segment)}</td><td>${esc(r.pozice)}</td>
-    <td>${fmt1(r.fte)}</td><td>${fmt1(r.wpl_load)}</td></tr>`).join("");
+  const refVersionIdForSplit = dbAll("SELECT ref_version_id FROM calculations WHERE calculation_key = ? LIMIT 1",
+    [calculationKey])[0]?.ref_version_id;
+  const inputSplits = dotaceSplitMap(refVersionIdForSplit);
+  const inputHtml = inputRows.map((r) => `<tr><td>${segmentBadgeHtml(r.segment)}</td><td>${esc(r.pozice)}</td>
+    <td>${fmt1(r.fte)}</td><td>${fmt1(r.wpl_load)}</td>
+    <td>${zoneSplitBarHtml(inputSplits[`${r.segment}||${r.pozice}`])}</td></tr>`).join("");
   const resultHtml = resultRows.map((r) => resultRowHtml(r, r.segment === "Celkem")).join("");
   const found = resultRows.find((r) => r.segment === "Celkem");
   const refVersionId = resultRows[0] ? resultRows[0].ref_version_id : null;
@@ -6099,7 +6350,9 @@ function showHistoryDetail(calculationKey, loadKey) {
     <div class="status-row">${statusBadgeHtml(status)}
       <span class="muted">stav se přepíná na konci, v části „Výstup a sestava“</span></div>
     <h3>Vstupní data z checklistu</h3>
-    <div class="table-wrap"><table><thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Vytížení WPL</th></tr></thead>
+    ${zoneLegendHtml()}
+    <div class="table-wrap"><table><thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Vytížení WPL</th>
+      <th>Vytížení zón</th></tr></thead>
     <tbody>${inputHtml}</tbody></table></div>
     <h3>Výsledek kalkulace</h3>
     <div class="table-wrap"><table><thead><tr><th>Segment</th><th>FTE celkem</th><th>Pozice (FTE)</th>
@@ -6369,18 +6622,57 @@ function saveAbsenceTable() {
   toast("Tabulka absencí byla uložena a zaznamenána nová verze referenčních dat.", "ok");
 }
 
+// Heatmapa: čím vyšší procento, tím sytější podbarvení buňky barvou zóny.
+// Odstín se míchá s bílou, aby text v poli zůstal čitelný i u 100 %.
+function heatCellStyle(zone, value) {
+  const v = Number(value);
+  if (!Number.isFinite(v) || v <= 0) return "";
+  const [r, g, b] = hexToRgb(ZONE_COLORS[zone]);
+  const strength = Math.min(1, v / 100) * 0.65;   // 100 % -> 65% sytosti
+  const mix = (c) => Math.round(c + (255 - c) * (1 - strength));
+  return ` style="background:rgb(${mix(r)},${mix(g)},${mix(b)});"`;
+}
+
 function dotaceRowHtml(r) {
   const f = (v) => v === null || v === undefined ? "" : v;
-  return `<tr>
+  const zoneCell = (zone) => `<td class="heat"${heatCellStyle(zone, r[zone])}>` +
+    `<input type="number" step="1" value="${f(r[zone])}" data-field="${zone}"></td>`;
+  return `<tr data-order="${r.id ?? ""}">
     <td><input type="text" value="${esc(r.segment)}" data-field="segment"></td>
     <td><input type="text" value="${esc(r.pozice)}" data-field="pozice"></td>
-    <td><input type="number" step="1" value="${f(r.service_zone)}" data-field="service_zone"></td>
-    <td><input type="number" step="1" value="${f(r.meeting_zone)}" data-field="meeting_zone"></td>
-    <td><input type="number" step="1" value="${f(r.backoffice_zone)}" data-field="backoffice_zone"></td>
-    <td><input type="number" step="1" value="${f(r.office_room)}" data-field="office_room"></td>
+    ${ZONES.map(zoneCell).join("")}
+    <td class="zbar-cell">${zoneSplitBarHtml(r, { compact: true })}</td>
     ${refVersionCellHtml(r.ref_version_id)}
     <td><button class="btn secondary small btn-del">✕</button></td>
   </tr>`;
+}
+
+// Přepočítá heatmapu i pruh v jednom řádku po ruční změně hodnoty.
+function refreshDotaceRow(tr) {
+  const split = {};
+  ZONES.forEach((z) => {
+    const inp = tr.querySelector(`[data-field="${z}"]`);
+    split[z] = toNumberOrNull(inp.value) ?? 0;
+    const td = inp.closest("td");
+    td.setAttribute("style", heatCellStyle(z, split[z]).replace(/^ style="|"$/g, ""));
+  });
+  const barCell = tr.querySelector(".zbar-cell");
+  if (barCell) barCell.innerHTML = zoneSplitBarHtml(split, { compact: true });
+}
+
+// Řazení tabulky časových dotací: text česky (localeCompare), čísla číselně,
+// „celkem“ podle součtu všech čtyř dotací. Prázdná hodnota se bere jako 0.
+function sortDotaceRows(rows, sortState) {
+  if (!sortState || !sortState.field) return rows;
+  const f = sortState.field;
+  const num = (r) => (f === "celkem" ? zoneSplitTotal(r) : (Number(r[f]) || 0));
+  rows.sort((a, b) => {
+    const cmp = (f === "segment" || f === "pozice")
+      ? String(a[f] || "").localeCompare(String(b[f] || ""), "cs")
+      : num(a) - num(b);
+    return (cmp || String(a.pozice || "").localeCompare(String(b.pozice || ""), "cs")) * sortState.dir;
+  });
+  return rows;
 }
 
 // Klíč identity řádku časové dotace (segment + pozice) pro porovnání změn.
@@ -6392,43 +6684,75 @@ function dotaceKey(segment, pozice) { return `${segment}||${pozice}`; }
 // filtr, vlastní tbody), aniž by se logika duplikovala.
 function makeDotaceEditor(tableId, filterId, tbodyId) {
   const filterKey = tableId;
+  // Řazení je jen zobrazovací — uložení zapisuje řádky zpět v původním pořadí
+  // (podle `id`), aby se nerozhodilo pořadí pozic v generovaném checklistu.
+  const sortState = { field: null, dir: 1 };
 
   function render() {
     const el = document.getElementById(tableId);
     if (!el) return;
     if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
-    const rows = dbAll("SELECT id, segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room, ref_version_id FROM casove_dotace ORDER BY segment, pozice");
+    const rows = dbAll(`SELECT id, segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room,
+      ref_version_id FROM casove_dotace ORDER BY segment, pozice`);
     const { shown, hidden } = splitByFilter(filterKey, rows, (r) => `${r.segment} ${r.pozice}`);
+    sortDotaceRows(shown, sortState);
+    const th = (field, label, title) => {
+      const active = sortState.field === field;
+      return `<th class="sortable${active ? " sorted" : ""}" data-sort="${field}"${title ? ` title="${esc(title)}"` : ""}>` +
+        `${esc(label)}<span class="sort-ind">${active ? (sortState.dir > 0 ? "▲" : "▼") : "↕"}</span></th>`;
+    };
     el.innerHTML = `<div class="table-wrap"><table>
-      <thead><tr><th>Segment</th><th>Pozice</th><th>ServiceZ %</th><th>MeetingZ %</th><th>BackofficeZ %</th><th>OfficeRoom %</th>
+      <thead><tr>${th("segment", "Segment")}${th("pozice", "Pozice")}
+        ${ZONES.map((z, i) => th(z, ["ServiceZ %", "MeetingZ %", "BackofficeZ %", "OfficeRoom %"][i])).join("")}
+        ${th("celkem", "Vytížení zón", "Řadí podle součtu dotací")}
         <th title="Verze referenčních dat, ve které řádek naposledy vznikl nebo se změnil">Verze</th><th></th></tr></thead>
       <tbody id="${tbodyId}">
         ${shown.map(dotaceRowHtml).join("")}
       </tbody></table></div>
+      ${zoneLegendHtml("Pruh a podbarvení buněk ukazují rozdělení času:")}
       ${filterSummaryHtml(filterKey, shown.length, rows.length, "pozic")}`;
     wireDeleteButtons(tbodyId);
     // pro uložení potřebujeme i řádky skryté filtrem -> uchováme je v datasetu
     el.dataset.hiddenRows = JSON.stringify(hidden);
+
+    // Řazení kliknutím na hlavičku (druhé kliknutí obrátí směr).
+    el.querySelectorAll("th.sortable").forEach((h) => {
+      h.addEventListener("click", () => {
+        const f = h.dataset.sort;
+        if (sortState.field === f) sortState.dir = -sortState.dir;
+        else { sortState.field = f; sortState.dir = 1; }
+        render();
+      });
+    });
+    // Heatmapa a pruh se překreslují průběžně, jak se hodnoty přepisují.
+    el.querySelectorAll(`#${tbodyId} input[type="number"]`).forEach((inp) => {
+      inp.addEventListener("input", () => refreshDotaceRow(inp.closest("tr")));
+    });
   }
 
   function save() {
     if (!requireDb()) return;
     const trs = document.querySelectorAll(`#${tbodyId} tr`);
-    const data = [];
+    const ordered = [];
+    const BIG = 1e9; // nové řádky bez `id` jdou na konec
     for (const tr of trs) {
       const segment = tr.querySelector('[data-field="segment"]').value.trim();
       const pozice = tr.querySelector('[data-field="pozice"]').value.trim();
       if (!segment || !pozice) continue;
-      data.push([
+      ordered.push({ order: Number(tr.dataset.order) || BIG, row: [
         segment, pozice,
         toNumberOrNull(tr.querySelector('[data-field="service_zone"]').value),
         toNumberOrNull(tr.querySelector('[data-field="meeting_zone"]').value),
         toNumberOrNull(tr.querySelector('[data-field="backoffice_zone"]').value),
         toNumberOrNull(tr.querySelector('[data-field="office_room"]').value),
-      ]);
+      ] });
     }
-    hiddenFilterRows(tableId).forEach((r) => data.push([r.segment, r.pozice, r.service_zone,
-      r.meeting_zone, r.backoffice_zone, r.office_room]));
+    hiddenFilterRows(tableId).forEach((r) => ordered.push({ order: r.id ?? BIG,
+      row: [r.segment, r.pozice, r.service_zone, r.meeting_zone, r.backoffice_zone, r.office_room] }));
+    // Zpět do databáze se zapisuje v původním pořadí (podle id), ne v tom
+    // zobrazeném — pořadí pozic v checklistu se řídí právě pořadím vložení.
+    ordered.sort((a, b) => a.order - b.order);
+    const data = ordered.map((o) => o.row);
 
     // Evidence verze u jednotlivých řádků — viz saveAbsenceTable(): nezměněné
     // řádky si ponechají původní stamp, změněné a nové dostanou číslo nové verze.
@@ -6469,11 +6793,15 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
     if (!tbody) return;
     tbody.insertAdjacentHTML("beforeend", dotaceRowHtml({ segment: "", pozice: "", service_zone: null, meeting_zone: null, backoffice_zone: null, office_room: null }));
     wireDeleteButtons(tbodyId);
+    const tr = tbody.lastElementChild;
+    tr.querySelectorAll('input[type="number"]').forEach((inp) => {
+      inp.addEventListener("input", () => refreshDotaceRow(tr));
+    });
   }
 
   function setFilter(v) { tableFilterState[filterKey] = v.trim().toLowerCase(); render(); }
 
-  return { render, save, addRow, setFilter };
+  return { render, save, addRow, setFilter, sortState };
 }
 
 const dotaceEditorMain = makeDotaceEditor("dotaceTable", "dotaceFilter", "dotaceTbody");
@@ -6678,6 +7006,100 @@ function copyFurnitureRefToClipboard() {
   copyToClipboardBoth(buildFurnitureRefClipboardHtml(rows), buildFurnitureRefClipboardText(rows),
     `Zkopírováno ${rows.length} zobrazených nábytkových prvků — vložte přes Ctrl+V.`);
 }
+/* ------------- Nastavení Excel šablony (barvy a chování) ------------------ */
+// Formulář se generuje z SETTINGS_DEFS, takže přidání dalšího nastavení
+// znamená jen doplnit řádek v definici.
+
+function settingFieldHtml(d) {
+  const v = getSetting(d.key);
+  const id = `set_${d.key}`;
+  if (d.type === "bool") {
+    return `<label class="set-row set-check"><input type="checkbox" id="${id}" data-key="${d.key}"
+      ${v === "1" ? "checked" : ""}><span>${esc(d.label)}</span>
+      ${d.help ? `<span class="muted set-help">${esc(d.help)}</span>` : ""}</label>`;
+  }
+  if (d.type === "color") {
+    return `<label class="set-row"><span class="set-label">${esc(d.label)}</span>
+      <input type="color" id="${id}" data-key="${d.key}" value="${esc(v)}">
+      <code class="muted">${esc(v)}</code></label>`;
+  }
+  const step = d.type === "int" ? "1" : (d.type === "num" ? "0.01" : null);
+  const attrs = d.type === "text" ? 'type="text"'
+    : `type="number" step="${step}"${d.min !== undefined ? ` min="${d.min}"` : ""}${d.max !== undefined ? ` max="${d.max}"` : ""}`;
+  return `<label class="set-row"><span class="set-label">${esc(d.label)}</span>
+    <input ${attrs} id="${id}" data-key="${d.key}" value="${esc(v)}" style="width:120px;">
+    ${d.help ? `<span class="muted set-help">${esc(d.help)}</span>` : ""}</label>`;
+}
+
+function renderSettingsPanel() {
+  const el = document.getElementById("templateSettings");
+  if (!el) return;
+  if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
+  const group = (g) => SETTINGS_DEFS.filter((d) => d.group === g).map(settingFieldHtml).join("");
+  el.innerHTML = `
+    <div class="set-grid">
+      <div class="set-col"><h3>Barvy šablony</h3>${group("colors")}
+        <p class="muted" style="margin-top:8px;">Na tmavém podbarvení (titulek, hlavičky sekcí) se použije
+          „Písmo na tmavém podbarvení“, aby text zůstal čitelný.</p></div>
+      <div class="set-col"><h3>Chování šablony</h3>${group("tpl")}</div>
+    </div>
+    <div class="set-preview"><h3>Náhled barev</h3>${settingsPreviewHtml()}</div>`;
+  el.querySelectorAll('input[type="color"]').forEach((inp) => {
+    inp.addEventListener("input", () => {
+      const code = inp.parentElement.querySelector("code");
+      if (code) code.textContent = inp.value;
+      el.querySelector(".set-preview").innerHTML = `<h3>Náhled barev</h3>${settingsPreviewHtml(collectSettingsForm())}`;
+    });
+  });
+}
+
+// Náhled ukazuje, jak budou vypadat hlavní prvky listu CHL — bere buď hodnoty
+// z databáze, nebo (při ladění barev) rozepsané hodnoty z formuláře.
+function settingsPreviewHtml(pending) {
+  const g = (k) => (pending && pending[k] !== undefined ? pending[k] : getSetting(k));
+  const segColors = (pending ? pending.tpl_use_segment_colors : getSetting("tpl_use_segment_colors")) === "1";
+  const segs = dbAll("SELECT segment_key, color FROM segments ORDER BY sort_order, segment_key").slice(0, 4);
+  const cell = (bg, fg, text, bold) => `<td style="background:${bg}; color:${fg}; border:1px solid #b9bfc9;
+    padding:4px 8px; ${bold ? "font-weight:700;" : ""}">${esc(text)}</td>`;
+  return `<div class="table-wrap"><table style="border-collapse:collapse; font-size:12px;"><tbody>
+    <tr>${cell(g("tpl_color_title"), g("tpl_color_ondark"), "CHECKLIST – Praha 6", true)}</tr>
+    <tr>${cell(g("tpl_color_section"), g("tpl_color_ondark"), "OBSAZENOST POBOČKY", true)}</tr>
+    <tr>${segs.map((sg) => {
+      const bg = segColors ? sg.color : g("tpl_color_segment");
+      return cell(bg, isDarkColor(bg) ? g("tpl_color_ondark") : "#1b2430", sg.segment_key, true);
+    }).join("")}</tr>
+    <tr>${cell(g("tpl_color_zone"), "#1b2430", "SERVICE ZONE")}
+      ${cell(g("tpl_color_headercell"), g("tpl_color_input"), "vyplňovaná buňka", true)}
+      ${cell(g("tpl_color_sum"), "#1b2430", "Suma FTE", true)}</tr>
+  </tbody></table></div>`;
+}
+
+function collectSettingsForm() {
+  const out = {};
+  document.querySelectorAll("#templateSettings [data-key]").forEach((inp) => {
+    out[inp.dataset.key] = inp.type === "checkbox" ? (inp.checked ? "1" : "0") : inp.value;
+  });
+  return out;
+}
+
+function saveSettingsPanel() {
+  if (!requireDb()) return;
+  setSettings(collectSettingsForm());
+  persistDatabase(true);
+  renderSettingsPanel();
+  toast("Nastavení Excel šablony bylo uloženo.", "ok");
+}
+
+function resetSettingsPanel() {
+  if (!requireDb()) return;
+  const defaults = {};
+  SETTINGS_DEFS.forEach((d) => { defaults[d.key] = d.def; });
+  setSettings(defaults);
+  persistDatabase(true);
+  renderSettingsPanel();
+  toast("Nastavení bylo vráceno na výchozí hodnoty.", "ok");
+}
+
 /* ------------- Generování .xlsx šablony checklistu (CHL + VSTUPY) ---------- */
 // Šablona se sestavuje tak, aby vypadala i fungovala jako vzorový checklist:
 //
@@ -6698,18 +7120,32 @@ function copyFurnitureRefToClipboard() {
 // vlastní zapisovač `xlsx_writer.js`, který barvy, fonty, ohraničení, sloučené
 // buňky, šířky sloupců i výšky řádků skutečně zapíše.
 
-// Barvy a rozměry odečtené ze vzorového checklistu.
-const CHL_C = {
-  title: "FF2770F1",     // modrá — titulek, svislé popisky FRONT/BACK OFFICE
-  section: "FF235377",   // tmavě modrá — hlavičky sekcí
-  segment: "FF00A4A2",   // tyrkysová — popisek segmentu, velká čísla hodin
-  sum: "FF00A4A3",       // tyrkysová — hodnoty součtů
-  zone: "FFE7E6E6",      // světle šedá — popisek zóny
-  headerCell: "FFF2F2F2", // světle šedá — vyplňované buňky v hlavičce (C:D a I, ř. 3–8)
-  input: "FF0070C0",     // barva písma vyplňovaných buněk
-  onDark: "FFFFFFFF",    // písmo na tmavém podbarvení (title, section)
-};
-const CHL_COL_WIDTHS = [
+// Barvy šablony vycházejí ze vzorového checklistu, ale jsou přenastavitelné
+// v „Struktuře checklistu“ → Nastavení Excel šablony (tabulka app_settings).
+function chlColors() {
+  return {
+    title: hexToArgb(getSetting("tpl_color_title")),        // titulek, svislé popisky FRONT/BACK OFFICE
+    section: hexToArgb(getSetting("tpl_color_section")),    // hlavičky sekcí
+    segment: hexToArgb(getSetting("tpl_color_segment")),    // popisek segmentu, velká čísla hodin
+    sum: hexToArgb(getSetting("tpl_color_sum")),            // hodnoty součtů
+    zone: hexToArgb(getSetting("tpl_color_zone")),          // popisek zóny
+    headerCell: hexToArgb(getSetting("tpl_color_headercell")), // vyplňované buňky v hlavičce (C:D a I, ř. 3–8)
+    input: hexToArgb(getSetting("tpl_color_input")),        // barva písma vyplňovaných buněk
+    onDark: hexToArgb(getSetting("tpl_color_ondark")),      // písmo na tmavém podbarvení (title, section)
+  };
+}
+// Šířky sloupců; G a H jsou přenastavitelné (tpl_col_width_gh) a sbalení
+// poznámkového sloupce K lze vypnout (pak zůstane rovnou vidět).
+function chlColWidths() {
+  const collapse = getSettingBool("tpl_collapse_notes");
+  const widthGH = getSettingNum("tpl_col_width_gh");
+  return CHL_COL_WIDTHS_BASE.map((c) => {
+    if (c.index === 7 || c.index === 8) return { ...c, width: widthGH };
+    if (!collapse && (c.index === 10 || c.index === 11)) return { index: c.index, width: c.width };
+    return c;
+  });
+}
+const CHL_COL_WIDTHS_BASE = [
   { index: 1, width: 11.7109375 }, { index: 2, width: 14.28515625 }, { index: 3, width: 14.42578125 },
   { index: 4, width: 9.28515625 }, { index: 5, width: 8.7109375 }, { index: 6, width: 19.42578125 },
   { index: 7, width: 19.86 }, { index: 8, width: 19.86 }, { index: 9, width: 25.140625 },
@@ -6722,7 +7158,7 @@ const VSTUPY_COL_WIDTHS = [
   { index: 1, width: 11.42578125 }, { index: 2, width: 57.140625 },
   { index: 3, width: 17.5703125 }, { index: 4, width: 14.5703125 },
 ];
-const CHL_CESTOVNI_ROWS = 9; // volných řádků pro cestovní pozice (jako ve vzoru)
+// Volných řádků pro cestovní pozice — ve vzoru 9, přenastavitelné v Nastavení.
 
 // Číselníky pro rozbalovací menu (ověření dat) v hlavičce listu CHL.
 const CHL_FORMATY = ["small", "medium-economy", "medium", "flagship", "EPC"];
@@ -6753,6 +7189,14 @@ function generateChecklistTemplate() {
   // i do patičky listu CHL, aby bylo zpětně jasné, s jakým obsahem (pozice,
   // nábytek, absence) byl checklist vygenerován.
   const refVersionId = ensureRefVersionUpToDate("Stav při generování Excel šablony");
+
+  // Vzhled a chování šablony podle nastavení v „Struktuře checklistu“.
+  const CHL_C = chlColors();
+  const FONT = getSetting("tpl_font") || "Arial";
+  const CESTOVNI_ROWS = Math.max(0, Math.round(getSettingNum("tpl_cestovni_rows")));
+  const NOTE_ROWS = Math.max(1, Math.round(getSettingNum("tpl_note_rows")));
+  const DEFAULT_HOURS = getSettingNum("tpl_default_hours");
+  const useSegmentColors = getSettingBool("tpl_use_segment_colors");
 
   const segments = dbAll("SELECT segment_key FROM segments ORDER BY sort_order, segment_key").map((r) => r.segment_key);
   const segOrder = {};
@@ -6805,7 +7249,7 @@ function generateChecklistTemplate() {
 
   /* ------------------------------- styly ---------------------------------- */
   const sb = createStyleBook();
-  const A = (size, bold, color) => ({ name: "Arial", size, bold: !!bold, color: color || null });
+  const A = (size, bold, color) => ({ name: FONT, size, bold: !!bold, color: color || null });
   // Písmo na tmavém podbarvení (modrá `title`, tmavě modrá `section`) je bílé,
   // aby byl text čitelný; na světlých a tyrkysových výplních zůstává tmavé.
   const W = CHL_C.onDark;
@@ -6831,6 +7275,16 @@ function generateChecklistTemplate() {
     bigNum: sb.style({ font: A(20, true, CHL_C.segment), border: "lrtb", alignment: { h: "center", v: "center" } }),
     bigNumGrey: sb.style({ font: A(20, true, CHL_C.segment), fill: CHL_C.headerCell, border: "lrtb", alignment: { h: "center", v: "center" } }),
     segment: sb.style({ font: A(9, true), fill: CHL_C.segment, border: "lrtb", alignment: { h: "center", v: "center" } }),
+    // Popisek segmentu může mít vlastní barvu podle tabulky Segmenty; na tmavé
+    // barvě se písmo přepne na bílé, aby zůstal čitelný.
+    segmentOf: (key) => {
+      const color = useSegmentColors ? getSegmentMeta(key).color : null;
+      return sb.style({
+        font: A(9, true, color && isDarkColor(color) ? CHL_C.onDark : null),
+        fill: color ? hexToArgb(color) : CHL_C.segment,
+        border: "lrtb", alignment: { h: "center", v: "center" },
+      });
+    },
     zone: sb.style({ font: A(8, true), fill: CHL_C.zone, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
     sideLabel: sb.style({ font: A(9, true, W), fill: CHL_C.title, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
     subLabel: sb.style({ font: A(9, true), border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
@@ -6910,7 +7364,7 @@ function generateChecklistTemplate() {
     put("E", r1, str(label, st.label));
     merges.push(`E${r1}:H${r2}`);
     for (let r = r1; r <= r2; r++) put("I", r, num("", st.bigNumGrey));
-    put("I", r1, num(40, st.bigNumGrey));
+    put("I", r1, num(DEFAULT_HOURS, st.bigNumGrey));
     merges.push(`I${r1}:I${r2}`);
   });
   for (let r = 3; r <= 9; r++) put("K", r, str("", st.plain));
@@ -6930,7 +7384,7 @@ function generateChecklistTemplate() {
     const first = row;
     items.forEach((pozice) => {
       rowHeights[row] = 17.1;
-      put("A", row, str(row === first ? segment : "", st.segment));
+      put("A", row, str(row === first ? segment : "", st.segmentOf(segment)));
       fillRange("B", "F", row, st.item, str(pozice, st.item));
       put("G", row, num("", st.input));
       put("H", row, num("", st.input));
@@ -6976,9 +7430,9 @@ function generateChecklistTemplate() {
 
   // Volný blok cestovních pozic — pobočka vypisuje pozici do B, hodiny do G, FTE do H
   const cestFirst = row;
-  for (let i = 0; i < CHL_CESTOVNI_ROWS; i++) {
+  for (let i = 0; i < CESTOVNI_ROWS; i++) {
     rowHeights[row] = 17.1;
-    put("A", row, str(row === cestFirst ? "CESTOVNÍ POZICE" : "", st.segment));
+    put("A", row, str(row === cestFirst ? "CESTOVNÍ POZICE" : "", st.segmentOf("CESTOVNÍ POZICE")));
     fillRange("B", "F", row, st.item);
     put("G", row, num("", st.input));
     put("H", row, num("", st.input));
@@ -7049,7 +7503,8 @@ function generateChecklistTemplate() {
         zoneBlock.items.forEach((furniture) => {
           rowHeights[row] = 17.1;
           put("A", row, str(row === first ? sideLabel : "", st.sideLabel));
-          put("B", row, str(row === segFirst ? block.segment : "", st.subLabel));
+          put("B", row, str(row === segFirst ? block.segment : "",
+            useSegmentColors ? st.segmentOf(block.segment) : st.subLabel));
           put("C", row, str(zoneLabel
             ? (row === first ? zoneLabel : "")
             : (row === zoneFirst ? (ZONE_TITLES[zoneBlock.zone] || zoneBlock.zone) : ""), st.zone));
@@ -7145,7 +7600,7 @@ function generateChecklistTemplate() {
   put("K", row, str("", st.plain));
   row++;
   const noteFirst = row;
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < NOTE_ROWS; i++) {
     rowHeights[row] = 17.1;
     for (const c of "ABCDEFGHI") put(c, row, str("", st.noteArea));
     put("K", row, str("", st.plain));
@@ -7169,8 +7624,8 @@ function generateChecklistTemplate() {
   // Hodnoty se stahují vzorci z CHL; parseVstupySheet() čte C1–C4 a od řádku 6
   // sloupce A–D, takže rozvržení tohoto listu musí zůstat přesně takto.
   const vs = {};
-  const vstupyHeader = sb.style({ font: { name: "Arial", size: 10, color: W }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
-  const vstupyHeaderB = sb.style({ font: { name: "Arial", size: 10, bold: true, color: W }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
+  const vstupyHeader = sb.style({ font: { name: FONT, size: 10, color: W }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
+  const vstupyHeaderB = sb.style({ font: { name: FONT, size: 10, bold: true, color: W }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
   const vstupyCell = sb.style({ border: "lrtb", alignment: { h: "left", v: "center" } });
 
   [["ID pobočky", "CHL!G1"], ["Název pobočky", "CHL!C3"],
@@ -7198,7 +7653,7 @@ function generateChecklistTemplate() {
     });
   });
   // Cestovní blok — pozice, FTE i vytížení se tahají z volných řádků CHL.
-  for (let i = 0; i < CHL_CESTOVNI_ROWS; i++) {
+  for (let i = 0; i < CESTOVNI_ROWS; i++) {
     const cr = cestFirst + i;
     vs[`A${vr}`] = { f: `IF(CHL!B${cr}=0,"","CESTOVNÍ")`, v: "", t: "str", s: vstupyCell };
     vs[`B${vr}`] = { f: `IF(CHL!B${cr}=0,"",CHL!B${cr})`, v: "", t: "str", s: vstupyCell };
@@ -7209,8 +7664,8 @@ function generateChecklistTemplate() {
 
   /* --------- Pomocný list se seznamem poboček (zdroj rozbalovacího menu) ---- */
   const pob = {};
-  const pobHeader = sb.style({ font: { name: "Arial", size: 10, bold: true, color: W }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
-  const pobCell = sb.style({ font: { name: "Arial", size: 9 }, border: "lrtb", alignment: { h: "left", v: "center" } });
+  const pobHeader = sb.style({ font: { name: FONT, size: 10, bold: true, color: W }, fill: CHL_C.title, border: "lrtb", alignment: { h: "left", v: "center" } });
+  const pobCell = sb.style({ font: { name: FONT, size: 9 }, border: "lrtb", alignment: { h: "left", v: "center" } });
   ["Název pobočky", "ID pobočky", "Region"].forEach((h, i) => { pob[`${"ABC"[i]}1`] = str(h, pobHeader); });
   pobockyRows.forEach((r, i) => {
     const rr = i + 2;
@@ -7223,8 +7678,8 @@ function generateChecklistTemplate() {
   });
 
   const chlSheet = {
-    name: "CHL", cells: chl, cols: CHL_COL_WIDTHS, merges,
-    rowHeights, defaultRowHeight: 15, freezeRows: 9, validations,
+    name: "CHL", cells: chl, cols: chlColWidths(), merges,
+    rowHeights, defaultRowHeight: 15, freezeRows: getSettingBool("tpl_freeze_header") ? 9 : 0, validations,
     // tlačítko pro rozbalení skupiny (sloupec K) vlevo od ní, u popisku v J
     summaryRight: false,
   };
@@ -7232,10 +7687,12 @@ function generateChecklistTemplate() {
   // poboček jsou skryté, aby ji nepletly. Skrytí neovlivní ani vzorce, ani
   // rozbalovací menu, ani zpětné načtení souboru do aplikace.
   const vstupySheet = {
-    name: "VSTUPY", cells: vs, cols: VSTUPY_COL_WIDTHS, defaultRowHeight: 15, freezeRows: 5, hidden: true,
+    name: "VSTUPY", cells: vs, cols: VSTUPY_COL_WIDTHS, defaultRowHeight: 15, freezeRows: 5,
+    hidden: getSettingBool("tpl_hide_helper_sheets"),
   };
   const pobockySheet = {
-    name: POBOCKY_SHEET, cells: pob, defaultRowHeight: 15, freezeRows: 1, hidden: true,
+    name: POBOCKY_SHEET, cells: pob, defaultRowHeight: 15, freezeRows: 1,
+    hidden: getSettingBool("tpl_hide_helper_sheets"),
     cols: [{ index: 1, width: 42 }, { index: 2, width: 14 }, { index: 3, width: 26 }],
   };
 
@@ -7260,6 +7717,8 @@ function generateChecklistTemplate() {
 
 function refreshAllTabsAfterDbChange() {
   refreshSegmentMetaCache();
+  refreshSettingsCache();
+  renderSettingsPanel();
   renderHistoryList();
   renderAbsenceTable();
   dotaceEditorMain.render();
@@ -7372,6 +7831,8 @@ async function init() {
     tableFilterState.furnitureZone = e.target.value;
     renderFurnitureTable();
   });
+  document.getElementById("btnSaveSettings").addEventListener("click", saveSettingsPanel);
+  document.getElementById("btnResetSettings").addEventListener("click", resetSettingsPanel);
   document.getElementById("btnGenerateTemplate").addEventListener("click", generateChecklistTemplate);
 
   const visitorInput = document.getElementById("visitorReportInput");

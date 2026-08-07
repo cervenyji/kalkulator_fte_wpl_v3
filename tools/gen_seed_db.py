@@ -78,6 +78,13 @@ def main():
     """)
 
     cur.execute("""
+    CREATE TABLE app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """)
+
+    cur.execute("""
     CREATE TABLE ref_data_versions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         created_at TEXT,

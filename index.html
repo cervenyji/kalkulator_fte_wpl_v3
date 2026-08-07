@@ -118,6 +118,31 @@
   .filterbox input{padding:7px 10px; border:1px solid var(--border); border-radius:6px; width:280px;}
   .filterbox select{padding:7px 10px; border:1px solid var(--border); border-radius:6px; background:#fff;}
   .filter-summary{font-size:12px;}
+  .set-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:18px;}
+  .set-col h3{margin:0 0 8px;}
+  .set-row{display:flex; align-items:center; gap:10px; padding:5px 0; border-bottom:1px dashed var(--border);}
+  .set-row:last-child{border-bottom:none;}
+  .set-label{flex:1; font-size:13px;}
+  .set-row input[type="color"]{width:46px; height:26px; padding:0; border:1px solid var(--border); border-radius:5px; background:#fff;}
+  .set-row input[type="text"],.set-row input[type="number"]{padding:5px 8px; border:1px solid var(--border); border-radius:5px;}
+  .set-check{cursor:pointer;} .set-check span{font-size:13px;} .set-help{font-size:11px; flex-basis:100%;}
+  .set-preview{margin-top:18px;} .set-preview h3{margin:0 0 8px;}
+  .zbar{display:flex; height:14px; min-width:120px; border-radius:7px; overflow:hidden; background:#eef1f5;
+        border:1px solid var(--border);}
+  .zbar.compact{height:11px;}
+  .zbar-seg{display:flex; align-items:center; justify-content:center; font-size:9px; color:#fff; font-weight:700;
+            line-height:1; overflow:hidden;}
+  .zbar-rest{background:#d8dde5;}
+  .zbar-note{font-size:10px; margin-left:4px;}
+  .zbar-legend{display:flex; flex-wrap:wrap; gap:12px; align-items:center; font-size:11px; margin:6px 0 8px;}
+  .zbar-legend span{display:inline-flex; align-items:center; gap:4px;}
+  .zbar-legend i{width:10px; height:10px; border-radius:2px; display:inline-block;}
+  th.sortable{cursor:pointer; user-select:none; white-space:nowrap;}
+  th.sortable:hover{background:#e8eef8;}
+  th.sortable .sort-ind{opacity:.45; font-size:10px; margin-left:3px;}
+  th.sortable.sorted .sort-ind{opacity:1; color:var(--brand);}
+  td.heat input{background:transparent; border-color:transparent;}
+  td.heat{transition:background .15s;}
   #toast-area{position:fixed; bottom:16px; right:16px; display:flex; flex-direction:column; gap:8px; z-index:999;}
   .toast{padding:10px 14px; border-radius:8px; font-size:13px; color:#fff; box-shadow:0 4px 14px rgba(0,0,0,.15); max-width:340px;}
   .toast.ok{background:#0bb43f;} .toast.err{background:#d03636;} .toast.warn{background:#c98a06;}
@@ -752,6 +777,16 @@
       <button class="btn small" id="btnSaveFurniture">Uložit tabulku nábytku</button>
       <button class="btn secondary small" id="btnCopyFurnitureRef"
         title="Zkopíruje do schránky tabulku právě zobrazených (vyfiltrovaných) nábytkových prvků">📋 Kopírovat zobrazené prvky</button>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Nastavení Excel šablony</h2>
+    <p class="muted">Barvy a chování generované šablony. Nastavení se ukládá do databáze (tabulka
+      <code>app_settings</code>) a použije se při každém dalším vygenerování šablony.</p>
+    <div id="templateSettings"></div>
+    <div class="row" style="margin-top:12px;">
+      <button class="btn small" id="btnSaveSettings">Uložit nastavení</button>
+      <button class="btn secondary small" id="btnResetSettings">Vrátit výchozí</button>
     </div>
   </div>
   <div class="panel">
