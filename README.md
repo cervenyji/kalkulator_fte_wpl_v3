@@ -781,7 +781,7 @@ prvky listu CHL.
 | Skupina | Nastavení |
 | --- | --- |
 | **Barvy šablony** | titulek a boční popisky, hlavičky sekcí, popisek segmentu, součtové buňky, popisek zóny, vyplňované buňky v hlavičce, písmo vyplňovaných buněk, písmo na tmavém podbarvení |
-| **Chování šablony** | barvit segmenty podle tabulky Segmenty, písmo šablony, počet volných řádků pro cestovní pozice, počet řádků pro doplňující informace, předvyplněná otevírací doba, šířka sloupců G a H, skrýt listy VSTUPY a Pobočky, sbalit sloupec K s poznámkami, ukotvit hlavičku CHL |
+| **Chování šablony** | barvit segmenty podle tabulky Segmenty, písmo šablony, počet volných řádků pro cestovní pozice, počet řádků pro doplňující informace, předvyplněná otevírací doba, šířka sloupců G a H, skrýt listy VSTUPY a Pobočky, sbalit sloupec K s poznámkami, ukotvit hlavičku CHL, **zamknout list** a nepovinné **heslo pro odemčení** |
 
 Tlačítko **„Vrátit výchozí“** vrátí všechny hodnoty na původní podobu vzorového checklistu.
 
@@ -823,6 +823,17 @@ do aplikace; případné odkrytí je v Excelu na pravé tlačítko na oušku lis
     Vygenerováno (datum + verze referenčních dat),
   - sloupec **`K` s rozšířenými poznámkami je seskupený a defaultně sbalený (skrytý)** —
     rozbalí se tlačítkem `+` nad sloupcem `J`, kde je i svislý popisek „ROZŠÍŘENÉ POZNÁMKY ▼“.
+
+Patička listu CHL navíc vypisuje, **z jakých referenčních dat šablona vznikla** — kromě řádku
+„Vygenerováno:“ (datum, čas, verze) jsou tam dva samostatné řádky:
+
+| Řádek | Obsah |
+| --- | --- |
+| `Referenční data — pozice:` | verze při generování, počet pozic v šabloně a verze, ve které se pozice naposledy měnily |
+| `Referenční data — nábytek:` | totéž pro nábytkové prvky |
+
+Díky tomu je u každého vyplněného checklistu zpětně vidět, jaký seznam pozic a nábytku obsahuje —
+i když se referenční data od té doby změnila.
 - **`VSTUPY`** — list, který si hodnoty z CHL jen **stahuje vzorci** (`=CHL!G1`, `=CHL!C3`,
   `=CHL!I3`, `=CHL!H10`, `=$C$4`, u cestovních `=IF(CHL!B80=0,"",…)`) do přesně té podoby, kterou
   čte `parseVstupySheet()` (C1–C4 + řádky od 6, sloupce A–D). Aplikace parsuje výhradně tento list
@@ -841,8 +852,10 @@ tyrkysová čísla u hodin, sloučené buňky, šířky sloupců i výšky řád
 
 - **na tmavém podbarvení je písmo bílé** (modrý titulkový řádek 1 i tmavě modré hlavičky sekcí),
   aby byl text čitelný; na světlých a tyrkysových výplních zůstává tmavé,
-- **vyplňované buňky v hlavičce mají světle šedé podbarvení** — sloučené `C:D` a sloupec `I`
-  v řádcích 3–8, takže je vidět, kam se zapisuje,
+- **vyplňované buňky mají světle šedé podbarvení** — v hlavičce sloučené `C:D` a sloupec `I`
+  (řádky 3–8) a dál všechna pole ve sloupcích `G` a `H`, do kterých se zadávají hodnoty
+  (POČET FTE AKTUÁLNĚ / VÝHLED, počty kusů, WPL). Záhlaví sekcí a součtové řádky si ponechávají
+  svou barvu, poznámkový sloupec `I` zůstává bílý,
 - **sloupce `G` a `H` jsou širší** (19,86), aby se do nich vešly popisky „POČET FTE AKTUÁLNĚ“
   a „POČET FTE VÝHLED“. Vendorovaná knihovna SheetJS
 (komunitní edice) umí formátování buněk sice přečíst, ale při zápisu (`XLSX.write`) ho vždy zahazuje
@@ -851,6 +864,24 @@ zapisovač `.xlsx` (`xlsx_writer.js`), který .xlsx (ZIP + OOXML XML) sestaví p
 ověřená porovnáním obou souborů knihovnou `openpyxl` (výplně, fonty, ohraničení po stranách,
 zarovnání, sloučené buňky, šířky sloupců, výšky řádků) i zpětným načtením vyplněné šablony do
 aplikace.
+
+#### Zámek listu — ochrana proti rozbití šablony
+
+Volbou **„Zamknout list — editovat jen vyplňovaná pole“** (výchozí stav: zapnuto) se všechny tři
+listy zamknou a **odemčené zůstanou jen buňky k zadávání**:
+
+| Odemčeno (lze vyplnit) | Zamčeno (nelze změnit) |
+| --- | --- |
+| hlavička `C:D` (název, datum, formát, typ akce, režim) a velká pole `I` (otevírací doba, vytěžení) | titulek, hlavičky sekcí, popisky segmentů a zón |
+| sloupce `G` a `H` — počty FTE, kusů a WPL | názvy pozic a nábytkových prvků |
+| sloupec `I` s poznámkami a celý sloupec `K` (rozšířené poznámky) | součtové řádky a všechny vzorce (Suma FTE, SUMMARY, WPL celkem) |
+| volné řádky bloku CESTOVNÍ POZICE (`B:F`) | patička s verzemi referenčních dat |
+| Load key, Calculation key a odkaz na sharepoint v patičce | listy VSTUPY a Pobočky (celé) |
+
+Formátování sloupců zůstává povolené, takže **sbalený sloupec `K` jde i v zamčeném listu rozbalit**.
+Do pole **„Heslo pro odemčení listu“** lze zadat heslo (nepovinné) — bez něj stačí v Excelu
+Revize → Odemknout list. Nejde o bezpečnostní prvek, ale o zábranu proti nechtěné úpravě; zamčenou
+šablonu lze po vyplnění beze změny načíst zpět do aplikace (ověřeno testem).
 
 #### Rozbalovací menu v hlavičce CHL
 

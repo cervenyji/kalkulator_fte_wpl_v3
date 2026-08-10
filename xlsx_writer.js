@@ -16,8 +16,8 @@
    Podporuje: řetězce (inline), čísla, vzorce, pojmenované styly (font
    name/size/bold/barva, výplň, ohraničení po jednotlivých stranách,
    zarovnání + zalamování), šířky sloupců, výšky řádků, sloučené buňky,
-   zamrznuté řádky, seskupení (outline) a skrytí sloupců i skrytí celých
-   listů.
+   zamrznuté řádky, seskupení (outline) a skrytí sloupců, skrytí celých
+   listů a zámek listu s odemčenými vyplňovanými buňkami.
    ========================================================================= */
 
 /* ------------------------------- ZIP (stored) ------------------------------ */
@@ -141,7 +141,10 @@ function parseCellAddr(addr) {
 //
 // style({ font: { name, size, bold, color }, fill: "FFRRGGBB",
 //         border: "lrtb" | "lr" | "b" | ... (+ borderStyle, borderColor),
-//         alignment: { h, v, wrap } })
+//         alignment: { h, v, wrap }, unlocked: true })
+//
+// `unlocked: true` znamená, že buňka zůstane editovatelná i po zamknutí listu
+// (v OOXML `<protection locked="0"/>`); ostatní buňky jsou zamčené implicitně.
 function createStyleBook() {
   const DEFAULT_FONT = { name: "Calibri", size: 11, bold: false, color: null };
   const fonts = [{ ...DEFAULT_FONT }];
@@ -171,7 +174,7 @@ function createStyleBook() {
       : 0;
     const a = spec.alignment;
     const alignment = a ? { h: a.h || null, v: a.v || null, wrap: !!a.wrap } : null;
-    return dedupe(xfs, { fontId, fillId, borderId, alignment });
+    return dedupe(xfs, { fontId, fillId, borderId, alignment, unlocked: !!spec.unlocked });
   }
 
   function toXml() {
@@ -201,10 +204,12 @@ function createStyleBook() {
       const alignXml = a
         ? `<alignment${a.h ? ` horizontal="${a.h}"` : ""}${a.v ? ` vertical="${a.v}"` : ""}${a.wrap ? ` wrapText="1"` : ""}/>`
         : "";
+      const protXml = xf.unlocked ? `<protection locked="0"/>` : "";
       return `<xf numFmtId="0" fontId="${xf.fontId}" fillId="${xf.fillId}" borderId="${xf.borderId}" xfId="0"` +
         `${xf.fontId ? ' applyFont="1"' : ""}${xf.fillId ? ' applyFill="1"' : ""}` +
-        `${xf.borderId ? ' applyBorder="1"' : ""}${alignXml ? ' applyAlignment="1"' : ""}>` +
-        `${alignXml}</xf>`;
+        `${xf.borderId ? ' applyBorder="1"' : ""}${alignXml ? ' applyAlignment="1"' : ""}` +
+        `${protXml ? ' applyProtection="1"' : ""}>` +
+        `${alignXml}${protXml}</xf>`;
     }).join("");
 
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
@@ -234,7 +239,7 @@ function createStyleBook() {
 // validations: [{ sqref, values: ["a","b"] }] nebo [{ sqref, formula: "'List'!$A$2:$A$9" }]
 //              -> ověření dat typu "seznam" (rozbalovací menu v buňce)
 function sheetXml(sheet) {
-  const { cells, cols, merges, rowHeights, freezeRows, defaultRowHeight, validations, summaryRight } = sheet;
+  const { cells, cols, merges, rowHeights, freezeRows, defaultRowHeight, validations, summaryRight, protect } = sheet;
   const byRow = {};
   Object.keys(cells).forEach((addr) => {
     const { row } = parseCellAddr(addr);
@@ -288,8 +293,16 @@ function sheetXml(sheet) {
     ? `<sheetPr><outlinePr summaryBelow="1" summaryRight="${summaryRight === false ? 0 : 1}"/></sheetPr>`
     : "";
 
-  // Pořadí prvků v CT_Worksheet je dané schématem — dataValidations musí být
-  // až za mergeCells, jinak Excel soubor odmítne jako poškozený.
+  // Zámek listu. Hodnota 1 = zakázáno, 0 = povoleno; formátování sloupců
+  // zůstává povolené, aby fungovalo rozbalení seskupeného sloupce s poznámkami.
+  const protectXml = protect
+    ? `<sheetProtection${protect.password ? ` password="${excelPasswordHash(protect.password)}"` : ""}` +
+      ` sheet="1" objects="1" scenarios="1" formatColumns="0" formatRows="0"/>`
+    : "";
+
+  // Pořadí prvků v CT_Worksheet je dané schématem — sheetProtection musí být
+  // za sheetData a před mergeCells, dataValidations až za mergeCells, jinak
+  // Excel soubor odmítne jako poškozený.
   const validationsXml = (validations && validations.length)
     ? `<dataValidations count="${validations.length}">${validations.map((v) => {
       const f1 = v.formula !== undefined ? xmlEsc(v.formula) : `"${xmlEsc(v.values.join(","))}"`;
@@ -305,14 +318,30 @@ function sheetXml(sheet) {
     `<dimension ref="A1:${colLetters(maxCol)}${maxRow}"/>` +
     paneXml + fmtXml + colsXml +
     `<sheetData>${rowsXml}</sheetData>` +
-    mergesXml + validationsXml +
+    protectXml + mergesXml + validationsXml +
     `</worksheet>`;
+}
+
+// Původní (legacy) hash hesla listu, jak ho zapisuje Excel do atributu
+// `password` — 16bitová hodnota v hexa. Není to bezpečnostní prvek, jen
+// ochrana proti nechtěné úpravě; Excel ho umí odemknout přes „Odemknout list“.
+function excelPasswordHash(password) {
+  let hash = 0;
+  for (let i = password.length - 1; i >= 0; i--) {
+    hash = ((hash >> 14) & 0x01) | ((hash << 1) & 0x7fff);
+    hash ^= password.charCodeAt(i);
+  }
+  hash = ((hash >> 14) & 0x01) | ((hash << 1) & 0x7fff);
+  hash ^= password.length;
+  hash ^= 0xCE4B;
+  return hash.toString(16).toUpperCase();
 }
 
 /* -------------------------------- Workbook ---------------------------------- */
 
-// sheets: [{ name, cells, cols, merges, rowHeights, freezeRows, defaultRowHeight, hidden }]
-// hidden: list se v sešitu nezobrazí (jde odkrýt přes pravé tlačítko na oušku)
+// sheets: [{ name, cells, cols, merges, rowHeights, freezeRows, defaultRowHeight, hidden, protect }]
+// hidden:  list se v sešitu nezobrazí (jde odkrýt přes pravé tlačítko na oušku)
+// protect: { password } — zamkne list; editovat lze jen buňky se stylem unlocked
 function buildXlsxWorkbook(sheets, styleBook) {
   const encoder = new TextEncoder();
   const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +

@@ -1197,6 +1197,9 @@ const SETTINGS_DEFS = [
   { key: "tpl_hide_helper_sheets", group: "tpl", label: "Skrýt listy VSTUPY a Pobočky", type: "bool", def: "1" },
   { key: "tpl_collapse_notes", group: "tpl", label: "Sloupec K s poznámkami sbalit (skrýt)", type: "bool", def: "1" },
   { key: "tpl_freeze_header", group: "tpl", label: "Ukotvit hlavičku listu CHL", type: "bool", def: "1" },
+  { key: "tpl_protect_sheet", group: "tpl", label: "Zamknout list — editovat jen vyplňovaná pole", type: "bool", def: "1",
+    help: "Zamkne listy a odemkne jen buňky k zadávání (FTE, počty, poznámky, hlavička), aby se šablona nerozbila." },
+  { key: "tpl_protect_password", group: "tpl", label: "Heslo pro odemčení listu (nepovinné)", type: "text", def: "" },
 ];
 const SETTINGS_BY_KEY = {};
 SETTINGS_DEFS.forEach((d) => { SETTINGS_BY_KEY[d.key] = d; });
@@ -7271,9 +7274,11 @@ function generateChecklistTemplate() {
     value: sb.style({ font: A(9, true, CHL_C.title), border: "lrtb", alignment: { h: "center", v: "center" } }),
     // Vyplňované buňky v hlavičce (sloučené C:D a sloupec I, řádky 3–8)
     // mají světle šedé podbarvení, aby bylo vidět, kam se zapisuje.
-    valueGrey: sb.style({ font: A(9, true, CHL_C.title), fill: CHL_C.headerCell, border: "lrtb", alignment: { h: "center", v: "center" } }),
+    valueGrey: sb.style({ font: A(9, true, CHL_C.title), fill: CHL_C.headerCell, border: "lrtb",
+      alignment: { h: "center", v: "center" }, unlocked: true }),
     bigNum: sb.style({ font: A(20, true, CHL_C.segment), border: "lrtb", alignment: { h: "center", v: "center" } }),
-    bigNumGrey: sb.style({ font: A(20, true, CHL_C.segment), fill: CHL_C.headerCell, border: "lrtb", alignment: { h: "center", v: "center" } }),
+    bigNumGrey: sb.style({ font: A(20, true, CHL_C.segment), fill: CHL_C.headerCell, border: "lrtb",
+      alignment: { h: "center", v: "center" }, unlocked: true }),
     segment: sb.style({ font: A(9, true), fill: CHL_C.segment, border: "lrtb", alignment: { h: "center", v: "center" } }),
     // Popisek segmentu může mít vlastní barvu podle tabulky Segmenty; na tmavé
     // barvě se písmo přepne na bílé, aby zůstal čitelný.
@@ -7289,10 +7294,20 @@ function generateChecklistTemplate() {
     sideLabel: sb.style({ font: A(9, true, W), fill: CHL_C.title, border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
     subLabel: sb.style({ font: A(9, true), border: "lrtb", alignment: { h: "center", v: "center", wrap: true } }),
     item: sb.style({ font: A(9), border: "lrtb", alignment: { h: "left", v: "center" } }),
-    input: sb.style({ font: A(9, true, CHL_C.input), border: "lrtb", alignment: { h: "center", v: "center" } }),
+    // Volné řádky cestovních pozic vyplňuje pobočka -> zůstávají odemčené.
+    itemInput: sb.style({ font: A(9), border: "lrtb", alignment: { h: "left", v: "center" }, unlocked: true }),
+    // Vyplňovaná pole: sloupce G a H (počty FTE, kusy, WPL) mají světle šedé
+    // podbarvení jako buňky v hlavičce, aby bylo vidět, kam se zapisuje;
+    // sloupec I (poznámky) zůstává bílý.
+    input: sb.style({ font: A(9, true, CHL_C.input), fill: CHL_C.headerCell, border: "lrtb",
+      alignment: { h: "center", v: "center" }, unlocked: true }),
+    inputNote: sb.style({ font: A(9, true, CHL_C.input), border: "lrtb",
+      alignment: { h: "center", v: "center" }, unlocked: true }),
     sumVal: sb.style({ font: A(9, true), fill: CHL_C.sum, border: "lrtb", alignment: { h: "center", v: "center" } }),
-    plain: sb.style({ border: "lrtb" }),
-    noteArea: sb.style({ font: A(9), border: "lrtb", alignment: { h: "left", v: "top", wrap: true } }),
+    // Sloupec K (rozšířené poznámky) a blok doplňujících informací vyplňuje
+    // pobočka, takže i ty zůstávají odemčené.
+    plain: sb.style({ border: "lrtb", unlocked: true }),
+    noteArea: sb.style({ font: A(9), border: "lrtb", alignment: { h: "left", v: "top", wrap: true }, unlocked: true }),
   };
 
   const chl = {};
@@ -7388,7 +7403,7 @@ function generateChecklistTemplate() {
       fillRange("B", "F", row, st.item, str(pozice, st.item));
       put("G", row, num("", st.input));
       put("H", row, num("", st.input));
-      put("I", row, str("", st.input));
+      put("I", row, str("", st.inputNote));
       put("K", row, str("", st.plain));
       positionRowMap[`${segment}||${pozice}`] = row;
       row++;
@@ -7433,10 +7448,10 @@ function generateChecklistTemplate() {
   for (let i = 0; i < CESTOVNI_ROWS; i++) {
     rowHeights[row] = 17.1;
     put("A", row, str(row === cestFirst ? "CESTOVNÍ POZICE" : "", st.segmentOf("CESTOVNÍ POZICE")));
-    fillRange("B", "F", row, st.item);
+    fillRange("B", "F", row, st.itemInput);
     put("G", row, num("", st.input));
     put("H", row, num("", st.input));
-    put("I", row, str("", st.input));
+    put("I", row, str("", st.inputNote));
     put("K", row, str("", st.plain));
     row++;
   }
@@ -7470,8 +7485,8 @@ function generateChecklistTemplate() {
     put("B", row, str(i === 0 ? "ATM" : "", st.subLabel));
     fillRange("C", "F", row, st.item, str(name, st.item));
     put("G", row, num("", st.input));
-    put("H", row, str("", st.input));
-    put("I", row, str("", st.input));
+    put("H", row, str("", st.inputNote));
+    put("I", row, str("", st.inputNote));
     merge("H", row, "I", row);
     put("K", row, str("", st.plain));
     row++;
@@ -7511,7 +7526,7 @@ function generateChecklistTemplate() {
           fillRange("D", "F", row, st.item, str(furniture, st.item));
           put("G", row, num("", st.input));
           put("H", row, num("", st.input));
-          put("I", row, str("", st.input));
+          put("I", row, str("", st.inputNote));
           put("K", row, str("", st.plain));
           row++;
         });
@@ -7585,8 +7600,8 @@ function generateChecklistTemplate() {
       put("A", row, str(i === 0 ? groupName : "", st.sideLabel));
       fillRange("B", "F", row, st.item, str(item, st.item));
       put("G", row, num("", st.input));
-      put("H", row, str("", st.input));
-      put("I", row, str("", st.input));
+      put("H", row, str("", st.inputNote));
+      put("I", row, str("", st.inputNote));
       merge("H", row, "I", row);
       put("K", row, str("", st.plain));
       row++;
@@ -7608,14 +7623,30 @@ function generateChecklistTemplate() {
   }
   merges.push(`A${noteFirst}:I${row - 1}`);
 
+  // Patička: čím byla šablona vygenerovaná. Kromě data a verze referenčních dat
+  // se zvlášť vypisuje, z jakých dat vznikl seznam pozic a seznam nábytku —
+  // včetně verze, ve které se naposledy měnily (stampy u jednotlivých řádků).
+  const posCountTpl = positionSegments.reduce((n, sg) => n + positionsBySegment[sg].length, 0);
+  const furnCountTpl = frontOffice.concat(backOffice)
+    .reduce((n, b) => n + b.zones.reduce((m, z) => m + z.items.length, 0), 0);
+  const posStamp = dbAll("SELECT MAX(ref_version_id) AS v FROM casove_dotace")[0];
+  const furnStamp = dbAll("SELECT MAX(ref_version_id) AS v FROM furniture_to_zone")[0];
+  const stampText = (v) => (v ? `naposledy změněno ve verzi #${v}` : "verze u řádků neevidována");
   const generatedAt = `${new Date().toLocaleString("cs-CZ")} · referenční data verze #${refVersionId}`;
-  [["Load key:", ""], ["Calculation key:", ""], ["Vygenerováno:", generatedAt], ["Odkaz na sharepoint item:", ""]]
-    .forEach(([label, value]) => {
+  // [popisek, hodnota, odemčeno pro vyplnění]
+  [["Load key:", "", true],
+    ["Calculation key:", "", true],
+    ["Vygenerováno:", generatedAt, false],
+    ["Referenční data — pozice:", `verze #${refVersionId} · ${posCountTpl} pozic · ${stampText(posStamp.v)}`, false],
+    ["Referenční data — nábytek:", `verze #${refVersionId} · ${furnCountTpl} prvků · ${stampText(furnStamp.v)}`, false],
+    ["Odkaz na sharepoint item:", "", true]]
+    .forEach(([label, value, editable]) => {
       rowHeights[row] = 17.1;
       put("A", row, str(label, st.label));
       put("B", row, str("", st.label));
       merge("A", row, "B", row);
-      fillRange("C", "I", row, st.item, str(value, st.item));
+      const cellStyle = editable ? st.itemInput : st.item;
+      fillRange("C", "I", row, cellStyle, str(value, cellStyle));
       put("K", row, str("", st.plain));
       row++;
     });
@@ -7677,22 +7708,29 @@ function generateChecklistTemplate() {
     pob[`C${rr}`] = str(r.region || "", pobCell);
   });
 
+  // Zámek listu: zamkne se všechno kromě buněk označených jako odemčené
+  // (vyplňovaná pole hlavičky, počty FTE/kusů/WPL, poznámky, volné řádky
+  // cestovních pozic a klíče v patičce). Vypnout ho lze v Nastavení.
+  const sheetProtection = getSettingBool("tpl_protect_sheet")
+    ? { password: getSetting("tpl_protect_password") || "" } : null;
+
   const chlSheet = {
     name: "CHL", cells: chl, cols: chlColWidths(), merges,
     rowHeights, defaultRowHeight: 15, freezeRows: getSettingBool("tpl_freeze_header") ? 9 : 0, validations,
     // tlačítko pro rozbalení skupiny (sloupec K) vlevo od ní, u popisku v J
     summaryRight: false,
+    protect: sheetProtection,
   };
   // Pobočka vyplňuje jen CHL; VSTUPY (odkud aplikace čte) i pomocný seznam
   // poboček jsou skryté, aby ji nepletly. Skrytí neovlivní ani vzorce, ani
   // rozbalovací menu, ani zpětné načtení souboru do aplikace.
   const vstupySheet = {
     name: "VSTUPY", cells: vs, cols: VSTUPY_COL_WIDTHS, defaultRowHeight: 15, freezeRows: 5,
-    hidden: getSettingBool("tpl_hide_helper_sheets"),
+    hidden: getSettingBool("tpl_hide_helper_sheets"), protect: sheetProtection,
   };
   const pobockySheet = {
     name: POBOCKY_SHEET, cells: pob, defaultRowHeight: 15, freezeRows: 1,
-    hidden: getSettingBool("tpl_hide_helper_sheets"),
+    hidden: getSettingBool("tpl_hide_helper_sheets"), protect: sheetProtection,
     cols: [{ index: 1, width: 42 }, { index: 2, width: 14 }, { index: 3, width: 26 }],
   };
 
@@ -7704,13 +7742,12 @@ function generateChecklistTemplate() {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 
-  const positionCount = positionSegments.reduce((n, s) => n + positionsBySegment[s].length, 0);
-  const furnitureCount = frontOffice.concat(backOffice)
-    .reduce((n, b) => n + b.zones.reduce((m, z) => m + z.items.length, 0), 0);
   renderRefVersionsList();
   toast(`Excel šablona vygenerována z referenčních dat verze #${refVersionId} ` +
-    `(${positionCount} pozic, ${furnitureCount} nábytkových prvků). Pobočka vyplňuje list CHL, ` +
-    `skrytý list VSTUPY si hodnoty stahuje automaticky.`, "ok");
+    `(${posCountTpl} pozic, ${furnCountTpl} nábytkových prvků)` +
+    `${sheetProtection ? ", list je zamčený — editovat lze jen vyplňovaná pole" : ""}. ` +
+    `Pobočka vyplňuje list CHL, ${getSettingBool("tpl_hide_helper_sheets") ? "skrytý " : ""}list VSTUPY ` +
+    `si hodnoty stahuje automaticky.`, "ok");
 }
 
 /* --------------------------------- Tabs ------------------------------------ */
