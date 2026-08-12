@@ -156,6 +156,16 @@ function migrateSchema(dbi) {
   // opravuje jen původní (chybnou) hodnotu — vlastní úpravu na jinou hodnotu
   // v modulu „Struktura checklistu“ ponechá být.
   dbi.run("UPDATE furniture_to_zone SET wpl_counter = 1 WHERE furniture = 'Interní zasedací místnost - malá' AND wpl_counter = 0");
+  // Doplnění dat: segmenty SBC a HC neměly v Meeting zone žádný nábytkový prvek,
+  // takže potřebu WPL ke schůzkám nešlo rozpočítat na konkrétní kusy. Doplní se
+  // „Jednací místnost“ (1 WPL/kus) stejně jako u ostatních segmentů; pravidlo
+  // pro předvyplnění počtu z kalkulace na ni platí automaticky (LAYOUT_RULES).
+  ["SBC", "HC"].forEach((segment) => {
+    dbi.run(`INSERT INTO furniture_to_zone (segment, furniture, zone, wpl_counter)
+      SELECT ?, 'Jednací místnost', 'meeting_zone', 1
+      WHERE NOT EXISTS (SELECT 1 FROM furniture_to_zone
+        WHERE segment = ? AND zone = 'meeting_zone' AND furniture = 'Jednací místnost')`, [segment, segment]);
+  });
   const pobockyCount = dbAll("SELECT COUNT(*) AS n FROM pobocky", [], dbi)[0].n;
   if (pobockyCount === 0) {
     const ins = dbi.prepare("INSERT INTO pobocky (id_pobocky, nazev, region) VALUES (?, ?, ?)");
@@ -344,6 +354,7 @@ const SEED_FURNITURE = [
   ["HC", "Kancelářské místo", "backoffice_zone", 1],
   ["HC", "Flex box", "backoffice_zone", 1],
   ["HC", "Fast track backoffice", "backoffice_zone", 0],
+  ["HC", "Jednací místnost", "meeting_zone", 1],
   ["HC", "Kancelář", "office_room", 1],
 
   ["PROVOZ", "Kancelářské místo", "backoffice_zone", 1],
@@ -361,6 +372,7 @@ const SEED_FURNITURE = [
   ["SBC", "Kancelářské místo", "backoffice_zone", 1],
   ["SBC", "Flex box", "backoffice_zone", 1],
   ["SBC", "Fast track backoffice", "backoffice_zone", 0],
+  ["SBC", "Jednací místnost", "meeting_zone", 1],
   ["SBC", "Kancelář", "office_room", 1],
 
   ["MMMA", "Flex box", "meeting_zone", 1],

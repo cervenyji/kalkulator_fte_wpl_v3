@@ -644,6 +644,11 @@ Poznámky k chování:
   segment zvlášť s jeho vlastní potřebou WPL.
 - **Při úpravě už uloženého layoutu se předvyplnění neprovádí**, aby nepřepsalo
   hodnoty, které uživatel dříve zadal.
+- Segmenty **SBC a HC** mají v Meeting zone prvek **„Jednací místnost“** (1 WPL/kus) — dříve
+  chyběl, takže se u nich místo počtu kusů psalo jen „pro tento segment a zónu nejsou v databázi
+  definované žádné nábytkové prvky“. Teď se počet doporučí z kalkulace stejně jako u ostatních
+  segmentů (potřeba 0,6 WPL → 1 ks). Do už existujících databází se prvek doplní automaticky při
+  jejich připojení.
 - Definice pravidel je v `app.js` v konstantě `LAYOUT_RULES` — ze stejné
   definice se generuje i text nápovědy, takže se popis nemůže rozejít se
   skutečným chováním.

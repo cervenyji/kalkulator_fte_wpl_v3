@@ -372,6 +372,7 @@ def main():
         ("HC", "Kancelářské místo", "backoffice_zone", 1),
         ("HC", "Flex box", "backoffice_zone", 1),
         ("HC", "Fast track backoffice", "backoffice_zone", 0),
+        ("HC", "Jednací místnost", "meeting_zone", 1),
         ("HC", "Kancelář", "office_room", 1),
 
         ("PROVOZ", "Kancelářské místo", "backoffice_zone", 1),
@@ -389,6 +390,7 @@ def main():
         ("SBC", "Kancelářské místo", "backoffice_zone", 1),
         ("SBC", "Flex box", "backoffice_zone", 1),
         ("SBC", "Fast track backoffice", "backoffice_zone", 0),
+        ("SBC", "Jednací místnost", "meeting_zone", 1),
         ("SBC", "Kancelář", "office_room", 1),
 
         ("MMMA", "Flex box", "meeting_zone", 1),
