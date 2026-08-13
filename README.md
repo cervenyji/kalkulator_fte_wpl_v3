@@ -99,6 +99,25 @@ V záložce „Referenční data“ lze přímo v prohlížeči upravovat:
 
 Úpravy se uloží tlačítkem „Uložit tabulku…“ přímo do databáze.
 
+### Nápověda „?“ u výsledku kalkulace
+
+U nadpisu **„Výsledek kalkulace“** je ikona **„?“**, která vysvětlí vzorec a rozepíše ho na dvou
+konkrétních pozicích (`osobní bankéř - medior` a `bankéř klientské péče - medior`) —
+s **koeficientem nepřítomnosti** a s reálnými čísly té konkrétní kalkulace:
+
+```
+WPL = FTE × doba vytížení × (1 − nepřítomnost − homeoffice) × dotace zóny % ÷ otevírací doba
+```
+
+Například pro 8 FTE „osobní bankéř - medior“ v MMMA při otevírací době 40 h/týden:
+
+1. koeficient přítomnosti: 1 − 22,9 % − 0,7 % = **0,764**,
+2. efektivně odpracováno: 8 × 40 × 0,764 = **244,5 h/týden**,
+3. Meeting zone: 244,5 h × 80 % ÷ 40 h = **4,89 WPL**, Backoffice zone: 244,5 × 20 % ÷ 40 = **1,22 WPL**.
+
+Pokud pozice v kalkulaci není, ukáže nápověda modelový výpočet pro 1 FTE. Hodnoty se berou ze
+snapshotu verze referenčních dat, se kterou kalkulace vznikla.
+
 ### Vytížení zón u soupisu zaměstnanců (progress bar)
 
 Všude, kde je vidět **soupis zaměstnanců pobočky** — náhled checklistu před
@@ -638,8 +657,9 @@ Platná pravidla:
 | Zóna | Nábytek | Formát | Počet |
 | --- | --- | --- | --- |
 | Service zone | Fast track (stolek a židle) | všechny | doporučený počet fasttracků na hale |
-| Service zone | Čekací zóna (židle) | small, medium economy | doporučený počet židlí v čekací zóně |
-| Service zone | Čekací zóna (obývák) | medium, flagship | doporučený počet židlí v čekací zóně |
+| Service zone | Čekací zóna (obývák) | medium, flagship | **jeden obývák = 3 židle**, takže celé trojice z doporučeného počtu židlí (5 židlí → 1 obývák) |
+| Service zone | Čekací zóna (židle) | všechny | doporučený počet židlí; tam, kde je i obývák, **jen zbytek do trojice** (5 židlí → 1 obývák + 2 židle) |
+| Service zone | Pokladní ostrov typu C (1:1,TT+TT,1WPL) | všechny | **1 ks, je-li na pobočce pokladník** (pozice „bankéř klientské péče - junior“) |
 | Service zone | Lenka vítací (vítací pracoviště) | small, medium economy | vždy **právě 1 ks** |
 | Service zone | Theke - nízká (vítací pracoviště) | medium | vždy **právě 1 ks** |
 | Service zone | Theke - vysoká (vítací pracoviště) | flagship | vždy **právě 1 ks** |
@@ -647,8 +667,8 @@ Platná pravidla:
 | Backoffice zone | Interní zasedací místnost - malá | medium economy | 1 ks |
 | Backoffice zone | Interní zasedací místnost - velká | medium, flagship | 1 ks |
 | Meeting zone | Jednací místnost | všechny | celá potřeba WPL (5 → 5 ks) |
-| Backoffice zone | Kancelářské místo | všechny | potřeba WPL zaokrouhlená dolů (5 → 5 ks) |
-| Backoffice zone | Fast track backoffice | všechny | 1 ks, je-li desetinná část potřeby WPL > 0,5 |
+| Backoffice zone | Kancelářské místo | všechny | potřeba WPL **snížená o přesun na fast track** a zaokrouhlená dolů |
+| Backoffice zone | Fast track backoffice | všechny | ⌈přesunutá část potřeby⌉ + 1 ks, je-li desetinná část zbylé potřeby > 0,5 |
 | Office room | Kancelář | všechny | je-li v zóně jakákoliv potřeba WPL |
 
 Poznámky k chování:
@@ -661,6 +681,14 @@ Poznámky k chování:
   segment zvlášť s jeho vlastní potřebou WPL.
 - **Při úpravě už uloženého layoutu se předvyplnění neprovádí**, aby nepřepsalo
   hodnoty, které uživatel dříve zadal.
+- **Přesun backoffice času na fast track:** část backoffice času vybraných pozic se odsedí na fast
+  tracku, ne na vlastním kancelářském místě — **osobní bankéř - medior 20 %**, **osobní bankéř -
+  senior 10 %**. Tato část potřeby WPL se odečte od „Kancelářské místo“ a přiřadí se jako fast
+  tracky (zaokrouhleno nahoru). Fast track se nevykazuje jako WPL, takže se šetří plocha i náklady.
+  Příklad: potřeba backoffice 2,10 WPL, z toho 0,31 WPL na fast track → dřív 2 kancelářská místa
+  + 0 fast tracků, nově **1 kancelářské místo + 2 fast tracky**. Přesun se počítá ze stejných
+  vstupů jako kalkulace (FTE × doba vytížení × koeficient přítomnosti × dotace backoffice %),
+  takže u segmentu bez těchto pozic (např. PROVOZ) je nulový a pravidlo se chová jako dřív.
 - Segmenty **SBC a HC** mají v Meeting zone prvek **„Jednací místnost“** (1 WPL/kus) — dříve
   chyběl, takže se u nich místo počtu kusů psalo jen „pro tento segment a zónu nejsou v databázi
   definované žádné nábytkové prvky“. Teď se počet doporučí z kalkulace stejně jako u ostatních

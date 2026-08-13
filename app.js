@@ -1716,7 +1716,7 @@ function renderResults(result) {
     ${result.duvod ? `<p class="muted">Důvod kalkulace: <strong>${esc(result.duvod)}</strong></p>` : ""}
     <div class="status-row">${statusBadgeHtml(status)}
       <span class="muted">stav se přepíná na konci, v části „Výstup a sestava“</span></div>
-    <h3>Výsledek kalkulace ${srcBadgeHtml("calc")}</h3>
+    <h3>Výsledek kalkulace ${srcBadgeHtml("calc")}${calcResultHelpHtml(result)}</h3>
     <div class="table-wrap src-box-calc">
       <table>
         <thead><tr><th>Segment</th><th>FTE celkem</th><th>Pozice (FTE)</th>
@@ -5616,6 +5616,61 @@ function computeWplOverview(segmentRows, layoutRows, celkemRow) {
 // - `formats`   … pro které formáty pobočky pravidlo platí; null = pro všechny
 // - `qty`       … funkce ({ required, stats }) -> doporučený počet kusů
 //                 (`required` je potřeba WPL dané skupiny segment+zóna)
+// Čekací zóna: „obývák“ je sestava tří židlí, takže se z potřebného počtu židlí
+// nejdřív složí obýváky a zbytek se doplní jednotlivými židlemi.
+const CHAIRS_PER_SOFA = 3;
+
+// Pokladní pracoviště, které se doporučí, když je na pobočce pokladník
+// (pozice „bankéř klientské péče - junior“ — viz ROLE_POSITIONS.cashier).
+const CASHIER_FURNITURE = "Pokladní ostrov typu C (1:1,TT+TT,1WPL)";
+
+// Podíl backoffice času, který daná pozice odsedí na fast tracku místo
+// vlastního kancelářského místa. Fast track se nevykazuje jako WPL, takže
+// každé takto přesunuté procento šetří náklady na plochu.
+const BACKOFFICE_FASTTRACK_SHARE = {
+  "osobní bankéř - medior": 0.20,
+  "osobní bankéř - senior": 0.10,
+};
+
+// Kolik WPL v backoffice zóně segmentu připadá na pozice z tabulky výše —
+// tato část potřeby se přesune z „Kancelářské místo“ na „Fast track backoffice“.
+// Počítá se ze stejných vstupů jako kalkulace: FTE × doba vytížení ×
+// (1 − nepřítomnost − homeoffice) × dotace backoffice % ÷ otevírací doba.
+function backofficeFastTrackShift(segment, calcResult) {
+  if (!calcResult || !(calcResult.inputRows || []).length || !calcResult.oteviraci_doba) return 0;
+  const splits = dotaceSplitMap(calcResult.refVersionId);
+  const openHours = calcResult.oteviraci_doba;
+  let shift = 0;
+  calcResult.inputRows.forEach((r) => {
+    if (r.segment !== segment) return;
+    const share = BACKOFFICE_FASTTRACK_SHARE[String(r.pozice).trim().toLowerCase()];
+    if (!share) return;
+    const split = splits[`${r.segment}||${r.pozice}`];
+    if (!split || !split.backoffice_zone) return;
+    const [nep, ho] = absenceForCalculation(calcResult, r.segment);
+    const wplLoad = (r.wpl_load === null || r.wpl_load === undefined) ? openHours : r.wpl_load;
+    const wpl = ((r.fte || 0) * wplLoad * (1 - nep / 100 - ho / 100) * (split.backoffice_zone / 100)) / openHours;
+    shift += wpl * share;
+  });
+  return shift;
+}
+
+// Nepřítomnost a homeoffice segmentu (v %) — přednostně ze snapshotu verze
+// referenčních dat, se kterou kalkulace vznikla, jinak z aktuální tabulky.
+function absenceForCalculation(calcResult, segment) {
+  const version = calcResult && calcResult.refVersionId ? getRefVersionById(calcResult.refVersionId) : null;
+  if (version && version.absence) return absenceFromSnapshot(version.absence, segment);
+  if (!db) return [0, 0];
+  const row = dbAll("SELECT nepritomnost, homeoffice FROM absence WHERE segment = ?", [segment])[0];
+  return row ? [row.nepritomnost || 0, row.homeoffice || 0] : [0, 0];
+}
+
+// Počet pokladníků (FTE) v kalkulaci — pozice „bankéř klientské péče - junior“.
+function cashierFteOf(calcResult) {
+  if (!calcResult || !(calcResult.inputRows || []).length) return 0;
+  return computeBankerFte(calcResult.inputRows).cashier;
+}
+
 const LAYOUT_RULES = [
   {
     zone: "service_zone", furniture: "Fast track (stolek a židle)", formats: null,
@@ -5623,14 +5678,22 @@ const LAYOUT_RULES = [
     text: "<strong>Fast track (stolek a židle)</strong> = doporučený počet fasttracků na hale.",
   },
   {
-    zone: "service_zone", furniture: "Čekací zóna (židle)", formats: ["small", "medium economy"],
-    qty: ({ stats }) => stats.recommendedChairs,
-    text: "<strong>Čekací zóna (židle)</strong> = doporučený počet židlí v čekací zóně.",
+    // Obývák je sestava tří židlí — z doporučeného počtu židlí se nejdřív složí
+    // obýváky (celé trojice) a teprve zbytek se doplní jednotlivými židlemi.
+    zone: "service_zone", furniture: "Čekací zóna (obývák)", formats: ["medium", "flagship"],
+    qty: ({ stats }) => Math.floor((stats.recommendedChairs || 0) / CHAIRS_PER_SOFA),
+    text: `<strong>Čekací zóna (obývák)</strong> = jeden obývák je sestava ${CHAIRS_PER_SOFA} židlí, `
+      + `takže se z doporučeného počtu židlí složí celé trojice (potřeba 5 židlí → 1 obývák).`,
   },
   {
-    zone: "service_zone", furniture: "Čekací zóna (obývák)", formats: ["medium", "flagship"],
-    qty: ({ stats }) => stats.recommendedChairs,
-    text: "<strong>Čekací zóna (obývák)</strong> = doporučený počet židlí v čekací zóně.",
+    zone: "service_zone", furniture: "Čekací zóna (židle)", formats: null,
+    qty: ({ stats, hasSofa }) => {
+      const chairs = stats.recommendedChairs || 0;
+      return hasSofa ? chairs - CHAIRS_PER_SOFA * Math.floor(chairs / CHAIRS_PER_SOFA) : chairs;
+    },
+    text: "<strong>Čekací zóna (židle)</strong> = doporučený počet židlí v čekací zóně; tam, kde je "
+      + `i obývák (formát medium a flagship), jen zbytek, který se do trojic nevešel `
+      + `(potřeba 5 židlí → 1 obývák + 2 židle).`,
   },
   {
     zone: "service_zone", furniture: "Lenka vítací", formats: ["small", "medium economy"],
@@ -5657,6 +5720,13 @@ const LAYOUT_RULES = [
       "<strong>Lenka</strong> (potřeba 3,4 → 1 ks vítacího + 3 ks Lenka; jakýkoliv zbytek se zaokrouhlí nahoru).",
   },
   {
+    // Pokladník = pozice „bankéř klientské péče - junior“ (ROLE_POSITIONS.cashier).
+    zone: "service_zone", furniture: CASHIER_FURNITURE, formats: null,
+    qty: ({ cashierFte }) => (cashierFte > 0 ? 1 : 0),
+    text: `Je-li na pobočce <strong>pokladník</strong> (pozice „bankéř klientské péče - junior“), `
+      + `předvyplní se <strong>1 ks ${CASHIER_FURNITURE}</strong> — jedna pokladna.`,
+  },
+  {
     zone: "backoffice_zone", furniture: "Interní zasedací místnost - malá", formats: ["medium economy"],
     qty: () => 1,
     text: "Zasedací místnost <strong>Interní zasedací místnost - malá</strong> = 1 ks.",
@@ -5674,15 +5744,24 @@ const LAYOUT_RULES = [
   },
   {
     zone: "backoffice_zone", furniture: "Kancelářské místo", formats: null,
-    qty: ({ required }) => Math.floor(required),
-    text: "Potřeba WPL v Backoffice zone se přiřadí na <strong>Kancelářské místo</strong> " +
-      "(potřeba WPL 5 → 5 ks; desetinná část se zaokrouhluje dolů).",
+    qty: ({ required, backofficeShift }) => Math.floor(Math.max(0, required - backofficeShift)),
+    text: "Potřeba WPL v Backoffice zone se přiřadí na <strong>Kancelářské místo</strong> "
+      + "(potřeba WPL 5 → 5 ks; desetinná část se zaokrouhluje dolů). Nejdřív se ale odečte část, "
+      + "kterou pozice odsedí na fast tracku — viz pravidlo níže.",
   },
   {
     zone: "backoffice_zone", furniture: "Fast track backoffice", formats: null,
-    qty: ({ required }) => (required - Math.floor(required) > 0.5 ? 1 : 0),
-    text: "Je-li desetinná část potřeby WPL v Backoffice zone větší než 0,5, přidá se navíc " +
-      "1 ks <strong>Fast track backoffice</strong>.",
+    qty: ({ required, backofficeShift }) => {
+      const rest = Math.max(0, required - backofficeShift);
+      return Math.ceil(backofficeShift) + (rest - Math.floor(rest) > 0.5 ? 1 : 0);
+    },
+    text: "Část backoffice času vybraných pozic se přesune z kancelářského místa na "
+      + `<strong>Fast track backoffice</strong>: ${Object.entries(BACKOFFICE_FASTTRACK_SHARE)
+        .map(([poz, share]) => `<strong>${poz}</strong> ${Math.round(share * 100)} %`).join(", ")}. `
+      + "Tato část potřeby WPL se odečte od „Kancelářské místo“ a přiřadí se jako fast tracky "
+      + "(zaokrouhleno nahoru) — fast track se nevykazuje jako WPL, takže se šetří plocha i náklady. "
+      + "Navíc platí původní pravidlo: je-li desetinná část zbylé potřeby větší než 0,5, přidá se "
+      + "ještě 1 ks fast tracku.",
   },
   {
     zone: "office_room", furniture: "Kancelář", formats: null,
@@ -5700,25 +5779,88 @@ function normalizeFormatKey(formatTyp) {
 // Vrátí mapu "segment||zóna||nábytek" -> doporučený počet kusů pro danou
 // kalkulaci. Pravidlo se použije jen tam, kde daný segment a zóna odpovídající
 // nábytkový prvek skutečně mají (podle tabulky furniture_to_zone).
-function computeLayoutSuggestions(segmentRows, stats) {
+function computeLayoutSuggestions(segmentRows, stats, calcResult) {
   if (!stats) return {};
   const formatKey = normalizeFormatKey(stats.formatTyp);
+  const cashierFte = cashierFteOf(calcResult);
   const out = {};
   segmentRows.forEach((seg) => {
+    // Kolik potřeby WPL v backoffice zóně se přesune na fast tracky, a jestli
+    // segment vůbec obývák má (pak jdou židle jen jako zbytek do trojic).
+    const backofficeShift = backofficeFastTrackShift(seg.segment, calcResult);
     ZONES.forEach((zone) => {
       const required = seg[zone] || 0;
       const names = new Set(getFurnitureOptions(seg.segment, zone).map((o) => o.furniture));
       if (!names.size) return;
+      const hasSofa = names.has("Čekací zóna (obývák)") && ["medium", "flagship"].includes(formatKey);
       LAYOUT_RULES.forEach((rule) => {
         if (rule.zone !== zone) return;
         if (rule.formats && !rule.formats.includes(formatKey)) return;
         if (!names.has(rule.furniture)) return;
-        const qty = Math.max(0, Math.round(rule.qty({ required, stats }) || 0));
+        const qty = Math.max(0, Math.round(rule.qty({ required, stats, segment: seg.segment,
+          calcResult, formatKey, cashierFte, backofficeShift, hasSofa }) || 0));
         if (qty > 0) out[`${seg.segment}||${zone}||${rule.furniture}`] = qty;
       });
     });
   });
   return out;
+}
+
+// Ikona nápovědy u výsledku kalkulace — vysvětlí vzorec a rozepíše ho na dvou
+// konkrétních pozicích. Pokud jsou v kalkulaci, použijí se její skutečná čísla
+// (FTE, otevírací doba, verze referenčních dat), jinak modelový 1 FTE.
+const CALC_EXAMPLE_POSITIONS = ["osobní bankéř - medior", "bankéř klientské péče - medior"];
+
+function calcExampleHtml(result, poziceLower) {
+  const openHours = (result && result.oteviraci_doba) || 40;
+  const row = ((result && result.inputRows) || [])
+    .find((r) => String(r.pozice).trim().toLowerCase() === poziceLower);
+  const segment = row ? row.segment : "MMMA";
+  const pozice = row ? row.pozice : poziceLower;
+  const split = dotaceSplitMap(result && result.refVersionId)[`${segment}||${pozice}`];
+  if (!split || !zoneSplitTotal(split)) return "";
+
+  const fte = row ? (row.fte || 0) : 1;
+  const wplLoad = (row && row.wpl_load !== null && row.wpl_load !== undefined) ? row.wpl_load : openHours;
+  const [nep, ho] = absenceForCalculation(result, segment);
+  const coef = 1 - nep / 100 - ho / 100;
+  const hours = fte * wplLoad * coef;
+  const zoneLines = ZONES.filter((z) => (Number(split[z]) || 0) > 0).map((z) => {
+    const wpl = (hours * (Number(split[z]) / 100)) / openHours;
+    return `<li>${esc(ZONE_LABELS[z])}: ${fmt1(hours)} h × ${fmt1(split[z])} %`
+      + ` ÷ ${fmt1(openHours)} h = <strong>${wpl.toFixed(2)} WPL</strong></li>`;
+  }).join("");
+  const total = ZONES.reduce((a, z) => a + (hours * (Number(split[z]) || 0) / 100) / openHours, 0);
+
+  return `<p style="margin:9px 0 3px;"><strong>${esc(pozice)}</strong> (${esc(segment)})${row
+    ? "" : " — v této kalkulaci není, ukázka pro 1 FTE"}</p>
+    <ol style="margin:0 0 4px; padding-left:18px;">
+      <li>Zadané FTE: <strong>${fmt1(fte)}</strong>, doba vytížení <strong>${fmt1(wplLoad)} h/týden</strong></li>
+      <li>Koeficient přítomnosti: 1 − nepřítomnost ${fmt1(nep)} % − homeoffice ${fmt1(ho)} %
+        = <strong>${coef.toFixed(3)}</strong></li>
+      <li>Efektivně odpracováno: ${fmt1(fte)} × ${fmt1(wplLoad)} × ${coef.toFixed(3)}
+        = <strong>${fmt1(hours)} h/týden</strong></li>
+      <li>Rozdělení podle časové dotace pozice:<ul style="margin:3px 0 0;">${zoneLines}</ul></li>
+    </ol>
+    <p style="margin:0 0 6px;">Celkem tato pozice generuje <strong>${total.toFixed(2)} WPL</strong>.</p>`;
+}
+
+function calcResultHelpHtml(result) {
+  const openHours = (result && result.oteviraci_doba) || 40;
+  const examples = CALC_EXAMPLE_POSITIONS.map((pz) => calcExampleHtml(result, pz)).filter(Boolean).join("");
+  return `<span class="help-icon" tabindex="0">?<span class="help-tooltip">
+    <strong>Jak se počítá kapacita (WPL) z FTE</strong>
+    <p style="margin:6px 0;">Pro každý řádek checklistu a každou zónu zvlášť:</p>
+    <p style="margin:0 0 4px;"><code>WPL = FTE × doba vytížení × (1 − nepřítomnost − homeoffice)
+      × dotace zóny % ÷ otevírací doba pobočky</code></p>
+    <p style="margin:0 0 6px;">Doba vytížení je počet hodin, které pozice týdně odpracuje (u segmentu
+      CESTOVNÍ vlastní hodnota z checklistu, jinak otevírací doba pobočky — tady
+      <strong>${fmt1(openHours)} h/týden</strong>). Nepřítomnost a homeoffice bere kalkulace
+      z referenčních dat podle segmentu, časovou dotaci podle segmentu a pozice.</p>
+    ${examples || '<p style="margin:0;">Pro ukázku chybí časové dotace pozic v referenčních datech.</p>'}
+    <p style="margin:6px 0 0;">WPL jednotlivých řádků se sečtou po zónách do segmentu a do řádku
+      „Celkem“ — to je potřeba pracovních míst, kterou pak pokrývá layout.</p>
+  </span></span>`;
 }
 
 // Ikona nápovědy s výpisem všech platných pravidel — obsah se generuje
@@ -5768,7 +5910,7 @@ function renderLayoutForm(container, segmentRows, meta, existingRows) {
   // zatím neuloženého layoutu — při úpravě uloženého layoutu by přepsalo hodnoty,
   // které už uživatel zadal.
   const isEdit = (existingRows || []).length > 0;
-  const suggestions = isEdit ? {} : computeLayoutSuggestions(segmentRows, meta.stats);
+  const suggestions = isEdit ? {} : computeLayoutSuggestions(segmentRows, meta.stats, meta.calcResult);
 
   let groupsHtml = "";
   let anyGroup = false;
@@ -6575,7 +6717,7 @@ function showHistoryDetail(calculationKey, loadKey) {
     <div class="table-wrap"><table><thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Vytížení WPL</th>
       <th>Vytížení zón</th></tr></thead>
     <tbody>${inputHtml}</tbody></table></div>
-    <h3>Výsledek kalkulace ${srcBadgeHtml("calc")}</h3>
+    <h3>Výsledek kalkulace ${srcBadgeHtml("calc")}${calcResultHelpHtml(calcResult)}</h3>
     <div class="table-wrap"><table><thead><tr><th>Segment</th><th>FTE celkem</th><th>Pozice (FTE)</th>
       <th>Service zone</th><th>Meeting zone</th><th>Backoffice zone</th><th>Office room</th></tr></thead>
       <tbody>${resultHtml}</tbody></table></div>
