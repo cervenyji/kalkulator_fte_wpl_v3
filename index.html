@@ -60,6 +60,8 @@
   }
   .btn:hover{background:var(--accent-dark);}
   .btn.secondary{background:#eef2f9; color:var(--text);}
+  .btn.danger{background:#fdeaea; color:#a41f1f; border:1px solid #f3bcbc;}
+  .btn.danger:hover{background:#f9d6d6;}
   .btn.secondary:hover{background:#e2e8f2;}
   .btn.small{padding:5px 9px; font-size:12px; border-radius:6px;}
   .btn:disabled{opacity:.45; cursor:not-allowed;}
@@ -141,6 +143,16 @@
   th.sortable:hover{background:#e8eef8;}
   th.sortable .sort-ind{opacity:.45; font-size:10px; margin-left:3px;}
   th.sortable.sorted .sort-ind{opacity:1; color:var(--brand);}
+  .src-badge{display:inline-block; font-size:10px; font-weight:700; padding:2px 7px; border-radius:10px;
+             vertical-align:middle; margin-left:8px; white-space:nowrap; border:1px solid;}
+  .src-calc{background:#eaf1fe; color:#1b4fa8; border-color:#bcd2f7;}
+  .src-visit{background:#e7f7f0; color:#0a6b4a; border-color:#b6e5d1;}
+  .src-mix{background:#f3edfe; color:#5b2ec4; border-color:#d9c9fb;}
+  .src-ref{background:#eef1f5; color:#4b5563; border-color:#d3d9e2;}
+  .src-legend{display:flex; flex-wrap:wrap; gap:14px; align-items:center; font-size:11px; margin:0 0 12px;
+              padding:8px 10px; background:#f7f9fc; border:1px solid var(--border); border-radius:8px;}
+  .src-legend-item{display:inline-flex; align-items:center; gap:5px;}
+  .src-legend i{width:10px; height:10px; border-radius:2px; display:inline-block;}
   td.heat input{background:transparent; border-color:transparent;}
   td.heat{transition:background .15s;}
   #toast-area{position:fixed; bottom:16px; right:16px; display:flex; flex-direction:column; gap:8px; z-index:999;}
@@ -470,8 +482,14 @@
   }
   .pdf-box h3{margin:0 0 6px; color:var(--accent-dark);}
   .pdf-opt-grid{display:grid; grid-template-columns:repeat(auto-fit, minmax(250px, 1fr)); gap:12px; margin:12px 0 4px;}
-  .pdf-opt-group{border:1px solid var(--border); border-radius:8px; background:#fff; padding:8px 12px 10px; margin:0;}
-  .pdf-opt-group legend{font-size:11.5px; font-weight:700; color:var(--accent-dark); text-transform:uppercase; letter-spacing:.03em; padding:0 4px;}
+  .pdf-opt-group{border:1px solid var(--border); border-top:3px solid var(--chapter-color,var(--brand));
+                 border-radius:8px; background:#fff; padding:8px 12px 10px; margin:0;}
+  .pdf-opt-group legend{font-size:11.5px; font-weight:700; color:var(--accent-dark); text-transform:uppercase;
+                        letter-spacing:.03em; padding:0 4px; display:flex; align-items:center; gap:6px;}
+  .pdf-chapter-num{display:inline-flex; align-items:center; justify-content:center; width:17px; height:17px;
+                   border-radius:50%; color:#fff; font-size:11px; line-height:1; flex:0 0 auto;}
+  .pdf-chapter-note{margin:2px 0 8px; font-size:11px;}
+  .pdf-opt-order{color:var(--muted); font-weight:700;}
   label.pdf-opt{display:flex; gap:7px; align-items:flex-start; font-size:12.5px; padding:3px 0; cursor:pointer;}
   label.pdf-opt input{margin-top:2px; flex:0 0 auto;}
   label.pdf-opt:hover{color:var(--accent-dark);}
@@ -499,6 +517,10 @@
   .hidden-variant > summary{cursor:pointer; font-weight:600; color:#8a5c00;}
   .hidden-variant .num{text-align:right; white-space:nowrap;}
   #visitorList tr.visitor-row:hover td{background:#eef3fb;}
+  /* Barevný pruh podle zdroje dat — až za obecnými rámečky boxů, aby je přebil. */
+  .src-box-calc{border-left:4px solid #2770f0;}
+  .src-box-visit{border-left:4px solid #0e9f6e;}
+  .src-box-mix{border-left:4px solid #8b5cf6;}
 </style>
 </head>
 <body>

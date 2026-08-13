@@ -128,21 +128,38 @@ Pod tabulkou je vždy vidět, kolik řádků je zobrazeno z celkového počtu. F
 slouží **jen k prohlížení**: řádky, které mu nevyhovují, se nezahazují —
 **uložení tabulky zapíše i je**, takže filtrovat lze bez rizika ztráty dat.
 
+### Barevné označení zdroje dat
+
+Čísla v aplikaci pocházejí ze dvou nezávislých zdrojů a u každého bloku je proto
+**barevný štítek a stejně barevný levý pruh**, takže je hned vidět, na čem stojí:
+
+| Štítek | Barva | Co to znamená | Kde |
+| --- | --- | --- | --- |
+| **z kalkulace FTE → WPL** | modrá | počítá se ze zadaných FTE a referenčních dat | výsledek kalkulace, vstupní data z checklistu, klíčové ukazatele, sestavení layoutu, kompletní přehled WPL |
+| **z návštěvních dat** | zelená | počítá se ze skutečných návštěv v reportu | návštěvnost a doporučení prostor, doporučený počet míst, Monte Carlo |
+| **kalkulace + návštěvní data** | fialová | kombinuje kapacitu z kalkulace se skutečnou návštěvností | roční kapacita, kapacitní shrnutí, tři kontroly schůzek, srovnání s kalkulací, návštěvy na bankéře |
+
+Nad výsledkem kalkulace (i v detailu v historii) je legenda těchto tří barev.
+Stejné rozdělení má i PDF — kapitola 1 je modrá (kalkulace), kapitola 2 zelená
+(kapacita a návštěvnost), kapitola 3 fialová (layout).
+
 ### Řazení, heatmapa a pruhy v časových dotacích
 
-Tabulka **Časové dotace pozic** (v „Referenčních datech“ i ve „Struktuře
-checklistu“) navíc umí:
+Tabulky **Časové dotace pozic** (v „Referenčních datech“ i ve „Struktuře
+checklistu“) a **Nábytek** navíc umí:
 
-- **Řazení kliknutím na hlavičku** kteréhokoli sloupce (segment, pozice, čtyři
-  zóny i souhrnný sloupec „Vytížení zón“); druhé kliknutí obrátí směr, šipka
-  v hlavičce ukazuje aktuální řazení. Řazení je **jen zobrazovací** — uložení
-  zapíše řádky zpět v původním pořadí (podle `id`), takže se nerozhodí pořadí
-  pozic v generovaném checklistu.
+- **Řazení kliknutím na hlavičku** kteréhokoli sloupce — u časových dotací
+  segment, pozice, čtyři zóny i souhrnný sloupec „Vytížení zón“, u nábytku
+  segment, zóna, název prvku, WPL na kus i verze. Druhé kliknutí obrátí směr,
+  šipka v hlavičce ukazuje aktuální řazení. Řazení je **jen zobrazovací** —
+  uložení zapíše řádky zpět v původním pořadí (podle `id`), takže se nerozhodí
+  pořadí pozic ani nábytku v generovaném checklistu.
 - **Heatmapu**: buňka s procentem je podbarvená barvou své zóny, tím sytěji, čím
   vyšší je hodnota (100 % = nejsytější odstín). Prázdná nebo nulová hodnota
   zůstává bílá.
-- **Pruh „Vytížení zón“** v každém řádku — stejný jako u soupisu zaměstnanců,
-  takže je na první pohled vidět, jestli dotace dávají dohromady 100 %.
+- **Pruh „Vytížení zón“** v každém řádku časových dotací — stejný jako u soupisu
+  zaměstnanců, takže je na první pohled vidět, jestli dotace dávají dohromady 100 %.
+  (Heatmapa a pruh jsou jen u časových dotací; tabulka nábytku má řazení.)
 
 Heatmapa i pruh se přepočítávají **živě při psaní**, ještě před uložením.
 
@@ -209,6 +226,15 @@ data i sestavený layout).
 **Potvrzené (uzavřené) kalkulace mají v seznamu zelený svislý proužek** vlevo
 a světle zelené podbarvení, takže je hned vidět, které jsou hotové a které jsou
 ještě rozpracované (viz „Stav kalkulace“ níže).
+
+### Smazání kalkulace
+
+V detailu kalkulace je tlačítko **„🗑 Smazat kalkulaci“**. Po potvrzení dialogu
+(ukáže, kolik řádků výsledku a layoutu se smaže) zmizí všechno, co ke kalkulaci
+patří: výsledek, sestavený layout, uložené klíčové ukazatele i snapshot
+návštěvnosti. **Vstupní data z checklistu** (`excel_loads`) se smažou jen tehdy,
+když je nepoužívá žádná další kalkulace — jinak zůstanou. Naimportovaný report
+návštěvnosti se nemaže nikdy, ten je společný pro všechny pobočky.
 
 ## Vertikální timeline u kalkulace
 
@@ -411,12 +437,12 @@ dostane „venku“ — nikde jinde v aplikaci už žádné exportní tlačítko
 
 Rozsahy PDF:
 
-| Rozsah | Co je v souboru | Název souboru |
+| Rozsah | Které kapitoly | Název souboru |
 | --- | --- | --- |
-| **Celá sestava** | kalkulace + návštěvnost + layout | `sestava_<calculation_key>.pdf` |
-| **Jen kalkulace** | kalkulace bez návštěvnosti a bez layoutu | `kalkulace_<…>.pdf` |
-| **Jen návštěvnost a doporučení prostor** | pouze analýza návštěv | `navstevnost_<…>.pdf` |
-| **Jen sestavení layoutu** | pouze layout a jeho přehledy | `layout_<…>.pdf` |
+| **Celá sestava** | 1 + 2 + 3 | `sestava_<calculation_key>.pdf` |
+| **Jen kalkulace** | 1 — Kalkulace FTE → WPL | `kalkulace_<…>.pdf` |
+| **Jen kapacita pobočky** | 2 — Kapacita pobočky | `navstevnost_<…>.pdf` |
+| **Jen layout pobočky** | 3 — Layout pobočky | `layout_<…>.pdf` |
 
 Rozsah, pro který nejsou data (návštěvnost bez naimportovaného reportu, layout
 bez uložení), je nedostupný a nelze ho zvolit. Skupiny zaškrtávátek, které do
@@ -428,33 +454,24 @@ překreslení výsledku nebo po uložení layoutu.
 a výsledek → ukazatele a analýzy → sestavení layoutu → kapacitní shrnutí →
 výstup a sestava.
 
-Kapitoly jdou v PDF v tomto pořadí: hlavička se **světle šedým boxíkem
-s detaily** (název a ID pobočky, otevírací doba, klíče, datum, referenční data)
-→ **Přehled pozic z checklistu** → **Souhrnná tabulka (WPL po zónách)** →
-**Klíčové ukazatele a benchmark** → **Roční kapacita** → **Sestavení layoutu** (jen ve spojené
-sestavě) → **Návštěvnost a doporučení prostor** → **Kapacitní shrnutí** →
-upozornění a poznámka.
+PDF má **tři kapitoly**, každá začíná na nové stránce **barevným pruhem** s číslem a názvem;
+sekce uvnitř kapitoly mají praporek v barvě kapitoly. Zaškrtávátka v boxu jsou seskupená po
+kapitolách a **očíslovaná v tom pořadí, v jakém se části tisknou** — box tak zároveň slouží jako
+obsah budoucího PDF. Vypnutí kterékoli části pořadí ostatních nezmění.
 
-Zapnout či vypnout lze tyto kapitoly:
-
-| Skupina | Volba | Výchozí |
+| # | Kapitola (barva) | Části v pořadí |
 | --- | --- | --- |
-| Kalkulace | Kapacitní shrnutí | ✔ |
-| Kalkulace | Přehled pozic z checklistu | ✔ |
-| Kalkulace | Informace o použitých referenčních datech | ✔ |
-| Kalkulace | Souhrnná tabulka WPL po zónách a doporučení (fasttracky, židle, plocha) | ✔ |
-| Kalkulace | Klíčové ukazatele a benchmark | ✔ |
-| Kalkulace | Roční kapacita — otevírací doba, přítomnost, návštěvy | ✔ |
-| Kalkulace | Upozornění z výpočtu | ✔ |
-| Návštěvnost | Doporučení prostor a srovnání s kalkulací | ✔ |
-| Návštěvnost | Grafy Monte Carla | ✔ |
-| Návštěvnost | Otevírací doba pobočky a denní návštěvy na bankéře | — |
-| Layout (celá sestava) | Kompletní přehled WPL po zónách a segmentech | ✔ |
-| Layout (celá sestava) | Seznam nábytku po zónách a segmentech | ✔ |
-| Layout (celá sestava) | Analýza segmentů, zón a jejich prvků | ✔ |
+| 1 | **Kalkulace FTE → WPL** (modrá) | šedý blok s detaily · informace o referenčních datech · přehled pozic z checklistu · souhrnná tabulka (WPL po zónách) · klíčové ukazatele a benchmark · upozornění z výpočtu |
+| 2 | **Kapacita pobočky** (zelená) | roční kapacita · návštěvnost a doporučení prostor (+ srovnání s kalkulací) · otevírací doba a návštěvy na bankéře · Monte Carlo model průměrného dne · distribuce celkové denní FTE poptávky · kapacitní shrnutí · tři kontroly míst pro schůzky |
+| 3 | **Layout pobočky** (fialová) | šedý blok s detaily · kompletní přehled WPL po zónách a segmentech · seznam nábytku po zónách (kompaktní výpis) · analýza segmentů, zón a jejich prvků |
 
-Pokud pro pobočku nejsou naimportovaná data návštěvnosti, je celá skupina
-„Návštěvnost“ nedostupná a do PDF se nedostane.
+Výchozí stav: zapnuto je všechno kromě „Otevírací doba a návštěvy na bankéře“. Části, které vycházejí
+z reportu návštěvnosti, jsou bez naimportovaných dat nedostupné (zbytek kapitoly 2 se tiskne dál).
+Poznámka uživatele se tiskne na konci celé sestavy.
+
+Seznam nábytku v kapitole 3 je **kompaktní** — každý segment je jeden zalomený odstavec s prvky
+oddělenými „·“ (`MMMA: Theke - nízká 2 ks (2.0 WPL) · Lenka 1 ks (1.0 WPL) · …`), takže se výpis
+vejde na několik řádků místo několika stránek.
 
 ## Roční kapacita — kolik času je a co ho spotřebuje
 
