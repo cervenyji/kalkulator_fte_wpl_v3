@@ -11,7 +11,7 @@ backoffice / office room) přesně podle stejné logiky jako originální appka.
 ```
 index.html                  – aplikace, otevřete ji v prohlížeči
 app.js                      – veškerá logika (parsování Excelu, výpočet, PDF, DB)
-xlsx_writer.js              – vlastní zapisovač .xlsx s formátováním (viz "Struktura checklistu")
+xlsx_writer.js              – vlastní zapisovač .xlsx s formátováním (viz "Data a Excel šablona")
 fte_wpl_calculator.db       – vzorová SQLite databáze s výchozími referenčními daty
 vendor/                     – vendorované knihovny (sql.js, SheetJS, jsPDF, DejaVu font)
 tools/gen_seed_db.py        – skript, kterým byla vygenerována fte_wpl_calculator.db
@@ -69,6 +69,25 @@ System Access API). Aplikace v nich funguje také, ale databázi je nutné po
 každé změně stáhnout tlačítkem „Uložit databázi“ a přesunout stažený soubor
 zpět do této složky (přepsat starý `fte_wpl_calculator.db`).
 
+## Načtení obsazenosti pobočky z exportu specialistů
+
+V manuálním zadání je blok **„Načíst pozice z exportu specialistů“**, který
+předvyplní pozice a jejich počty pro vybranou pobočku ze souboru
+**`data/export_specialiste.xlsx`** (dodává se ve složce s aplikací):
+
+- první řádek je hlavička: ve sloupci `A` je `branch_id` (kód pobočky), ve `B`
+  název pobočky, další sloupce jsou **názvy pozic** a v řádcích jsou jejich počty,
+- tlačítkem **„Nahrát export_specialiste.xlsx“** se soubor jednou naimportuje do
+  databáze (tabulka `specialist_export`, 327 poboček) — pak už stačí u každé
+  další pobočky jediné kliknutí na **„⤓ Načíst pozice z exportu specialistů“**,
+- pobočka se hledá podle **ID**, a když ID nesedí, podle názvu,
+- pozice se zařadí do segmentu podle referenčních dat (`casove_dotace`); protože
+  je každá pozice vedená i pod segmentem CESTOVNÍ, bere se vždy **domovský
+  segment** (ten, který CESTOVNÍ není),
+- sloupce s pozicemi, které v referenčních datech nejsou, se vypíšou jako
+  nerozpoznané a přeskočí se (v dodaném exportu jsou 3),
+- předvyplněné hodnoty jde před spočítáním libovolně upravit.
+
 ## Vytvoření kalkulace bez Excelu (manuálně)
 
 V kroku 1 průvodce lze místo „Nahrát Excel checklist“ zvolit „Vytvořit manuálně“:
@@ -89,15 +108,44 @@ V kroku 1 průvodce lze místo „Nahrát Excel checklist“ zvolit „Vytvořit
 Seznam poboček je uložen v databázi, takže jej lze v budoucnu upravit přímo
 v SQLite (tabulka `pobocky`, sloupce `id_pobocky`, `nazev`, `region`).
 
-## Referenční data
+## Data a Excel šablona (jedna záložka)
 
-V záložce „Referenční data“ lze přímo v prohlížeči upravovat:
+Záložka **„Data a Excel šablona“** spojuje dřívější „Referenční data“
+a „Strukturu checklistu“. Nejdřív jsou v blocích **data uložená v databázi**,
+teprve pod nimi export šablony, která z nich vychází:
 
-- **Absence po segmentech** — % nepřítomnosti a homeoffice.
-- **Časové dotace pozic** — rozdělení pracovní doby pozice mezi service /
-  meeting / backoffice zónu a kancelář (v %).
+1. **Segmenty** — pořadí, barva a ikona (`segments`),
+2. **Pozice a jejich časové dotace** — rozdělení pracovní doby mezi service /
+   meeting / backoffice zónu a kancelář v % (`casove_dotace`),
+3. **Nábytek** — prvky po segmentech a zónách včetně WPL na kus (`furniture_to_zone`),
+4. **Absence po segmentech** — % nepřítomnosti a homeoffice (`absence`),
+5. **Historie referenčních dat** — verze všech tří sad (viz níže),
+6. **Export Excel šablony checklistu** — nastavení vzhledu a chování + generování.
 
-Úpravy se uloží tlačítkem „Uložit tabulku…“ přímo do databáze.
+Úpravy se uloží tlačítkem „Uložit tabulku…“ přímo do databáze; tabulka pozic je
+teď jen jedna (dřív byla ve dvou záložkách nad stejnými daty).
+
+### Filtrování po sloupcích jako v Excelu
+
+Každá tabulka s daty má v hlavičce u sloupců tlačítko **▽**, které otevře seznam
+hodnot se zaškrtávátky — jako autofiltr v Excelu. Uvnitř sloupce se hodnoty
+kombinují jako OR, filtry z různých sloupců jako AND (např. *Zóna = Meeting zone*
+**a** *Segment = MMMA*). V popupu je hledání v hodnotách a tlačítka „Vybrat vše“ /
+„Odebrat vše“; aktivní filtry se vypíšou pod tabulkou jako štítky s tlačítkem
+„Zrušit filtry sloupců“. Vedle toho zůstává celotabulkové hledání textem.
+
+Filtry jsou **jen zobrazovací** — uložení tabulky zapíše i řádky skryté filtrem.
+
+### Přehled dat pro MS Teams
+
+Tlačítko **„📋 Přehled dat (segmenty, pozice, nábytek)“** otevře popup s textovým
+shrnutím celé databáze: každý segment, jeho absence, všechny jeho pozice
+s časovými dotacemi a všechen nábytek po zónách včetně WPL na kus. Z popupu se dá
+obsah zkopírovat dvěma způsoby:
+
+- **📋 Kopírovat jako tabulku (MS Teams)** — formátovaná tabulka
+  (segment / druh / název / detail), vložitelná do MS Teams, Wordu i Excelu,
+- **📋 Kopírovat jako text** — čistý text se stejnou strukturou.
 
 ### Nápověda „?“ u výsledku kalkulace
 
@@ -136,10 +184,10 @@ s rozdělením jejího času po zónách** podle časových dotací v referenčn
 
 ### Vyhledávání a filtrování v tabulkách
 
-Nad každou editovatelnou tabulkou v záložkách **„Referenční data“**
-a **„Struktura checklistu“** je vyhledávací pole (absence, časové dotace pozic,
-segmenty, nábytek); u nábytku je navíc **výběr zóny**, který se s hledaným
-textem kombinuje. Hledá se **po slovech** a nezávisle na velikosti písmen —
+Nad každou editovatelnou tabulkou v záložce **„Data a Excel šablona“** je
+vyhledávací pole (segmenty, pozice, nábytek, absence); u nábytku je navíc
+**výběr zóny**, který se s hledaným textem kombinuje. Vedle toho má každý
+sloupec **autofiltr hodnot jako v Excelu** — viz „Filtrování po sloupcích“ výše. Hledá se **po slovech** a nezávisle na velikosti písmen —
 „bankéř medior“ najde řádky obsahující obojí bez ohledu na pořadí. U nábytku
 text prohledává segment, název prvku i název zóny.
 
@@ -184,7 +232,7 @@ Heatmapa i pruh se přepočítávají **živě při psaní**, ještě před ulo�
 
 ### Kopírování vyfiltrovaného nábytku do schránky
 
-V záložce „Struktura checklistu“ v části **Nábytek** je tlačítko
+V záložce „Data a Excel šablona“ v části **Nábytek** je tlačítko
 **„📋 Kopírovat zobrazené prvky“**, které zkopíruje **právě zobrazené
 (vyfiltrované) řádky** jako formátovanou tabulku (segment, zóna, nábytek,
 WPL na kus, verze) — vložením přes Ctrl+V do Wordu, Teams nebo Excelu se vloží
@@ -198,9 +246,9 @@ Verzují se **tři** sady referenčních dat:
 
 | Data | Kde se upravují | Snapshot ve verzi |
 | --- | --- | --- |
-| **Absence po segmentech** | Referenční data | `absence_json` |
-| **Časové dotace pozic** | Referenční data / Struktura checklistu | `dotace_json` |
-| **Nábytkové prvky** (`furniture_to_zone`) | Struktura checklistu → Nábytek | `furniture_json` |
+| **Absence po segmentech** | Data a Excel šablona → Absence | `absence_json` |
+| **Časové dotace pozic** | Data a Excel šablona → Pozice | `dotace_json` |
+| **Nábytkové prvky** (`furniture_to_zone`) | Data a Excel šablona → Nábytek | `furniture_json` |
 
 Každé uložení kterékoli z nich vytvoří novou **verzi** referenčních dat (pokud
 se skutečně něco změnilo — uložení beze změny žádnou duplicitní verzi
@@ -544,6 +592,9 @@ shrnutí**, které stejná data řekne běžnou řečí a hlavně odpoví na ot�
    z dvaceti), vpravo je vždy „kolik je / kolik je potřeba“ a pokrytí v %.
    U bankéřů je pruh počet lidí reálně na place (FTE mínus dovolené, nemoci
    a homeoffice) a čáry jsou špičková poptávka z Monte Carla.
+   U židlí v čekací zóně se **obývák počítá jako 3 místa k sezení** (u řádku je
+   pak vidět i „z čeho se to skládá“, např. `2 ks = 6 míst`), takže se kapacita
+   nepočítá po kusech nábytku, ale po skutečných místech.
 3. **Vysvětlení špičky** bez zkratek — která hodina je nejrušnější, kolik v ní
    průměrně přijde klientů, s kolika se počítá v silný den („zhruba jeden den
    z dvaceti“), kolik z nich jde bez objednání a kolik na sjednanou schůzku,
@@ -657,8 +708,8 @@ Platná pravidla:
 | Zóna | Nábytek | Formát | Počet |
 | --- | --- | --- | --- |
 | Service zone | Fast track (stolek a židle) | všechny | doporučený počet fasttracků na hale |
-| Service zone | Čekací zóna (obývák) | medium, flagship | **jeden obývák = 3 židle**, takže celé trojice z doporučeného počtu židlí (5 židlí → 1 obývák) |
-| Service zone | Čekací zóna (židle) | všechny | doporučený počet židlí; tam, kde je i obývák, **jen zbytek do trojice** (5 židlí → 1 obývák + 2 židle) |
+| Service zone | Čekací zóna (obývák) | medium, flagship | **jeden obývák = 3 židle**, do doporučení **nejvýš 1 ks** (víc lze přidat ručně) |
+| Service zone | Čekací zóna (židle) | všechny | doporučený počet židlí; tam, kde je i obývák, **zbytek nad obývák** (8 židlí → 1 obývák + 5 židlí) |
 | Service zone | Pokladní ostrov typu C (1:1,TT+TT,1WPL) | všechny | **1 ks, je-li na pobočce pokladník** (pozice „bankéř klientské péče - junior“) |
 | Service zone | Lenka vítací (vítací pracoviště) | small, medium economy | vždy **právě 1 ks** |
 | Service zone | Theke - nízká (vítací pracoviště) | medium | vždy **právě 1 ks** |
@@ -777,7 +828,7 @@ Každý segment (MMMA, SBC, HC, EPC, EPB, PROVOZ, RKC, CESTOVNÍ, CESTOVNÍ POZI
 přiřazenou barvu a ikonu — používají se jednotně v tabulce výsledků a v sestavení layoutu i v PDF
 exportech (barevný čtvereček před názvem segmentu; ikony jako emoji se v PDF nevykreslují, protože
 je vložený font DejaVu Sans neobsahuje). Barvy, ikony i pořadí segmentů lze upravit v novém modulu
-„Struktura checklistu“ (viz níže).
+„Data a Excel šablona“ (viz níže).
 
 ## Stav kalkulace: rozpracovaná / potvrzená
 
@@ -806,10 +857,10 @@ do celkového počtu lidí na hale se počítá **jen jednou**. Pozice, které n
 v tabulce (například `pobočkový specialista - provoz`), se do výpočtů na bankéře
 nepočítají vůbec.
 
-## Struktura checklistu (segmenty, pozice, nábytek, Excel šablona)
+## Export Excel šablony checklistu
 
-Nová záložka **„Struktura checklistu“** v horní liště slouží ke správě dat, ze kterých vychází
-Excel checklist i celá kalkulace:
+Poslední blok záložky **„Data a Excel šablona“** vychází z dat popsaných výše — segmenty, pozice
+i nábytek se do checklistu propíšou přesně v tom pořadí a s tím obsahem, jak jsou v databázi:
 
 - **Segmenty** — pořadí, barva a ikona (viz výše).
 - **Pozice** — stejná data a stejný editor jako v „Referenčních datech“ (tabulka `casove_dotace`);
@@ -983,7 +1034,7 @@ záznam v tabulce časových dotací, řádek se vynechá a zobrazí se upozorn�
   složených závorek s ohledem na řetězce a předá `JSON.parse`. Data se ukládají
   do tabulek `visitor_data` (per pobočka) a `calculation_visitor` (snapshot ke
   kalkulaci).
-- Generovaná Excel šablona (záložka „Struktura checklistu“) se naopak zapisuje
+- Generovaná Excel šablona (záložka „Data a Excel šablona“) se naopak zapisuje
   vlastním minimalistickým zapisovačem `.xlsx` (`xlsx_writer.js`) — vendorovaná
   SheetJS (komunitní edice) při zápisu zahazuje veškeré formátování buněk, což
   by pro šablonu, která má vypadat jako vzorový checklist, nešlo použít.

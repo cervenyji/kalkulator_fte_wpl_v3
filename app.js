@@ -112,6 +112,13 @@ CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+CREATE TABLE IF NOT EXISTS specialist_export (
+  branch_id TEXT PRIMARY KEY,
+  branch_name TEXT,
+  imported_at TEXT,
+  source TEXT,
+  payload TEXT
+);
 CREATE TABLE IF NOT EXISTS visitor_data (
   pobocka_id TEXT PRIMARY KEY,
   nazev TEXT,
@@ -173,6 +180,8 @@ function migrateSchema(dbi) {
     ins.free();
   }
   dbi.run(`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT)`);
+  dbi.run(`CREATE TABLE IF NOT EXISTS specialist_export (branch_id TEXT PRIMARY KEY, branch_name TEXT,
+    imported_at TEXT, source TEXT, payload TEXT)`);
   const segmentsCount = dbAll("SELECT COUNT(*) AS n FROM segments", [], dbi)[0].n;
   if (segmentsCount === 0) {
     const ins = dbi.prepare("INSERT INTO segments (segment_key, nazev, sort_order, color, icon) VALUES (?, ?, ?, ?, ?)");
@@ -884,6 +893,20 @@ function zoneLegendHtml(label = "Vytížení zón podle časových dotací:") {
     <span><i style="background:${ZONE_REST_COLOR}"></i>nezařazeno</span></div>`;
 }
 
+// Čekací zóna: „obývák“ je sestava tří židlí. Do doporučení se dává nejvýš
+// jeden obývák (víc si lze v layoutu přidat ručně) a zbytek židlí se doplní
+// jednotlivými kusy.
+const CHAIRS_PER_SOFA = 3;
+const MAX_SUGGESTED_SOFAS = 1;
+
+// Rozdělení doporučeného počtu židlí mezi obývák(y) a jednotlivé židle.
+function waitingZoneSplit(chairs, hasSofa) {
+  const total = Math.max(0, Math.round(chairs || 0));
+  if (!hasSofa) return { sofas: 0, chairs: total };
+  const sofas = Math.min(MAX_SUGGESTED_SOFAS, Math.floor(total / CHAIRS_PER_SOFA));
+  return { sofas, chairs: total - sofas * CHAIRS_PER_SOFA };
+}
+
 /* ---------------------------- Stav aplikace ---------------------------- */
 
 let SQL = null;
@@ -1482,6 +1505,186 @@ function addManualRow() {
   wireManualRow(tbody.lastElementChild);
 }
 
+/* ------------- Export specialistů (obsazenost pozic po pobočkách) ---------- */
+// Soubor `data/export_specialiste.xlsx`: první řádek je hlavička, ve sloupci A
+// je branch_id (kód pobočky), ve sloupci B název pobočky a od dalších sloupců
+// jsou názvy pozic s počty na dané pobočce. Import se uloží do databáze
+// (tabulka `specialist_export`), takže se pak dá u manuálního zadání jedním
+// kliknutím načíst obsazenost vybrané pobočky.
+
+// Sloupce, které nejsou pozice.
+const SPECIALIST_META_COLS = new Set(["branch_id", "branch_name", "gps_x", "gps_y", "evidenční stav"]);
+
+function normalizePozice(v) { return String(v || "").trim().toLowerCase().replace(/\s+/g, " "); }
+
+// Mapa "název pozice" -> segment. Pozice jsou v `casove_dotace` vedené i pod
+// segmentem CESTOVNÍ (model cestovních pozic) — pro obsazenost pobočky se bere
+// vždy „domovský“ segment, tedy ten, který CESTOVNÍ není.
+function positionSegmentMap() {
+  const map = {};
+  if (!db) return map;
+  dbAll("SELECT segment, pozice FROM casove_dotace ORDER BY id").forEach((r) => {
+    const key = normalizePozice(r.pozice);
+    const cestovni = String(r.segment).trim().toUpperCase().startsWith("CESTOVNÍ");
+    if (!map[key] || (!cestovni && map[key].cestovni)) {
+      map[key] = { segment: r.segment, pozice: r.pozice, cestovni };
+    }
+  });
+  return map;
+}
+
+function parseSpecialistExport(workbook) {
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]],
+    { header: 1, blankrows: false });
+  if (!rows.length) throw new Error("List je prázdný.");
+  const header = (rows[0] || []).map((h) => String(h || "").trim());
+  if (normalizePozice(header[0]) !== "branch_id") {
+    throw new Error(`První sloupec má být „branch_id“, je tam „${header[0]}“.`);
+  }
+  const known = positionSegmentMap();
+  const posCols = [];
+  const unknown = [];
+  header.forEach((h, i) => {
+    if (i === 0 || !h || SPECIALIST_META_COLS.has(normalizePozice(h))) return;
+    if (known[normalizePozice(h)]) posCols.push({ index: i, pozice: h });
+    else unknown.push(h);
+  });
+  if (!posCols.length) throw new Error("V hlavičce nejsou žádné názvy pozic známé z referenčních dat.");
+
+  const branches = [];
+  rows.slice(1).forEach((r) => {
+    const id = r[0];
+    if (id === undefined || id === null || String(id).trim() === "") return;
+    const counts = {};
+    posCols.forEach(({ index, pozice }) => {
+      const v = Number(r[index]);
+      if (Number.isFinite(v) && v > 0) counts[pozice] = v;
+    });
+    branches.push({ branch_id: String(id).trim(), branch_name: String(r[1] || "").trim(), counts });
+  });
+  return { branches, positions: posCols.length, unknown };
+}
+
+function specialistSetStatus(html, cls) {
+  const el = document.getElementById("specialistStatus");
+  if (el) el.innerHTML = `<div class="msg ${cls || ""}">${html}</div>`;
+}
+
+async function handleSpecialistExportFile(file) {
+  if (!requireDb()) return;
+  try {
+    const data = new Uint8Array(await file.arrayBuffer());
+    const parsed = parseSpecialistExport(XLSX.read(data, { type: "array" }));
+    const importedAt = nowIso();
+    dbRun("DELETE FROM specialist_export");
+    const ins = db.prepare(`INSERT INTO specialist_export
+      (branch_id, branch_name, imported_at, source, payload) VALUES (?, ?, ?, ?, ?)`);
+    parsed.branches.forEach((b) => {
+      ins.run([b.branch_id, b.branch_name, importedAt, file.name, JSON.stringify(b.counts)]);
+    });
+    ins.free();
+    await persistDatabase();
+    specialistSetStatus(`Načteno <strong>${parsed.branches.length}</strong> poboček`
+      + ` a ${parsed.positions} pozic ze souboru <strong>${esc(file.name)}</strong>.`
+      + (parsed.unknown.length
+        ? ` Nerozpoznané sloupce (${parsed.unknown.length}): ${esc(parsed.unknown.join(", "))}.` : ""), "ok");
+    renderSpecialistInfo();
+    applySpecialistPositions({ silent: true });
+  } catch (e) {
+    console.error(e);
+    specialistSetStatus(`Export se nepodařilo načíst: ${esc(e.message)}`, "err");
+  }
+}
+
+function specialistExportInfo() {
+  if (!db) return null;
+  try {
+    const row = dbAll(`SELECT COUNT(*) AS n, MAX(imported_at) AS imported_at, MAX(source) AS source
+      FROM specialist_export`)[0];
+    return row && row.n ? row : null;
+  } catch (e) { return null; }
+}
+
+function specialistRowFor(pobockaId, pobockaNazev) {
+  if (!db) return null;
+  if (pobockaId) {
+    const byId = dbAll("SELECT * FROM specialist_export WHERE branch_id = ?", [String(pobockaId).trim()])[0];
+    if (byId) return byId;
+  }
+  if (!pobockaNazev) return null;
+  return dbAll("SELECT * FROM specialist_export WHERE LOWER(branch_name) = ?",
+    [String(pobockaNazev).trim().toLowerCase()])[0] || null;
+}
+
+// Doplní řádky manuálního zadání podle obsazenosti pobočky z exportu.
+function applySpecialistPositions(options = {}) {
+  if (!requireDb()) return;
+  if (!specialistExportInfo()) {
+    if (!options.silent) {
+      specialistSetStatus("Nejprve nahrajte soubor <code>export_specialiste.xlsx</code>"
+        + " — je ve složce s aplikací (podsložka <code>data</code>).", "warn");
+    }
+    return;
+  }
+  const pobockaId = document.getElementById("manualPobockaId").value.trim();
+  const pobockaNazev = document.getElementById("manualPobockaName").value.trim();
+  const row = specialistRowFor(pobockaId, pobockaNazev);
+  if (!row) {
+    if (!options.silent) {
+      specialistSetStatus(`Pobočka <strong>${esc(pobockaNazev || pobockaId || "—")}</strong>`
+        + " v exportu není. Zkontrolujte ID pobočky.", "warn");
+    }
+    return;
+  }
+  const counts = JSON.parse(row.payload || "{}");
+  const known = positionSegmentMap();
+  const filled = [];
+  const skipped = [];
+  Object.entries(counts).forEach(([pozice, count]) => {
+    const found = known[normalizePozice(pozice)];
+    if (found) filled.push({ segment: found.segment, pozice: found.pozice, fte: count });
+    else skipped.push(pozice);
+  });
+  if (!filled.length) {
+    if (!options.silent) {
+      specialistSetStatus(`Pobočka <strong>${esc(row.branch_name || row.branch_id)}</strong>`
+        + " má v exportu nulovou obsazenost.", "warn");
+    }
+    return;
+  }
+  filled.sort((a, b) => a.segment.localeCompare(b.segment, "cs") || a.pozice.localeCompare(b.pozice, "cs"));
+
+  const tbody = document.getElementById("manualRowsTbody");
+  tbody.innerHTML = "";
+  filled.forEach((r) => {
+    tbody.insertAdjacentHTML("beforeend", manualRowHtml());
+    const tr = tbody.lastElementChild;
+    wireManualRow(tr);
+    const segSelect = tr.querySelector(".manual-segment");
+    segSelect.value = r.segment;
+    segSelect.dispatchEvent(new Event("change"));
+    tr.querySelector(".manual-pozice").value = r.pozice;
+    tr.querySelector(".manual-fte").value = r.fte;
+  });
+  const total = filled.reduce((a, r) => a + r.fte, 0);
+  specialistSetStatus(`Načteno z exportu: <strong>${esc(row.branch_name || row.branch_id)}</strong>`
+    + ` (ID ${esc(row.branch_id)}) — ${filled.length} pozic, celkem ${fmt1(total)} FTE.`
+    + (skipped.length ? ` Vynecháno (chybí časová dotace): ${esc(skipped.join(", "))}.` : "")
+    + " Hodnoty lze před spočítáním upravit.", "ok");
+}
+
+function renderSpecialistInfo() {
+  const el = document.getElementById("specialistInfo");
+  if (!el) return;
+  const info = specialistExportInfo();
+  el.innerHTML = info
+    ? `Export specialistů: <strong>${info.n}</strong> poboček`
+      + `${info.source ? ` ze souboru ${esc(info.source)}` : ""}`
+      + `${info.imported_at ? `, import ${new Date(info.imported_at).toLocaleString("cs-CZ")}` : ""}.`
+    : "Export specialistů zatím není naimportovaný — soubor <code>export_specialiste.xlsx</code>"
+      + " najdete ve složce s aplikací (podsložka <code>data</code>).";
+}
+
 /* --------------------------------- Wizard ----------------------------------- */
 // Průvodce "Nový výpočet" má 4 kroky: 1) volba zdroje dat, 2) zadání pozic
 // (Excel nebo manuálně), 3) výsledek, 4) sestavení layoutu. Kroky 3 a 4 se
@@ -1531,6 +1734,7 @@ function chooseSource(mode) {
   document.getElementById("sourceSummaryText").textContent = mode === "excel" ? "Excel checklist" : "Manuální zadání";
   document.getElementById("modeExcel").style.display = mode === "excel" ? "block" : "none";
   document.getElementById("modeManual").style.display = mode === "manual" ? "block" : "none";
+  if (mode === "manual") renderSpecialistInfo();
   if (mode === "manual" && document.getElementById("manualRowsTbody").children.length === 0) {
     addManualRow();
   }
@@ -2162,8 +2366,20 @@ function resultRowHtml(r, isTotal = false) {
 
 // Do které kategorie nábytkový prvek patří — pořadí rozhoduje, první pravidlo
 // vyhrává (židle a fast tracky jsou taky v service zone, ale nejsou to přepážky).
+// Kolik míst k sezení jeden kus představuje — obývák je sestava tří židlí,
+// takže se do kapacity čekací zóny počítá jako tři místa.
+const SEATS_PER_PIECE = [
+  { test: (f) => /obývák/i.test(f), seats: CHAIRS_PER_SOFA },
+];
+
+function seatsOfPiece(furniture) {
+  const found = SEATS_PER_PIECE.find((x) => x.test(String(furniture || "")));
+  return found ? found.seats : 1;
+}
+
 const CAPACITY_CATEGORIES = [
-  { key: "chairs", test: (r) => /čekací zóna/i.test(r.furniture) },
+  { key: "chairs", test: (r) => /čekací zóna/i.test(r.furniture),
+    weight: (r) => seatsOfPiece(r.furniture) },
   { key: "fasttracks", test: (r) => r.zone === "service_zone" && /fast track/i.test(r.furniture) },
   { key: "serviceDesks", test: (r) => r.zone === "service_zone" },
   { key: "meetings", test: (r) => r.zone === "meeting_zone" },
@@ -2173,10 +2389,17 @@ const CAPACITY_CATEGORIES = [
 
 function countLayoutByCategory(layoutRows) {
   const counts = { chairs: 0, fasttracks: 0, serviceDesks: 0, meetings: 0, backoffice: 0, office: 0 };
+  // U kategorií s vahou (čekací zóna) se počítají místa k sezení, ne kusy —
+  // obývák = 3 židle. Kusy se drží zvlášť pro popisek „z čeho se to skládá“.
+  const pieces = { chairs: 0 };
   (layoutRows || []).forEach((r) => {
     const cat = CAPACITY_CATEGORIES.find((c) => c.test(r));
-    if (cat) counts[cat.key] += Number(r.piece_count) || 0;
+    if (!cat) return;
+    const qty = Number(r.piece_count) || 0;
+    counts[cat.key] += qty * (cat.weight ? cat.weight(r) : 1);
+    if (cat.key === "chairs") pieces.chairs += qty;
   });
+  counts.chairPieces = pieces.chairs;
   return counts;
 }
 
@@ -2232,7 +2455,12 @@ function computeCapacityCheck({ stats, visitor, calcResult, layoutRows }) {
         : null),
     item("chairs", "Židle v čekací zóně", "židle v čekací zóně",
       stats.recommendedChairs, null, counts.chairs,
-      "Tolik klientů naráz sedí a čeká, než na ně přijde řada.", normal.chairs),
+      `Tolik klientů naráz sedí a čeká, než na ně přijde řada. Obývák se počítá jako ${CHAIRS_PER_SOFA} židle.`,
+      normal.chairs,
+      // Kusů je méně než míst — do popisku patří, z čeho se kapacita skládá.
+      counts.chairPieces && counts.chairPieces !== counts.chairs
+        ? `${fmtPieces(counts.chairPieces)} ks = ${fmtPieces(counts.chairs)} míst`
+        : null),
     item("fasttracks", "Fast tracky na hale", "fast track",
       stats.recommendedFasttracks, null, counts.fasttracks,
       "Místa pro rychlé bezhotovostní vyřízení, které trvá pár minut.", normal.fasttracks),
@@ -5616,9 +5844,8 @@ function computeWplOverview(segmentRows, layoutRows, celkemRow) {
 // - `formats`   … pro které formáty pobočky pravidlo platí; null = pro všechny
 // - `qty`       … funkce ({ required, stats }) -> doporučený počet kusů
 //                 (`required` je potřeba WPL dané skupiny segment+zóna)
-// Čekací zóna: „obývák“ je sestava tří židlí, takže se z potřebného počtu židlí
-// nejdřív složí obýváky a zbytek se doplní jednotlivými židlemi.
-const CHAIRS_PER_SOFA = 3;
+// Čekací zóna a obývák: konstanty a waitingZoneSplit() jsou u ostatních
+// společných pomůcek nahoře (potřebuje je i kapacitní shrnutí).
 
 // Pokladní pracoviště, které se doporučí, když je na pobočce pokladník
 // (pozice „bankéř klientské péče - junior“ — viz ROLE_POSITIONS.cashier).
@@ -5681,19 +5908,17 @@ const LAYOUT_RULES = [
     // Obývák je sestava tří židlí — z doporučeného počtu židlí se nejdřív složí
     // obýváky (celé trojice) a teprve zbytek se doplní jednotlivými židlemi.
     zone: "service_zone", furniture: "Čekací zóna (obývák)", formats: ["medium", "flagship"],
-    qty: ({ stats }) => Math.floor((stats.recommendedChairs || 0) / CHAIRS_PER_SOFA),
-    text: `<strong>Čekací zóna (obývák)</strong> = jeden obývák je sestava ${CHAIRS_PER_SOFA} židlí, `
-      + `takže se z doporučeného počtu židlí složí celé trojice (potřeba 5 židlí → 1 obývák).`,
+    qty: ({ stats }) => waitingZoneSplit(stats.recommendedChairs, true).sofas,
+    text: `<strong>Čekací zóna (obývák)</strong> = jeden obývák je sestava ${CHAIRS_PER_SOFA} židlí. `
+      + `Do doporučení se dává <strong>nejvýš ${MAX_SUGGESTED_SOFAS} obývák</strong> (vejde-li se, tedy `
+      + `je-li potřeba alespoň ${CHAIRS_PER_SOFA} židle) — víc obýváků lze v layoutu přidat ručně.`,
   },
   {
     zone: "service_zone", furniture: "Čekací zóna (židle)", formats: null,
-    qty: ({ stats, hasSofa }) => {
-      const chairs = stats.recommendedChairs || 0;
-      return hasSofa ? chairs - CHAIRS_PER_SOFA * Math.floor(chairs / CHAIRS_PER_SOFA) : chairs;
-    },
+    qty: ({ stats, hasSofa }) => waitingZoneSplit(stats.recommendedChairs, hasSofa).chairs,
     text: "<strong>Čekací zóna (židle)</strong> = doporučený počet židlí v čekací zóně; tam, kde je "
-      + `i obývák (formát medium a flagship), jen zbytek, který se do trojic nevešel `
-      + `(potřeba 5 židlí → 1 obývák + 2 židle).`,
+      + "i obývák (formát medium a flagship), zbytek nad obývák "
+      + `(potřeba 8 židlí → 1 obývák + 5 židlí).`,
   },
   {
     zone: "service_zone", furniture: "Lenka vítací", formats: ["small", "medium economy"],
@@ -6867,6 +7092,287 @@ function showRefVersionDetail(id) {
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+/* ------------- Přehled dat (segmenty, pozice, nábytek) v popupu ------------ */
+// Textové shrnutí toho, co je v databázi — k rychlému nahlédnutí i k odeslání
+// do MS Teams (formátovaná tabulka) nebo jako čistý text.
+
+function dataOverviewModel() {
+  const segments = dbAll("SELECT segment_key, nazev, sort_order, color, icon FROM segments ORDER BY sort_order, segment_key");
+  const positions = dbAll(`SELECT segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room
+    FROM casove_dotace ORDER BY segment, id`);
+  const furniture = dbAll("SELECT segment, zone, furniture, wpl_counter FROM furniture_to_zone ORDER BY segment, zone, id");
+  const absence = dbAll("SELECT segment, nepritomnost, homeoffice FROM absence ORDER BY segment");
+  const version = dbAll("SELECT MAX(id) AS id FROM ref_data_versions")[0];
+  const bySeg = {};
+  segments.forEach((sg) => { bySeg[sg.segment_key] = { positions: [], zones: {} }; });
+  const ensure = (seg) => { if (!bySeg[seg]) bySeg[seg] = { positions: [], zones: {} }; return bySeg[seg]; };
+  positions.forEach((r) => ensure(r.segment).positions.push(r));
+  furniture.forEach((r) => {
+    const z = ensure(r.segment).zones;
+    (z[r.zone] = z[r.zone] || []).push(r);
+  });
+  return { segments, positions, furniture, absence, bySeg, versionId: version ? version.id : null };
+}
+
+function dataOverviewHtml(model) {
+  const zoneList = (zones) => ZONES.filter((z) => (zones[z] || []).length).map((z) =>
+    `<li><strong>${esc(ZONE_LABELS[z])}</strong> (${zones[z].length}): ${zones[z]
+      .map((f) => `${esc(f.furniture)}${f.wpl_counter > 0 ? ` <span class="muted">${fmt1(f.wpl_counter)} WPL</span>`
+        : ' <span class="muted">bez WPL</span>'}`).join(" · ")}</li>`).join("");
+
+  const segBlocks = model.segments.map((sg) => {
+    const d = model.bySeg[sg.segment_key] || { positions: [], zones: {} };
+    const abs = model.absence.find((a) => a.segment === sg.segment_key);
+    const poz = d.positions.length
+      ? `<li><strong>Pozice</strong> (${d.positions.length}): ${d.positions.map((pz) => {
+        const parts = ZONES.filter((z) => (pz[z] || 0) > 0)
+          .map((z) => `${ZONE_LABELS_SHORT[z]} ${fmt1(pz[z])} %`).join(", ");
+        return `${esc(pz.pozice)}${parts ? ` <span class="muted">(${esc(parts)})</span>` : ""}`;
+      }).join(" · ")}</li>`
+      : `<li class="muted">Žádné pozice.</li>`;
+    const nab = zoneList(d.zones) || `<li class="muted">Žádný nábytek.</li>`;
+    return `<div class="ovw-seg">
+      <h4>${segmentBadgeHtml(sg.segment_key)} ${esc(sg.nazev || sg.segment_key)}
+        <span class="muted">pořadí ${sg.sort_order ?? "—"}${abs
+          ? ` · nepřítomnost ${fmt1(abs.nepritomnost)} % + homeoffice ${fmt1(abs.homeoffice)} %` : ""}</span></h4>
+      <ul>${poz}${nab}</ul>
+    </div>`;
+  }).join("");
+
+  return `<p class="muted">Stav databáze${model.versionId ? ` — referenční data verze #${model.versionId}` : ""}:
+    <strong>${model.segments.length}</strong> segmentů, <strong>${model.positions.length}</strong> pozic,
+    <strong>${model.furniture.length}</strong> nábytkových prvků.</p>${segBlocks}`;
+}
+
+// Text pro schránku (čistý text) — stejná struktura jako popup.
+function dataOverviewText(model) {
+  const lines = [`Přehled dat kalkulátoru FTE → WPL`
+    + `${model.versionId ? ` (referenční data verze #${model.versionId})` : ""}`,
+  `Segmentů: ${model.segments.length} · pozic: ${model.positions.length}`
+    + ` · nábytkových prvků: ${model.furniture.length}`, ""];
+  model.segments.forEach((sg) => {
+    const d = model.bySeg[sg.segment_key] || { positions: [], zones: {} };
+    const abs = model.absence.find((a) => a.segment === sg.segment_key);
+    lines.push(`== ${sg.segment_key}${sg.nazev && sg.nazev !== sg.segment_key ? ` (${sg.nazev})` : ""}`
+      + `${abs ? ` — nepřítomnost ${fmt1(abs.nepritomnost)} %, homeoffice ${fmt1(abs.homeoffice)} %` : ""}`);
+    lines.push(`Pozice (${d.positions.length}):`);
+    d.positions.forEach((pz) => {
+      const parts = ZONES.filter((z) => (pz[z] || 0) > 0).map((z) => `${ZONE_LABELS_SHORT[z]} ${fmt1(pz[z])} %`).join(", ");
+      lines.push(`  - ${pz.pozice}${parts ? ` (${parts})` : ""}`);
+    });
+    ZONES.filter((z) => (d.zones[z] || []).length).forEach((z) => {
+      lines.push(`Nábytek — ${ZONE_LABELS[z]} (${d.zones[z].length}):`);
+      d.zones[z].forEach((f) => lines.push(`  - ${f.furniture}`
+        + `${f.wpl_counter > 0 ? ` (${fmt1(f.wpl_counter)} WPL/kus)` : " (bez WPL)"}`));
+    });
+    lines.push("");
+  });
+  return lines.join("\n");
+}
+
+// Formátovaná tabulka pro MS Teams / Word / Excel: jeden řádek = jeden prvek.
+function dataOverviewClipboardHtml(model) {
+  const T = "border:1px solid #c9ced6; padding:5px 8px;";
+  const head = `<tr style="background:#eef2f7;">${["Segment", "Druh", "Název", "Detail"]
+    .map((h) => `<th style="${T} text-align:left; font-weight:bold;">${esc(h)}</th>`).join("")}</tr>`;
+  const rows = [];
+  model.segments.forEach((sg) => {
+    const d = model.bySeg[sg.segment_key] || { positions: [], zones: {} };
+    const meta = getSegmentMeta(sg.segment_key);
+    const abs = model.absence.find((a) => a.segment === sg.segment_key);
+    const cell = (v, extra = "") => `<td style="${T}${extra}">${esc(v)}</td>`;
+    rows.push(`<tr><td style="${T} background:${meta.color}22;"><strong>${esc(sg.segment_key)}</strong></td>`
+      + cell("Segment") + cell(sg.nazev || sg.segment_key)
+      + cell(abs ? `nepřítomnost ${fmt1(abs.nepritomnost)} %, homeoffice ${fmt1(abs.homeoffice)} %` : "") + "</tr>");
+    d.positions.forEach((pz) => {
+      const parts = ZONES.filter((z) => (pz[z] || 0) > 0).map((z) => `${ZONE_LABELS_SHORT[z]} ${fmt1(pz[z])} %`).join(", ");
+      rows.push(`<tr>${cell(sg.segment_key)}${cell("Pozice")}${cell(pz.pozice)}${cell(parts)}</tr>`);
+    });
+    ZONES.forEach((z) => (d.zones[z] || []).forEach((f) => {
+      rows.push(`<tr>${cell(sg.segment_key)}${cell(`Nábytek — ${ZONE_LABELS[z]}`)}${cell(f.furniture)}`
+        + cell(f.wpl_counter > 0 ? `${fmt1(f.wpl_counter)} WPL/kus` : "bez WPL") + "</tr>");
+    }));
+  });
+  return `<div style="font-family:Segoe UI,Arial,sans-serif; font-size:12px;">
+    <p style="margin:0 0 6px;"><strong>Přehled dat kalkulátoru FTE → WPL</strong>`
+    + `${model.versionId ? ` — referenční data verze #${model.versionId}` : ""}`
+    + ` (${model.segments.length} segmentů, ${model.positions.length} pozic, ${model.furniture.length} prvků)</p>
+    <table style="border-collapse:collapse;"><thead>${head}</thead><tbody>${rows.join("")}</tbody></table>
+  </div>`;
+}
+
+function showDataOverview() {
+  if (!requireDb()) return;
+  const model = dataOverviewModel();
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `<div class="modal">
+    <div class="modal-head">
+      <h3>Přehled dat v databázi</h3>
+      <button class="btn secondary small" data-act="close">✕ Zavřít</button>
+    </div>
+    <div class="modal-body">${dataOverviewHtml(model)}</div>
+    <div class="modal-foot">
+      <button class="btn small" data-act="copy-table">📋 Kopírovat jako tabulku (MS Teams)</button>
+      <button class="btn secondary small" data-act="copy-text">📋 Kopírovat jako text</button>
+      <span class="muted">Tabulku lze vložit do MS Teams, Wordu i Excelu, text kamkoliv.</span>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) { close(); return; }
+    const act = e.target.dataset ? e.target.dataset.act : null;
+    if (act === "close") close();
+    if (act === "copy-table") {
+      copyToClipboardBoth(dataOverviewClipboardHtml(model), dataOverviewText(model),
+        "Přehled dat zkopírován jako tabulka — vložte přes Ctrl+V.");
+    }
+    if (act === "copy-text") {
+      const text = dataOverviewText(model);
+      copyToClipboardBoth(`<pre style="font-family:Consolas,monospace; font-size:12px;">${esc(text)}</pre>`,
+        text, "Přehled dat zkopírován jako text — vložte přes Ctrl+V.");
+    }
+  });
+  document.addEventListener("keydown", function onEsc(e) {
+    if (e.key === "Escape") { close(); document.removeEventListener("keydown", onEsc); }
+  });
+}
+
+/* --------- Filtrování po sloupcích (jako autofiltr v Excelu) --------------- */
+// Každá tabulka s daty má v hlavičce u vybraných sloupců tlačítko ▼, které
+// otevře seznam hodnot se zaškrtávátky (plus hledání v hodnotách). Filtry
+// z více sloupců se skládají jako AND, uvnitř sloupce jako OR — stejně jako
+// v Excelu. Filtry jsou jen zobrazovací: uložení tabulky zapíše i skryté řádky.
+
+const columnFilters = {};        // "tableKey" -> { field -> Set(hodnot jako string) }
+
+function colFilterSet(tableKey, field) {
+  return (columnFilters[tableKey] || {})[field] || null;
+}
+
+function colFilterAnyActive(tableKey) {
+  return Object.values(columnFilters[tableKey] || {}).some((set) => set && set.size);
+}
+
+function colValue(row, field) {
+  const v = row[field];
+  if (v === null || v === undefined || v === "") return "(prázdné)";
+  if (field === "zone") return ZONE_LABELS[v] || String(v);
+  return String(v);
+}
+
+// Rozdělí řádky na zobrazené a skryté podle filtrů sloupců.
+function splitByColumnFilters(tableKey, rows) {
+  const active = Object.entries(columnFilters[tableKey] || {}).filter(([, set]) => set && set.size);
+  if (!active.length) return { shown: rows, hidden: [] };
+  const shown = []; const hidden = [];
+  rows.forEach((r) => {
+    (active.every(([field, set]) => set.has(colValue(r, field))) ? shown : hidden).push(r);
+  });
+  return { shown, hidden };
+}
+
+// Tlačítko filtru do hlavičky sloupce.
+function colFilterButtonHtml(tableKey, field) {
+  const set = colFilterSet(tableKey, field);
+  const active = !!(set && set.size);
+  return `<button type="button" class="colfilter-btn${active ? " active" : ""}"
+    data-colfilter="${esc(field)}" title="${active ? `Filtr: ${[...set].join(", ")}` : "Filtrovat sloupec"}"
+    >${active ? "▼" : "▽"}</button>`;
+}
+
+// Nabídne hodnoty sloupce a nechá uživatele zaškrtat, které chce vidět.
+function openColFilterPopup(tableKey, field, allRows, button, rerender) {
+  document.querySelectorAll(".colfilter-pop").forEach((el) => el.remove());
+  const values = [...new Set(allRows.map((r) => colValue(r, field)))]
+    .sort((a, b) => a.localeCompare(b, "cs", { numeric: true }));
+  const set = colFilterSet(tableKey, field);
+  const checked = (v) => !set || !set.size || set.has(v);
+
+  const pop = document.createElement("div");
+  pop.className = "colfilter-pop";
+  pop.innerHTML = `
+    <input type="text" class="colfilter-search" placeholder="Hledat v hodnotách…">
+    <div class="colfilter-actions">
+      <button type="button" class="btn secondary small" data-act="all">Vybrat vše</button>
+      <button type="button" class="btn secondary small" data-act="none">Odebrat vše</button>
+    </div>
+    <div class="colfilter-list">${values.map((v, i) => `<label><input type="checkbox" value="${esc(v)}"
+      ${checked(v) ? "checked" : ""} data-i="${i}"><span>${esc(v)}</span></label>`).join("")}</div>
+    <div class="colfilter-foot">
+      <button type="button" class="btn small" data-act="apply">Použít</button>
+      <button type="button" class="btn secondary small" data-act="clear">Zrušit filtr</button>
+    </div>`;
+  document.body.appendChild(pop);
+  const rect = button.getBoundingClientRect();
+  pop.style.top = `${rect.bottom + window.scrollY + 4}px`;
+  pop.style.left = `${Math.min(rect.left + window.scrollX, window.innerWidth - pop.offsetWidth - 12)}px`;
+
+  const boxes = () => [...pop.querySelectorAll('.colfilter-list input[type="checkbox"]')];
+  pop.querySelector(".colfilter-search").addEventListener("input", (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    boxes().forEach((cb) => {
+      cb.parentElement.style.display = !q || cb.value.toLowerCase().includes(q) ? "flex" : "none";
+    });
+  });
+  const close = () => pop.remove();
+  pop.addEventListener("click", (e) => {
+    const act = e.target.dataset ? e.target.dataset.act : null;
+    if (!act) return;
+    if (act === "all") { boxes().forEach((cb) => { if (cb.parentElement.style.display !== "none") cb.checked = true; }); return; }
+    if (act === "none") { boxes().forEach((cb) => { if (cb.parentElement.style.display !== "none") cb.checked = false; }); return; }
+    if (act === "clear") {
+      if (columnFilters[tableKey]) delete columnFilters[tableKey][field];
+      close(); rerender(); return;
+    }
+    if (act === "apply") {
+      const selected = boxes().filter((cb) => cb.checked).map((cb) => cb.value);
+      columnFilters[tableKey] = columnFilters[tableKey] || {};
+      // vybráno všechno = filtr se nepoužívá (stejně jako v Excelu)
+      if (selected.length === values.length) delete columnFilters[tableKey][field];
+      else columnFilters[tableKey][field] = new Set(selected);
+      close(); rerender();
+    }
+  });
+  // klik mimo popup ho zavře
+  setTimeout(() => {
+    const onDoc = (e) => {
+      if (pop.contains(e.target) || e.target === button) return;
+      document.removeEventListener("mousedown", onDoc);
+      close();
+    };
+    document.addEventListener("mousedown", onDoc);
+  }, 0);
+}
+
+// Naváže tlačítka filtrů v hlavičce tabulky.
+function wireColFilters(containerEl, tableKey, allRows, rerender) {
+  if (!containerEl) return;
+  containerEl.querySelectorAll("[data-colfilter]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openColFilterPopup(tableKey, btn.dataset.colfilter, allRows, btn, rerender);
+    });
+  });
+}
+
+// Souhrn aktivních filtrů sloupců pod tabulkou (a tlačítko na jejich zrušení).
+function colFilterSummaryHtml(tableKey) {
+  const active = Object.entries(columnFilters[tableKey] || {}).filter(([, set]) => set && set.size);
+  if (!active.length) return "";
+  return `<p class="muted colfilter-summary">Filtry sloupců:
+    ${active.map(([field, set]) => `<span class="colfilter-chip">${esc(field)}: ${esc([...set].slice(0, 4).join(", "))}`
+      + `${set.size > 4 ? ` +${set.size - 4}` : ""}</span>`).join(" ")}
+    <button type="button" class="btn secondary small" data-colfilter-reset="${esc(tableKey)}">Zrušit filtry sloupců</button></p>`;
+}
+
+function wireColFilterReset(containerEl, tableKey, rerender) {
+  if (!containerEl) return;
+  const btn = containerEl.querySelector(`[data-colfilter-reset="${tableKey}"]`);
+  if (btn) btn.addEventListener("click", () => { columnFilters[tableKey] = {}; rerender(); });
+}
+
 /* ---------- Vyhledávání a filtrování nad editovatelnými tabulkami ---------- */
 // Filtr je jen „prohlížecí“: řádky, které mu nevyhovují, se nezahazují — render
 // si je uloží do datasetu kontejneru (`hiddenRows`) a uložení tabulky je zapíše
@@ -6917,15 +7423,24 @@ function renderAbsenceTable() {
   const el = document.getElementById("absenceTable");
   if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
   const rows = dbAll("SELECT segment, nepritomnost, homeoffice, ref_version_id FROM absence ORDER BY segment");
-  const { shown, hidden } = splitByFilter("absence", rows, (r) => r.segment);
+  const byText = splitByFilter("absence", rows, (r) => r.segment);
+  const byCols = splitByColumnFilters("absence", byText.shown);
+  const shown = byCols.shown;
+  const hidden = [...byText.hidden, ...byCols.hidden];
   el.innerHTML = `<div class="table-wrap"><table>
-    <thead><tr><th>Segment</th><th>Nepřítomnost (%)</th><th>Homeoffice (%)</th>
-      <th title="Verze referenčních dat, ve které řádek naposledy vznikl nebo se změnil">Verze</th><th></th></tr></thead>
+    <thead><tr><th>Segment ${colFilterButtonHtml("absence", "segment")}</th>
+      <th>Nepřítomnost (%) ${colFilterButtonHtml("absence", "nepritomnost")}</th>
+      <th>Homeoffice (%) ${colFilterButtonHtml("absence", "homeoffice")}</th>
+      <th title="Verze referenčních dat, ve které řádek naposledy vznikl nebo se změnil">Verze
+        ${colFilterButtonHtml("absence", "ref_version_id")}</th><th></th></tr></thead>
     <tbody id="absenceTbody">
       ${shown.map(absenceRowHtml).join("")}
     </tbody></table></div>
+    ${colFilterSummaryHtml("absence")}
     ${filterSummaryHtml("absence", shown.length, rows.length, "segmentů")}`;
   wireDeleteButtons("absenceTbody");
+  wireColFilters(el, "absence", rows, renderAbsenceTable);
+  wireColFilterReset(el, "absence", renderAbsenceTable);
   el.dataset.hiddenRows = JSON.stringify(hidden);
 }
 
@@ -7063,12 +7578,18 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
     if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
     const rows = dbAll(`SELECT id, segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room,
       ref_version_id FROM casove_dotace ORDER BY segment, pozice`);
-    const { shown, hidden } = splitByFilter(filterKey, rows, (r) => `${r.segment} ${r.pozice}`);
+    const byText = splitByFilter(filterKey, rows, (r) => `${r.segment} ${r.pozice}`);
+    const byCols = splitByColumnFilters(filterKey, byText.shown);
+    const shown = byCols.shown;
+    const hidden = [...byText.hidden, ...byCols.hidden];
     sortDotaceRows(shown, sortState);
     const th = (field, label, title) => {
       const active = sortState.field === field;
-      return `<th class="sortable${active ? " sorted" : ""}" data-sort="${field}"${title ? ` title="${esc(title)}"` : ""}>` +
-        `${esc(label)}<span class="sort-ind">${active ? (sortState.dir > 0 ? "▲" : "▼") : "↕"}</span></th>`;
+      const filterBtn = field === "celkem" ? "" : colFilterButtonHtml(filterKey, field);
+      return `<th class="sortable${active ? " sorted" : ""}" data-sort="${field}"`
+        + `${title ? ` title="${esc(title)}"` : ""}>`
+        + `<span class="th-label">${esc(label)}<span class="sort-ind">`
+        + `${active ? (sortState.dir > 0 ? "▲" : "▼") : "↕"}</span></span>${filterBtn}</th>`;
     };
     el.innerHTML = `<div class="table-wrap"><table>
       <thead><tr>${th("segment", "Segment")}${th("pozice", "Pozice")}
@@ -7079,14 +7600,18 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
         ${shown.map(dotaceRowHtml).join("")}
       </tbody></table></div>
       ${zoneLegendHtml("Pruh a podbarvení buněk ukazují rozdělení času:")}
+      ${colFilterSummaryHtml(filterKey)}
       ${filterSummaryHtml(filterKey, shown.length, rows.length, "pozic")}`;
     wireDeleteButtons(tbodyId);
+    wireColFilters(el, filterKey, rows, render);
+    wireColFilterReset(el, filterKey, render);
     // pro uložení potřebujeme i řádky skryté filtrem -> uchováme je v datasetu
     el.dataset.hiddenRows = JSON.stringify(hidden);
 
     // Řazení kliknutím na hlavičku (druhé kliknutí obrátí směr).
     el.querySelectorAll("th.sortable").forEach((h) => {
-      h.addEventListener("click", () => {
+      h.addEventListener("click", (e) => {
+        if (e.target.closest(".colfilter-btn")) return;   // klik na filtr neřadí
         const f = h.dataset.sort;
         if (sortState.field === f) sortState.dir = -sortState.dir;
         else { sortState.field = f; sortState.dir = 1; }
@@ -7152,7 +7677,6 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
     const filterInput = document.getElementById(filterId);
     if (filterInput) filterInput.value = "";
     dotaceEditorMain.render();
-    dotaceEditorAdmin.render();
     renderRefVersionsList();
     toast("Tabulka časových dotací byla uložena a zaznamenána nová verze referenčních dat.", "ok");
   }
@@ -7173,8 +7697,9 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
   return { render, save, addRow, setFilter, sortState };
 }
 
+// Tabulka pozic je po sloučení záložek jen jedna (dřív byla i v „Struktuře
+// checklistu“ nad stejnými daty).
 const dotaceEditorMain = makeDotaceEditor("dotaceTable", "dotaceFilter", "dotaceTbody");
-const dotaceEditorAdmin = makeDotaceEditor("adminDotaceTable", "adminDotaceFilter", "adminDotaceTbody");
 
 /* ------------------- Struktura checklistu (segmenty/nábytek) --------------- */
 // Modul "Struktura checklistu" (nová záložka v horní liště) umožňuje správu
@@ -7200,12 +7725,21 @@ function renderSegmentsTable() {
   if (!el) return;
   if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
   const rows = dbAll("SELECT segment_key, nazev, sort_order, color, icon FROM segments ORDER BY sort_order, segment_key");
-  const { shown, hidden } = splitByFilter("segments", rows, (r) => `${r.segment_key} ${r.nazev || ""}`);
+  const byText = splitByFilter("segments", rows, (r) => `${r.segment_key} ${r.nazev || ""}`);
+  const byCols = splitByColumnFilters("segments", byText.shown);
+  const shown = byCols.shown;
+  const hidden = [...byText.hidden, ...byCols.hidden];
   el.innerHTML = `<div class="table-wrap"><table>
-    <thead><tr><th>Klíč segmentu</th><th>Název</th><th>Pořadí</th><th>Barva</th><th>Ikona</th><th></th></tr></thead>
+    <thead><tr><th>Klíč segmentu ${colFilterButtonHtml("segments", "segment_key")}</th>
+      <th>Název ${colFilterButtonHtml("segments", "nazev")}</th>
+      <th>Pořadí ${colFilterButtonHtml("segments", "sort_order")}</th>
+      <th>Barva</th><th>Ikona</th><th></th></tr></thead>
     <tbody id="segmentsTbody">${shown.map(segmentRowHtml).join("")}</tbody></table></div>
+    ${colFilterSummaryHtml("segments")}
     ${filterSummaryHtml("segments", shown.length, rows.length, "segmentů")}`;
   wireDeleteButtons("segmentsTbody");
+  wireColFilters(el, "segments", rows, renderSegmentsTable);
+  wireColFilterReset(el, "segments", renderSegmentsTable);
   el.dataset.hiddenRows = JSON.stringify(hidden);
 }
 
@@ -7282,13 +7816,20 @@ function renderFurnitureTable() {
   // i v názvu zóny — obojí se skládá (jako AND).
   const zoneFilter = tableFilterState.furnitureZone || "";
   const rows = zoneFilter ? all.filter((r) => r.zone === zoneFilter) : all;
-  const { shown, hidden } = splitByFilter("furniture", rows,
+  const byText = splitByFilter("furniture", rows,
     (r) => `${r.segment} ${r.furniture} ${ZONE_LABELS[r.zone] || r.zone}`);
+  const byCols = splitByColumnFilters("furniture", byText.shown);
+  const shown = byCols.shown;
+  const hidden = [...byText.hidden, ...byCols.hidden];
   sortFurnitureRows(shown);
+  // Hlavička: řazení kliknutím na název + filtr hodnot pod tlačítkem ▽.
   const th = (field, label, title) => {
     const active = furnitureSortState.field === field;
-    return `<th class="sortable${active ? " sorted" : ""}" data-sort="${field}"${title ? ` title="${esc(title)}"` : ""}>` +
-      `${esc(label)}<span class="sort-ind">${active ? (furnitureSortState.dir > 0 ? "▲" : "▼") : "↕"}</span></th>`;
+    return `<th class="sortable${active ? " sorted" : ""}" data-sort="${field}"`
+      + `${title ? ` title="${esc(title)}"` : ""}>`
+      + `<span class="th-label">${esc(label)}<span class="sort-ind">`
+      + `${active ? (furnitureSortState.dir > 0 ? "▲" : "▼") : "↕"}</span></span>`
+      + `${colFilterButtonHtml("furniture", field)}</th>`;
   };
   el.innerHTML = `<div class="table-wrap"><table>
     <thead><tr>${th("segment", "Segment")}${th("zone", "Zóna")}${th("furniture", "Nábytek")}
@@ -7296,10 +7837,14 @@ function renderFurnitureTable() {
       ${th("ref_version_id", "Verze", "Verze referenčních dat, ve které řádek naposledy vznikl nebo se změnil")}
       <th></th></tr></thead>
     <tbody id="furnitureTbody">${shown.map(furnitureRowHtml).join("")}</tbody></table></div>
+    ${colFilterSummaryHtml("furniture")}
     ${filterSummaryHtml("furniture", shown.length, all.length, "nábytkových prvků")}`;
   wireDeleteButtons("furnitureTbody");
+  wireColFilters(el, "furniture", all, renderFurnitureTable);
+  wireColFilterReset(el, "furniture", renderFurnitureTable);
   el.querySelectorAll("th.sortable").forEach((h) => {
-    h.addEventListener("click", () => {
+    h.addEventListener("click", (e) => {
+      if (e.target.closest(".colfilter-btn")) return;   // klik na filtr neřadí
       const f = h.dataset.sort;
       if (furnitureSortState.field === f) furnitureSortState.dir = -furnitureSortState.dir;
       else { furnitureSortState.field = f; furnitureSortState.dir = 1; }
@@ -8164,11 +8709,11 @@ function generateChecklistTemplate() {
 function refreshAllTabsAfterDbChange() {
   refreshSegmentMetaCache();
   refreshSettingsCache();
+  renderSpecialistInfo();
   renderSettingsPanel();
   renderHistoryList();
   renderAbsenceTable();
   dotaceEditorMain.render();
-  dotaceEditorAdmin.render();
   renderRefVersionsList();
   renderPobockyDatalist();
   renderSegmentsTable();
@@ -8245,6 +8790,13 @@ async function init() {
     }
   });
   document.getElementById("btnAddManualRow").addEventListener("click", addManualRow);
+  const specialistInput = document.getElementById("specialistInput");
+  document.getElementById("btnPickSpecialistFile").addEventListener("click", () => specialistInput.click());
+  specialistInput.addEventListener("change", () => {
+    if (specialistInput.files[0]) handleSpecialistExportFile(specialistInput.files[0]);
+    specialistInput.value = "";
+  });
+  document.getElementById("btnLoadSpecialists").addEventListener("click", () => applySpecialistPositions());
   document.getElementById("btnCommitManual").addEventListener("click", handleCommitManual);
 
   document.getElementById("btnAddAbsenceRow").addEventListener("click", () => {
@@ -8256,9 +8808,6 @@ async function init() {
   document.getElementById("btnAddDotaceRow").addEventListener("click", dotaceEditorMain.addRow);
   document.getElementById("btnSaveDotace").addEventListener("click", dotaceEditorMain.save);
   document.getElementById("dotaceFilter").addEventListener("input", (e) => dotaceEditorMain.setFilter(e.target.value));
-  document.getElementById("btnAdminAddDotaceRow").addEventListener("click", dotaceEditorAdmin.addRow);
-  document.getElementById("btnAdminSaveDotace").addEventListener("click", dotaceEditorAdmin.save);
-  document.getElementById("adminDotaceFilter").addEventListener("input", (e) => dotaceEditorAdmin.setFilter(e.target.value));
 
   document.getElementById("btnAddSegmentRow").addEventListener("click", () => {
     document.getElementById("segmentsTbody").insertAdjacentHTML("beforeend", segmentRowHtml({ segment_key: "", nazev: "", sort_order: 0, color: "#6b7684", icon: "" }));
@@ -8277,6 +8826,7 @@ async function init() {
     tableFilterState.furnitureZone = e.target.value;
     renderFurnitureTable();
   });
+  document.getElementById("btnDataOverview").addEventListener("click", showDataOverview);
   document.getElementById("btnSaveSettings").addEventListener("click", saveSettingsPanel);
   document.getElementById("btnResetSettings").addEventListener("click", resetSettingsPanel);
   document.getElementById("btnGenerateTemplate").addEventListener("click", generateChecklistTemplate);

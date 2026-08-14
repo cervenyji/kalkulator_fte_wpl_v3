@@ -139,7 +139,38 @@
   .zbar-legend{display:flex; flex-wrap:wrap; gap:12px; align-items:center; font-size:11px; margin:6px 0 8px;}
   .zbar-legend span{display:inline-flex; align-items:center; gap:4px;}
   .zbar-legend i{width:10px; height:10px; border-radius:2px; display:inline-block;}
-  th.sortable{cursor:pointer; user-select:none; white-space:nowrap;}
+  th.sortable{user-select:none; white-space:nowrap;}
+  th.sortable{cursor:pointer;}
+  th.sortable .th-label{cursor:pointer;}
+  .colfilter-btn{border:none; background:transparent; cursor:pointer; font-size:11px; color:var(--muted);
+                 padding:0 2px; margin-left:2px; line-height:1;}
+  .colfilter-btn:hover{color:var(--brand);}
+  .colfilter-btn.active{color:var(--brand); font-weight:700;}
+  .colfilter-pop{position:absolute; z-index:120; width:280px; background:#fff; border:1px solid var(--border);
+                 border-radius:9px; box-shadow:0 10px 30px rgba(15,25,45,.18); padding:9px 10px;}
+  .colfilter-pop .colfilter-search{width:100%; padding:5px 8px; border:1px solid var(--border); border-radius:6px;
+                 margin-bottom:6px; font-size:12px;}
+  .colfilter-actions{display:flex; gap:6px; margin-bottom:6px;}
+  .colfilter-list{max-height:210px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:4px 6px;}
+  .colfilter-list label{display:flex; gap:6px; align-items:center; font-size:12px; padding:2px 0; cursor:pointer;}
+  .colfilter-foot{display:flex; gap:6px; margin-top:7px;}
+  .colfilter-summary{font-size:11px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:6px;}
+  .colfilter-chip{background:#eaf1fe; color:#1b4fa8; border:1px solid #bcd2f7; border-radius:10px; padding:1px 7px;}
+  .modal-overlay{position:fixed; inset:0; background:rgba(18,26,38,.55); z-index:200; display:flex;
+                 align-items:flex-start; justify-content:center; padding:36px 18px; overflow:auto;}
+  .modal{background:#fff; border-radius:12px; width:min(980px,100%); box-shadow:0 20px 60px rgba(0,0,0,.3);
+         display:flex; flex-direction:column; max-height:85vh;}
+  .modal-head{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 18px;
+              border-bottom:1px solid var(--border);}
+  .modal-head h3{margin:0;}
+  .modal-body{padding:14px 18px; overflow:auto;}
+  .modal-foot{display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px 18px;
+              border-top:1px solid var(--border); background:#f8fafc; border-radius:0 0 12px 12px;}
+  .ovw-seg{margin-bottom:14px; padding-bottom:10px; border-bottom:1px dashed var(--border);}
+  .ovw-seg:last-child{border-bottom:none;}
+  .ovw-seg h4{margin:0 0 5px;}
+  .ovw-seg ul{margin:0; padding-left:18px; font-size:12.5px;}
+  .ovw-seg li{margin-bottom:4px; line-height:1.5;}
   th.sortable:hover{background:#e8eef8;}
   th.sortable .sort-ind{opacity:.45; font-size:10px; margin-left:3px;}
   th.sortable.sorted .sort-ind{opacity:1; color:var(--brand);}
@@ -241,8 +272,8 @@
   #segmentsTbody td:nth-child(1) input, #segmentsTbody td:nth-child(2) input{min-width:120px;}
   #furnitureTbody td:nth-child(1) input{min-width:100px;}
   #furnitureTbody td:nth-child(3) input{min-width:220px;}
-  #adminDotaceTable td:nth-child(1) input{min-width:90px;}
-  #adminDotaceTable td:nth-child(2) input{min-width:320px;}
+  #dotaceTable td:nth-child(1) input{min-width:90px;}
+  #dotaceTable td:nth-child(2) input{min-width:320px;}
 
   /* --- Ikona nápovědy s bublinou (pravidla předvyplnění layoutu) --- */
   .help-icon{
@@ -517,6 +548,8 @@
   .hidden-variant > summary{cursor:pointer; font-weight:600; color:#8a5c00;}
   .hidden-variant .num{text-align:right; white-space:nowrap;}
   #visitorList tr.visitor-row:hover td{background:#eef3fb;}
+  .spec-box{margin:10px 0 12px; padding:10px 12px; border:1px dashed var(--border); border-radius:8px; background:#fbfcfe;}
+  .spec-box .msg{margin-top:8px;}
   /* Barevný pruh podle zdroje dat — až za obecnými rámečky boxů, aby je přebil. */
   .src-box-calc{border-left:4px solid #2770f0;}
   .src-box-visit{border-left:4px solid #0e9f6e;}
@@ -540,9 +573,8 @@
 <nav>
   <button class="tabbtn active" data-tab="new">Nový výpočet</button>
   <button class="tabbtn" data-tab="history">Historie kalkulací</button>
-  <button class="tabbtn" data-tab="ref">Referenční data</button>
+  <button class="tabbtn" data-tab="data">Data a Excel šablona</button>
   <button class="tabbtn" data-tab="visitor">Návštěvnost</button>
-  <button class="tabbtn" data-tab="admin">Struktura checklistu</button>
 </nav>
 
 <main>
@@ -639,6 +671,17 @@
         </div>
 
         <h3 style="margin-top:16px;">Pozice</h3>
+        <div class="spec-box">
+          <div class="row">
+            <button class="btn secondary small" id="btnLoadSpecialists"
+              title="Doplní pozice a jejich počty podle exportu specialistů pro vybranou pobočku">⤓ Načíst pozice z exportu specialistů</button>
+            <button class="btn secondary small" id="btnPickSpecialistFile"
+              title="Nahraje (nebo přehraje) soubor export_specialiste.xlsx">Nahrát export_specialiste.xlsx</button>
+            <input type="file" id="specialistInput" accept=".xlsx,.xlsm" style="display:none;">
+          </div>
+          <p class="muted" id="specialistInfo" style="margin:6px 0 0;"></p>
+          <div id="specialistStatus"></div>
+        </div>
         <div class="table-wrap"><table>
           <thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Vytížení WPL (jen CESTOVNÍ)</th><th></th></tr></thead>
           <tbody id="manualRowsTbody"></tbody>
@@ -695,36 +738,6 @@
   </div>
 </section>
 
-<section class="tab" id="tab-ref">
-  <div class="panel">
-    <h2>Absence po segmentech</h2>
-    <p class="muted">Nepřítomnost a homeoffice v % — používá se pro přepočet efektivně odpracovaných hodin.</p>
-    <div class="filterbox"><input type="text" id="absenceFilter" placeholder="🔍 Hledat segment…"></div>
-    <div id="absenceTable"></div>
-    <div class="row" style="margin-top:10px;">
-      <button class="btn secondary small" id="btnAddAbsenceRow">+ Přidat segment</button>
-      <button class="btn small" id="btnSaveAbsence">Uložit tabulku absencí</button>
-    </div>
-  </div>
-  <div class="panel">
-    <h2>Časové dotace pozic</h2>
-    <p class="muted">Procentuální rozdělení pracovní doby pozice mezi service / meeting / backoffice zónu a kancelář.</p>
-    <div class="filterbox"><input type="text" id="dotaceFilter" placeholder="Filtrovat dle segmentu nebo pozice…"></div>
-    <div id="dotaceTable"></div>
-    <div class="row" style="margin-top:10px;">
-      <button class="btn secondary small" id="btnAddDotaceRow">+ Přidat pozici</button>
-      <button class="btn small" id="btnSaveDotace">Uložit tabulku dotací</button>
-    </div>
-  </div>
-  <div class="panel">
-    <h2>Historie referenčních dat</h2>
-    <p class="muted">Každé uložení výše vytvoří novou verzi. Každá kalkulace si pamatuje, se kterou verzí
-    referenčních dat byla spočítána — zpětně tak dohledáte přesné nastavení.</p>
-    <div id="refVersionsList"></div>
-    <div id="refVersionDetail" style="display:none; margin-top:14px;"></div>
-  </div>
-</section>
-
 <section class="tab" id="tab-visitor">
   <div class="panel">
     <h2>Report návštěvnosti</h2>
@@ -753,11 +766,23 @@
   </div>
 </section>
 
-<section class="tab" id="tab-admin">
+<section class="tab" id="tab-data">
+  <div class="panel">
+    <h2>Data v databázi</h2>
+    <p class="muted">Všechno, z čeho kalkulace i Excel šablona vycházejí, je na jednom místě:
+      <strong>segmenty</strong>, <strong>pozice</strong> s časovými dotacemi, <strong>nábytkové prvky</strong>
+      a <strong>absence</strong>. Každá tabulka se dá filtrovat po sloupcích jako v Excelu a řadit kliknutím
+      na hlavičku. Uložení kterékoli tabulky vytvoří novou verzi referenčních dat.</p>
+    <div class="row">
+      <button class="btn small" id="btnDataOverview"
+        title="Textový přehled segmentů, pozic a nábytku — k odeslání do MS Teams">📋 Přehled dat (segmenty, pozice, nábytek)</button>
+    </div>
+  </div>
+
   <div class="panel">
     <h2>Segmenty</h2>
-    <p class="muted">Definujte segmenty, jejich pořadí, barvu a ikonu — používá se v celé aplikaci (tabulky,
-      layout, PDF exporty) i při generování Excel šablony.</p>
+    <p class="muted">Segmenty, jejich pořadí, barva a ikona — používá se v celé aplikaci (tabulky, layout,
+      PDF exporty) i při generování Excel šablony.</p>
     <div class="filterbox"><input type="text" id="segmentsFilter" placeholder="🔍 Hledat klíč nebo název segmentu…"></div>
     <div id="segmentsTable"></div>
     <div class="row" style="margin-top:10px;">
@@ -765,24 +790,25 @@
       <button class="btn small" id="btnSaveSegments">Uložit segmenty</button>
     </div>
   </div>
+
   <div class="panel">
-    <h2>Pozice</h2>
-    <p class="muted">Seznam pozic po segmentech a jejich časové dotace — stejná data jako v záložce
-      „Referenční data“. Nová pozice se automaticky propíše do generovaného Excel checklistu i do formuláře
-      manuálního zadání.</p>
-    <div class="filterbox"><input type="text" id="adminDotaceFilter" placeholder="Filtrovat dle segmentu nebo pozice…"></div>
-    <div id="adminDotaceTable"></div>
+    <h2>Pozice a jejich časové dotace</h2>
+    <p class="muted">Procentuální rozdělení pracovní doby pozice mezi service / meeting / backoffice zónu
+      a kancelář (tabulka <code>casove_dotace</code>). Nová pozice se automaticky propíše do generovaného
+      Excel checklistu i do formuláře manuálního zadání.</p>
+    <div class="filterbox"><input type="text" id="dotaceFilter" placeholder="🔍 Hledat dle segmentu nebo pozice…"></div>
+    <div id="dotaceTable"></div>
     <div class="row" style="margin-top:10px;">
-      <button class="btn secondary small" id="btnAdminAddDotaceRow">+ Přidat pozici</button>
-      <button class="btn small" id="btnAdminSaveDotace">Uložit tabulku dotací</button>
+      <button class="btn secondary small" id="btnAddDotaceRow">+ Přidat pozici</button>
+      <button class="btn small" id="btnSaveDotace">Uložit tabulku dotací</button>
     </div>
   </div>
+
   <div class="panel">
     <h2>Nábytek</h2>
-    <p class="muted">Nábytkové prvky pro sestavení layoutu, po segmentech a zónách — stejná data jako v
-      layoutu kalkulace (tabulka <code>furniture_to_zone</code>). Nábytkové prvky se <strong>verzují</strong>
-      stejně jako absence a časové dotace — sloupec „Verze“ ukazuje, ve které verzi referenčních dat řádek
-      naposledy vznikl nebo se změnil.</p>
+    <p class="muted">Nábytkové prvky pro sestavení layoutu, po segmentech a zónách (tabulka
+      <code>furniture_to_zone</code>). Prvky se <strong>verzují</strong> stejně jako absence a časové dotace —
+      sloupec „Verze“ ukazuje, ve které verzi referenčních dat řádek naposledy vznikl nebo se změnil.</p>
     <div class="filterbox">
       <input type="text" id="furnitureFilter" placeholder="🔍 Hledat segment, zónu nebo název prvku…">
       <select id="furnitureZoneFilter" title="Filtrovat podle zóny">
@@ -801,16 +827,37 @@
         title="Zkopíruje do schránky tabulku právě zobrazených (vyfiltrovaných) nábytkových prvků">📋 Kopírovat zobrazené prvky</button>
     </div>
   </div>
+
   <div class="panel">
-    <h2>Nastavení Excel šablony</h2>
-    <p class="muted">Barvy a chování generované šablony. Nastavení se ukládá do databáze (tabulka
-      <code>app_settings</code>) a použije se při každém dalším vygenerování šablony.</p>
+    <h2>Absence po segmentech</h2>
+    <p class="muted">Nepřítomnost a homeoffice v % — používá se pro přepočet efektivně odpracovaných hodin.</p>
+    <div class="filterbox"><input type="text" id="absenceFilter" placeholder="🔍 Hledat segment…"></div>
+    <div id="absenceTable"></div>
+    <div class="row" style="margin-top:10px;">
+      <button class="btn secondary small" id="btnAddAbsenceRow">+ Přidat segment</button>
+      <button class="btn small" id="btnSaveAbsence">Uložit tabulku absencí</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Historie referenčních dat</h2>
+    <p class="muted">Každé uložení výše vytvoří novou verzi. Každá kalkulace si pamatuje, se kterou verzí
+    referenčních dat byla spočítána — zpětně tak dohledáte přesné nastavení.</p>
+    <div id="refVersionsList"></div>
+    <div id="refVersionDetail" style="display:none; margin-top:14px;"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Export Excel šablony checklistu</h2>
+    <p class="muted">Šablona se sestavuje <strong>z dat výše</strong> — segmenty, pozice i nábytek se do
+      checklistu propíšou v tom pořadí a s tím obsahem, jak jsou uložené v databázi.</p>
     <div id="templateSettings"></div>
     <div class="row" style="margin-top:12px;">
       <button class="btn small" id="btnSaveSettings">Uložit nastavení</button>
       <button class="btn secondary small" id="btnResetSettings">Vrátit výchozí</button>
     </div>
   </div>
+
   <div class="panel">
     <h2>Generovat Excel šablonu checklistu</h2>
     <p class="muted">Vygeneruje .xlsx, který vypadá i funguje stejně jako vzorový checklist. List
