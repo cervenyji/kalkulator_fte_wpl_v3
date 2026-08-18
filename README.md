@@ -13,8 +13,17 @@ index.html                  – aplikace, otevřete ji v prohlížeči
 app.js                      – veškerá logika (parsování Excelu, výpočet, PDF, DB)
 xlsx_writer.js              – vlastní zapisovač .xlsx s formátováním (viz "Data a Excel šablona")
 fte_wpl_calculator.db       – vzorová SQLite databáze s výchozími referenčními daty
+data/export_specialiste.xlsx – obsazenost pozic po pobočkách (viz „Dodatečná analytika“)
 vendor/                     – vendorované knihovny (sql.js, SheetJS, jsPDF, DejaVu font)
 tools/gen_seed_db.py        – skript, kterým byla vygenerována fte_wpl_calculator.db
+```
+
+Volitelně se sem dají přidat další datové soubory, které si aplikace najde sama
+(záložka **„Dodatečná analytika“**):
+
+```
+report_navstevnost.html     – HTML report návštěvnosti
+pobocky-export.xlsx         – rating, výnosy a prodeje poboček
 ```
 
 Celou složku je potřeba udržet spolu — `index.html` odkazuje na soubory ve
@@ -79,7 +88,9 @@ předvyplní pozice a jejich počty pro vybranou pobočku ze souboru
   název pobočky, další sloupce jsou **názvy pozic** a v řádcích jsou jejich počty,
 - tlačítkem **„Nahrát export_specialiste.xlsx“** se soubor jednou naimportuje do
   databáze (tabulka `specialist_export`, 327 poboček) — pak už stačí u každé
-  další pobočky jediné kliknutí na **„⤓ Načíst pozice z exportu specialistů“**,
+  další pobočky jediné kliknutí na **„⤓ Načíst pozice z exportu specialistů“**;
+  export se dá připojit i na záložce **„Dodatečná analytika“** a ve složce
+  s aplikací si ho aplikace najde sama,
 - pobočka se hledá podle **ID**, a když ID nesedí, podle názvu,
 - pozice se zařadí do segmentu podle referenčních dat (`casove_dotace`); protože
   je každá pozice vedená i pod segmentem CESTOVNÍ, bere se vždy **domovský
@@ -107,6 +118,45 @@ V kroku 1 průvodce lze místo „Nahrát Excel checklist“ zvolit „Vytvořit
 
 Seznam poboček je uložen v databázi, takže jej lze v budoucnu upravit přímo
 v SQLite (tabulka `pobocky`, sloupce `id_pobocky`, `nazev`, `region`).
+
+## Pobočka se směnovým režimem (otevírací doba > doba vytížení)
+
+V obchodních centrech je otevřeno i sedm dní v týdnu, typicky ~70 hodin, ale
+jedna pozice odpracuje 40 hodin. Zaměstnanci se tedy **střídají na směny** a na
+pobočce nejsou všichni naráz — na jedno pracovní místo obsazené po celou
+otevírací dobu je pak potřeba více FTE.
+
+Kalkulace to zvládá už svým vzorcem, protože se dělí otevírací dobou:
+
+```
+WPL = FTE × doba vytížení × (1 − nepřítomnost − homeoffice) × dotace zóny % ÷ otevírací doba
+```
+
+Při 6 FTE, době vytížení 40 h a nepřítomnosti 23,6 % vyjde ve service zone při
+otevírací době **70 h** hodnota **2,5 WPL**, zatímco při otevírací době 40 h by to
+bylo **4,4 WPL** — směnový provoz tedy sám o sobě znamená **méně pracovních míst
+na stejný počet lidí**.
+
+Aplikace tuto situaci navíc **pojmenuje**, aby nevypadala jako chyba zadání:
+
+- **Zaškrtávátko „Pobočka se směnovým režimem“** je v manuálním zadání i u načteného
+  checklistu (příznak se ukládá k nahrávce, sloupec `excel_loads.shift_mode`).
+  Zaškrtne se samo, když je otevírací doba o více než 2 hodiny vyšší než doba
+  vytížení; kdykoli se dá přepnout ručně.
+- **Excel šablona** nese příznak s sebou: na listu VSTUPY je v `F1` vzorec
+  `IF(CHL!I3-CHL!I6>2;"ANO";"NE")` (s popiskem v `E1`), takže se vyplněný checklist
+  načte do aplikace už se správně zaškrtnutým režimem. Starší šablony bez tohoto
+  pole se poznají z rozdílu hodin.
+- **Odznak „🔁 Směnový režim“** je u náhledu checklistu, u výsledku kalkulace
+  i v detailu v historii; pod ním je řádek s tím, jakou část otevírací doby
+  pokryje jedna pozice (`doba vytížení ÷ otevírací doba`) a kolik FTE je potřeba
+  na plné pokrytí jednoho místa (`otevírací doba ÷ doba vytížení`).
+- Není-li režim zaškrtnutý, ale hodiny na směny ukazují, je řádek **žlutý
+  s upozorněním**; při shodných hodinách jen konstatuje, že jsou všichni na
+  pobočce ve stejnou dobu.
+- Do PDF (šedý blok kapitoly 1) se tiskne **doba vytížení WPL** a u směnového
+  režimu i věta, jakou část otevírací doby jedna pozice pokryje a kolik FTE je
+  potřeba na jedno místo. Nápověda „?“ u „Výsledku kalkulace“ to vysvětluje také.
 
 ## Data a Excel šablona (jedna záložka)
 
@@ -374,13 +424,40 @@ nepovoluje, aplikace se automaticky přepne na záložní cestu přes
 `document.execCommand("copy")` s dočasným výběrem, která formátování zachová
 také.
 
-## Návštěvnost a doporučení prostor (report návštěvnosti)
+## Dodatečná analytika (report návštěvnosti, export specialistů, export poboček)
 
-Záložka **„Návštěvnost“** umí naimportovat HTML report návštěvnosti („Analýza
-návštěvnosti“) a data z něj napojit na zpracovávanou kalkulaci. Report má
-všechna čísla vložená přímo v sobě (objekt `const DATA` klíčovaný ID pobočky
-a konstanty modelu `const C`), takže se načte celý v prohlížeči — nikam se
-neodesílá.
+Záložka **„Dodatečná analytika“** sdružuje všechna doplňková data, která umí
+aplikace použít vedle vlastní kalkulace:
+
+| Soubor | Co z něj aplikace bere | Kde se to projeví |
+| --- | --- | --- |
+| `report_navstevnost.html` | návštěvy po hodinách, doporučení prostor, Monte Carlo model | kapitola „Kapacita pobočky“ |
+| `export_specialiste.xlsx` | aktuální obsazenost pozic po pobočkách | předvyplnění manuálního zadání, porovnání zadaných FTE se skutečností |
+| `pobocky-export.xlsx` | rating pobočky 23–25 a jeho trend, výnosy a nové výnosy, prodeje po produktech | hlavička titulní stránky PDF, karta pobočky v aplikaci |
+
+Každý zdroj má na záložce **kartu se stavem** (připojeno / nepřipojeno, kolik
+poboček, z jakého souboru a kdy se importoval) a tlačítko pro připojení souboru.
+
+**Automatické připojení.** Soubory se hledají samy ve složce s aplikací
+(a v podsložce `data`) — vždy při otevření záložky se doplní jen to, co
+v databázi ještě není, takže se už načtená data nepřepisují. Jak se hledání
+chová, závisí na tom, jak je aplikace otevřená:
+
+- **přes http(s)** (např. z interního webu) se soubory načtou samy hned,
+- **přes `file://`** (dvojklik na `index.html`) prohlížeč čtení okolních souborů
+  z bezpečnostních důvodů zakazuje. Klikněte proto jednou na **„📁 Připojit
+  složku s daty…“** a vyberte složku s aplikací — povolení si prohlížeč
+  zapamatuje (handle složky v IndexedDB) a příště už aplikace soubory najde sama.
+  Alternativa je připojit každý soubor tlačítkem na jeho kartě.
+
+Tlačítko **„🔄 Najít soubory ve složce“** hledání spustí znovu a **přepíše**
+i to, co už je naimportované (hodí se po výměně souborů za novější).
+
+### Report návštěvnosti
+
+Report má všechna čísla vložená přímo v sobě (objekt `const DATA` klíčovaný ID
+pobočky a konstanty modelu `const C`), takže se načte celý v prohlížeči — nikam
+se neodesílá.
 
 Z reportu si aplikace pro každou pobočku ukládá jen to, co kalkulace používá:
 doporučení prostor, návštěvy po hodinách, Monte Carlo model (základní varianta
@@ -486,6 +563,50 @@ Pokud report danou pobočku neobsahuje (nebo ještě není naimportovaný žádn
 sekce jen upozorní, že doporučení prostor chybí, a kalkulace proběhne beze
 změny.
 
+### Export poboček (`pobocky-export.xlsx`)
+
+Datový slovník o pobočkách — 50+ sloupců: zařazení a adresa (region, oblast,
+město, obvod, ulice, č. popisné/orientační, RUIAN, ORP), **rating pobočky za roky
+23–25** včetně trendu, kvintilu, změny 25/24 a příznaku „⚠️ Nebezpečná zóna“,
+**výnosy 21–25** a **nové výnosy** s kvintilem a trendem a **prodeje po produktech**
+(Účty, Hypotéky, Poj. život, Poj. neživot, Inv. pravid., Inv. jednor., Revol.
+úvěry, Úvěry, Penze) — u každého počet prodejů a kvintil.
+
+- Import (tabulka `branch_export`) si uloží **všechny sloupce beze změny**; co
+  aplikace neumí zobrazit, zůstane dostupné v kartě pobočky v části „Všechny
+  sloupce z exportu“.
+- Sloupce se poznávají podle **normalizovaného názvu** (bez diakritiky
+  a interpunkce), takže drobné odchylky v hlavičce (velká písmena, tečky, emoji
+  u „Nebezpečné zóny“) import nerozhodí. První sloupec musí být `ID Pobočky`.
+- Na záložce je **seznam poboček** s filtrem (ID, název, region, oblast, rating,
+  výnosy, prodeje celkem); kliknutím na řádek se otevře **karta pobočky** —
+  stejná data, jaká jdou do hlavičky PDF, plus výnosy po letech a tabulka prodejů.
+- Pobočka se hledá podle **ID**, jako záloha podle názvu.
+- Kvintily jsou barevné podle stupnice **1 = nejlepší pětina poboček … 5 = nejslabší**.
+
+Karta pobočky se zobrazuje i **u výsledku kalkulace** a v detailu v historii, aby
+bylo hned vidět, o jakou pobočku jde. Je označená štítkem „z exportu poboček“
+(tmavě modrozelená barva zdroje dat).
+
+### Porovnání zadaných FTE se skutečným stavem
+
+Kdekoli je vidět zadaný checklist, je pod ním rozbalovací blok **„Porovnání
+zadaných FTE se skutečným stavem“** (žlutooranžový pruh = zdroj „z exportu
+specialistů“):
+
+- **v okně s načteným checklistem** (po nahrání Excelu i po manuálním zadání) je
+  rozbalený, aby si uživatel rozdíl všiml ještě před spočítáním,
+- **u výsledku kalkulace** a v detailu v historii je sbalený.
+
+Tabulka má pro každou pozici *Zadáno (FTE)* / *Aktuální stav* / *Rozdíl*
+(zeleně plus, červeně minus), řádky s rozdílem jsou podbarvené a nahoře je slovní
+verdikt (souhlasí / kalkulace počítá s více nebo méně lidmi než je dnes na
+pobočce). Pod tabulkou je počet pozic s rozdílem, počet pozic jen v kalkulaci
+a jen v aktuálním stavu.
+
+**Do PDF exportu se toto porovnání záměrně netiskne** — je to kontrola vstupu,
+ne výstup sestavy.
+
 ## Výstup a sestava (všechno generování na jednom místě)
 
 **Poslední blok kalkulace** (a stejně tak detailu v historii) se jmenuje
@@ -496,7 +617,7 @@ dostane „venku“ — nikde jinde v aplikaci už žádné exportní tlačítko
 | --- | --- |
 | **Rozsah PDF** (4 přepínače) | co se má vygenerovat — viz tabulka níže |
 | **Zaškrtávátka po skupinách** | jednotlivé kapitoly v rámci zvoleného rozsahu |
-| **Poznámka do PDF** | volný text, který se vytiskne na konec sestavy |
+| **Poznámka do PDF** | volný text, který se vytiskne **do záhlaví první stránky** — žlutě podbarvený rámeček s vykřičníkem, aby ho čtenář nepřehlédl |
 | **„Vygenerovat PDF“** | vytvoří PDF podle zvoleného rozsahu a zaškrtávátek |
 | **„📋 Kopírovat kalkulaci“** | výsledek do schránky (Teams, Word, Excel) |
 | **„📋 Kopírovat nábytek po segmentech“** | přehled nábytku z layoutu do schránky |
@@ -531,6 +652,28 @@ obsah budoucího PDF. Vypnutí kterékoli části pořadí ostatních nezmění.
 | 1 | **Kalkulace FTE → WPL** (modrá) | šedý blok s detaily · informace o referenčních datech · přehled pozic z checklistu · souhrnná tabulka (WPL po zónách) · klíčové ukazatele a benchmark · upozornění z výpočtu |
 | 2 | **Kapacita pobočky** (zelená) | roční kapacita · návštěvnost a doporučení prostor (+ srovnání s kalkulací) · otevírací doba a návštěvy na bankéře · Monte Carlo model průměrného dne · distribuce celkové denní FTE poptávky · kapacitní shrnutí · tři kontroly míst pro schůzky |
 | 3 | **Layout pobočky** (fialová) | šedý blok s detaily · kompletní přehled WPL po zónách a segmentech · seznam nábytku po zónách (kompaktní výpis) · analýza segmentů, zón a jejich prvků |
+
+### Záhlaví titulní stránky
+
+Nad první kapitolou se tisknou dvě věci — v tomto pořadí:
+
+1. **Poznámka uživatele** z boxu „Co se má vygenerovat“: žlutě podbarvený rámeček
+   s vykřičníkem v jantarovém kolečku. Když je pole prázdné, netiskne se nic.
+2. **Profil pobočky z exportu poboček** (`pobocky-export.xlsx`), pokud je pobočka
+   v exportu:
+   - barevná pilulka **Rating 25** (barva podle kvintilu ratingu: 1 = zelená
+     nejlepší pětina … 5 = červená), pilulka **Trend ratingu 23–25** (zelená při
+     růstu, červená při poklesu) a pilulka s kvintilem; je-li pobočka označená
+     jako **⚠️ Nebezpečná zóna**, přidá se červená pilulka i s touto informací,
+   - pod pilulkami rámeček s **Regionem a Oblastí**, **adresou**, **novými výnosy**
+     (včetně kvintilu a změny 25/24), **výnosy** (včetně trendu 21–25) a
+     **čtyřmi nejlepšími obchody pobočky** — kategorie s nejvyšším počtem prodejů,
+     u každé počet prodejů a kvintil.
+
+Objem v korunách je v exportu jen jako **výnosy / nové výnosy** — u jednotlivých
+prodejních kategorií jsou počty a kvintily. Kdyby export někdy sloupec s objemem
+u kategorie obsahoval (hlavička obsahující „objem“), aplikace ho pozná sama
+a k počtu prodejů ho dopíše.
 
 Výchozí stav: zapnuto je všechno kromě „Otevírací doba a návštěvy na bankéře“. Části, které vycházejí
 z reportu návštěvnosti, jsou bez naimportovaných dat nedostupné (zbytek kapitoly 2 se tiskne dál).
@@ -1043,3 +1186,9 @@ záznam v tabulce časových dotací, řádek se vynechá a zobrazí se upozorn�
   česká diakritika. Grafy Monte Carla v PDF se kreslí přímo z čar a obdélníků
   (jsPDF grafy neumí) podle stejných dat a stejného vzhledu jako SVG grafy
   v HTML reportu.
+- Doplňkové datové soubory („Dodatečná analytika“) se hledají dvěma cestami:
+  přes `fetch()` (funguje jen při běhu na http/https) a přes **File System Access
+  API** — handle složky s daty se ukládá do IndexedDB (`dataDir`) vedle handle
+  databáze (`dbFile`), takže povolení platí i po zavření prohlížeče. Importy
+  končí v tabulkách `visitor_data`, `specialist_export` a `branch_export`
+  (payload = celý řádek exportu jako JSON, aby se ze slovníku nic neztratilo).

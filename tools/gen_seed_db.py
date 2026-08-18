@@ -50,6 +50,7 @@ def main():
         pobocka_id TEXT,
         pobocka_nazev TEXT,
         oteviraci_doba REAL,
+        shift_mode INTEGER,
         segment TEXT,
         pozice TEXT,
         fte REAL,
@@ -74,6 +75,28 @@ def main():
         ref_version_id INTEGER,
         status TEXT,
         duvod TEXT
+    )
+    """)
+
+    # Doplňkové zdroje dat (Dodatečná analytika): obsazenost pozic po pobočkách
+    # a datový slovník poboček (rating, výnosy, prodeje).
+    cur.execute("""
+    CREATE TABLE specialist_export (
+        branch_id TEXT PRIMARY KEY,
+        branch_name TEXT,
+        imported_at TEXT,
+        source TEXT,
+        payload TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE branch_export (
+        branch_id TEXT PRIMARY KEY,
+        branch_name TEXT,
+        imported_at TEXT,
+        source TEXT,
+        payload TEXT
     )
     """)
 

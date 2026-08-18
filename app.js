@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS excel_loads (
   pobocka_id TEXT,
   pobocka_nazev TEXT,
   oteviraci_doba REAL,
+  shift_mode INTEGER,
   segment TEXT,
   pozice TEXT,
   fte REAL,
@@ -119,6 +120,13 @@ CREATE TABLE IF NOT EXISTS specialist_export (
   source TEXT,
   payload TEXT
 );
+CREATE TABLE IF NOT EXISTS branch_export (
+  branch_id TEXT PRIMARY KEY,
+  branch_name TEXT,
+  imported_at TEXT,
+  source TEXT,
+  payload TEXT
+);
 CREATE TABLE IF NOT EXISTS visitor_data (
   pobocka_id TEXT PRIMARY KEY,
   nazev TEXT,
@@ -151,6 +159,8 @@ function migrateSchema(dbi) {
   try { dbi.run("ALTER TABLE absence ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
   try { dbi.run("ALTER TABLE casove_dotace ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
   try { dbi.run("ALTER TABLE furniture_to_zone ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
+  // Směnový režim pobočky (otevírací doba > doba vytížení pozice).
+  try { dbi.run("ALTER TABLE excel_loads ADD COLUMN shift_mode INTEGER"); } catch (e) { /* sloupec už existuje */ }
   try { dbi.run("ALTER TABLE ref_data_versions ADD COLUMN furniture_json TEXT"); } catch (e) { /* sloupec už existuje */ }
   const furnitureCount = dbAll("SELECT COUNT(*) AS n FROM furniture_to_zone", [], dbi)[0].n;
   if (furnitureCount === 0) {
@@ -812,6 +822,10 @@ const DATA_SOURCES = {
     title: "Počítá se ze skutečných návštěv v reportu návštěvnosti." },
   mix: { label: "kalkulace + návštěvní data", color: "#8b5cf6",
     title: "Kombinuje kapacitu z kalkulace FTE → WPL se skutečnou návštěvností z reportu." },
+  hr: { label: "z exportu specialistů", color: "#d97706",
+    title: "Aktuální obsazenost pobočky z personálního exportu (export_specialiste.xlsx)." },
+  branch: { label: "z exportu poboček", color: "#0e7490",
+    title: "Rating, výnosy a prodeje pobočky z exportu poboček (pobocky-export.xlsx)." },
   ref: { label: "referenční data", color: "#6b7684",
     title: "Nastavení v referenčních datech — nezávisí na konkrétní kalkulaci." },
 };
@@ -1347,6 +1361,11 @@ function parseVstupySheet(workbook) {
   const pobocka_nazev = excelCell(ws, "C2");
   const oteviraci_doba = excelCell(ws, "C3");
   const doba_vytezeni_wpl = excelCell(ws, "C4");
+  // Příznak směnového režimu (F1) přidaly novější šablony — u starších zůstane
+  // prázdný a režim se pozná z rozdílu hodin.
+  const shiftRaw = excelCell(ws, "F1");
+  const shiftFlag = isBlank(shiftRaw) ? null
+    : ["ano", "yes", "1", "true", "x"].includes(String(shiftRaw).trim().toLowerCase());
 
   if ([pobocka_id, pobocka_nazev, oteviraci_doba, doba_vytezeni_wpl].some(isBlank)) {
     throw new Error("Některé nezbytné hodnoty v Excelu chybí (C1, C2, C3, C4).");
@@ -1372,6 +1391,8 @@ function parseVstupySheet(workbook) {
     pobocka_id: String(pobocka_id).trim(),
     pobocka_nazev: String(pobocka_nazev).trim(),
     oteviraci_doba: toNumberOrNull(oteviraci_doba) ?? 40,
+    doba_vytezeni_wpl: toNumberOrNull(doba_vytezeni_wpl) ?? (toNumberOrNull(oteviraci_doba) ?? 40),
+    shiftFlag,
     rows,
   };
 }
@@ -1380,21 +1401,22 @@ function parseVstupySheet(workbook) {
 // nebo z manuálního zadání) a nastaví je jako aktuálně rozpracovaný checklist
 // (pendingLoad), ze kterého se pak spočítá kalkulace — od tohoto bodu je průběh
 // pro obě cesty zadání naprosto shodný.
-async function commitLoad(pobocka_id, pobocka_nazev, oteviraci_doba, rows) {
+async function commitLoad(pobocka_id, pobocka_nazev, oteviraci_doba, rows, shiftMode) {
   const load_key = `load_${pobocka_id}-${pobocka_nazev}-${nowStamp()}`;
   const createdAt = nowIso();
 
   const ins = db.prepare(`INSERT INTO excel_loads
-    (load_key, pobocka_id, pobocka_nazev, oteviraci_doba, segment, pozice, fte, wpl_load, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    (load_key, pobocka_id, pobocka_nazev, oteviraci_doba, shift_mode, segment, pozice, fte, wpl_load, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   rows.forEach((r) => {
-    ins.run([load_key, pobocka_id, pobocka_nazev, oteviraci_doba, r.segment, r.pozice, r.fte, r.wpl_load, createdAt]);
+    ins.run([load_key, pobocka_id, pobocka_nazev, oteviraci_doba, shiftMode ? 1 : 0,
+      r.segment, r.pozice, r.fte, r.wpl_load, createdAt]);
   });
   ins.free();
 
   await persistDatabase();
 
-  const committed = { load_key, pobocka_id, pobocka_nazev, oteviraci_doba, rows };
+  const committed = { load_key, pobocka_id, pobocka_nazev, oteviraci_doba, rows, shiftMode: !!shiftMode };
   pendingLoad = committed;
   return committed;
 }
@@ -1415,7 +1437,13 @@ async function handleExcelFile(file) {
       msgsEl.innerHTML = `<div class="msg err">V listu „VSTUPY“ nebyl nalezen žádný řádek s FTE &gt; 0.</div>`;
       return;
     }
-    const committed = await commitLoad(parsed.pobocka_id, parsed.pobocka_nazev, parsed.oteviraci_doba, parsed.rows);
+    // Otevírací doba výrazně vyšší než doba vytížení pozice = pobočka jede na
+    // směny (typicky obchodní centra otevřená 7 dní v týdnu).
+    const autoShift = parsed.shiftFlag !== null && parsed.shiftFlag !== undefined
+      ? parsed.shiftFlag : isShiftMode(parsed.oteviraci_doba, parsed.doba_vytezeni_wpl);
+    const committed = await commitLoad(parsed.pobocka_id, parsed.pobocka_nazev, parsed.oteviraci_doba,
+      parsed.rows, autoShift);
+    committed.doba_vytezeni_wpl = parsed.doba_vytezeni_wpl;
     msgsEl.innerHTML = `<div class="msg ok">Checklist načten: <strong>${esc(parsed.pobocka_nazev)}</strong>
       (ID ${esc(parsed.pobocka_id)}), otevírací doba ${esc(parsed.oteviraci_doba)} h/týden,
       ${parsed.rows.length} pozic s FTE &gt; 0.</div>`;
@@ -1428,6 +1456,10 @@ async function handleExcelFile(file) {
 
 function renderExcelPreview(parsed) {
   const splits = dotaceSplitMap(null);
+  const loadHours = parsed.doba_vytezeni_wpl
+    ?? (parsed.rows.find((r) => String(r.segment).trim().toUpperCase() !== "CESTOVNÍ") || {}).wpl_load
+    ?? parsed.oteviraci_doba;
+  const cmp = compareFteWithSpecialists(parsed.rows, parsed.pobocka_id, parsed.pobocka_nazev);
   const rowsHtml = parsed.rows.map((r) => `
     <tr>
       <td>${segmentBadgeHtml(r.segment)}</td>
@@ -1437,6 +1469,11 @@ function renderExcelPreview(parsed) {
       <td>${zoneSplitBarHtml(splits[`${r.segment}||${r.pozice}`])}</td>
     </tr>`).join("");
   document.getElementById("excelPreview").innerHTML = `
+    <label class="shift-check"><input type="checkbox" id="previewShiftMode"${parsed.shiftMode ? " checked" : ""}>
+      <span><strong>Pobočka se směnovým režimem</strong> — otevírací doba je delší než doba vytížení
+      jedné pozice (typicky obchodní centra otevřená 7 dní v týdnu), zaměstnanci se střídají.
+      <span id="previewShiftBadge">${shiftBadgeHtml(parsed.shiftMode)}</span></span></label>
+    <div id="previewShiftInfo">${shiftInfoHtml(parsed.oteviraci_doba, loadHours, !!parsed.shiftMode)}</div>
     ${zoneLegendHtml()}
     <div class="table-wrap">
       <table>
@@ -1445,10 +1482,26 @@ function renderExcelPreview(parsed) {
         <tbody>${rowsHtml}</tbody>
       </table>
     </div>
+    ${renderFteComparisonHtml(cmp, { open: true })}
     <div class="row" style="margin-top:14px;">
       <button class="btn" id="btnCalculate">Spočítat kalkulaci WPL</button>
     </div>`;
   document.getElementById("btnCalculate").addEventListener("click", runCalculation);
+
+  // Směnový režim se dá u načteného checklistu přepnout — hodnota se hned uloží
+  // k nahrávce, takže s ní počítá i kalkulace a její PDF.
+  const shiftBox = document.getElementById("previewShiftMode");
+  shiftBox.addEventListener("change", () => {
+    const on = shiftBox.checked;
+    if (parsed.load_key) {
+      dbRun("UPDATE excel_loads SET shift_mode = ? WHERE load_key = ?", [on ? 1 : 0, parsed.load_key]);
+      persistDatabase();
+    }
+    parsed.shiftMode = on;
+    if (pendingLoad && pendingLoad.load_key === parsed.load_key) pendingLoad.shiftMode = on;
+    document.getElementById("previewShiftInfo").innerHTML = shiftInfoHtml(parsed.oteviraci_doba, loadHours, on);
+    document.getElementById("previewShiftBadge").innerHTML = shiftBadgeHtml(on);
+  });
 }
 
 /* ------------------------- Manuální zadání pozic --------------------------- */
@@ -1685,6 +1738,499 @@ function renderSpecialistInfo() {
       + " najdete ve složce s aplikací (podsložka <code>data</code>).";
 }
 
+/* ------------- Export poboček (pobocky-export.xlsx) ------------------------ */
+// Soubor `pobocky-export.xlsx` je datový slovník o pobočkách: adresa a zařazení
+// (region, oblast, ORP), rating pobočky za roky 23–25 včetně trendu a kvintilu,
+// výnosy a nové výnosy za roky 21–25 a prodeje po produktech (počty a kvintily).
+// Aplikace si soubor uloží celý (tabulka `branch_export`, payload = všechny
+// sloupce beze změny) a při čtení si z něj vytáhne, co potřebuje — hlavičku PDF
+// sestavy a kartu pobočky v „Dodatečné analytice“.
+//
+// Názvy sloupců se poznávají podle normalizovaného textu (bez diakritiky, bez
+// interpunkce), takže drobné odchylky v hlavičce (velká písmena, tečky, emoji
+// u „Nebezpečné zóny“) import nerozhodí.
+
+function deacc(v) {
+  return String(v === null || v === undefined ? "" : v).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function normHeader(v) {
+  return deacc(v).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+// Prodejní kategorie ze slovníku. `match` je normalizovaný úryvek hlavičky;
+// přiřazuje se od nejdelšího, aby „Revol. úvěry“ nespadly do „Úvěry“.
+const BRANCH_SALES_PRODUCTS = [
+  { key: "ucty", label: "Účty", match: "ucty" },
+  { key: "hypoteky", label: "Hypotéky", match: "hypoteky" },
+  { key: "pojZivot", label: "Poj. život", match: "poj zivot" },
+  { key: "pojNezivot", label: "Poj. neživot", match: "poj nezivot" },
+  { key: "invPravid", label: "Inv. pravid.", match: "inv pravid" },
+  { key: "invJednor", label: "Inv. jednor.", match: "inv jednor" },
+  { key: "revolUvery", label: "Revol. úvěry", match: "revol uvery" },
+  { key: "uvery", label: "Úvěry", match: "uvery" },
+  { key: "penze", label: "Penze", match: "penze" },
+];
+
+// Kvintil 1 = nejlepší pětina poboček, 5 = nejslabší. Barvy se používají
+// v aplikaci i v PDF (pill u ratingu, kvintily u výnosů a prodejů).
+const QUINTILE_COLORS = ["#0e9f6e", "#5aa84f", "#f0a020", "#ef7d3b", "#e02424"];
+
+function quintileColor(q) {
+  const n = Math.round(Number(q));
+  return Number.isFinite(n) && n >= 1 && n <= 5 ? QUINTILE_COLORS[n - 1] : "#6b7482";
+}
+
+function branchNum(v) {
+  if (v === null || v === undefined || v === "") return null;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  const cleaned = String(v).replace(/[\s\u00a0]/g, "").replace(/[^\d,.\-]/g, "").replace(",", ".");
+  const x = parseFloat(cleaned);
+  return Number.isFinite(x) ? x : null;
+}
+
+// Celá čísla s mezerami po tisících — čte se to stejně v aplikaci i v PDF.
+function fmtNum0(v) {
+  const n = branchNum(v);
+  if (n === null) return "—";
+  return Math.round(n).toLocaleString("cs-CZ").replace(/\u00a0/g, " ");
+}
+
+// Malé hodnoty (změny, procenta) by zaokrouhlením na celé číslo ztratily smysl,
+// velké částky se naopak čtou lépe bez desetin.
+function fmtNumAuto(v) {
+  const n = branchNum(v);
+  if (n === null) return "—";
+  if (Math.abs(n) >= 1000 || Number.isInteger(n)) return fmtNum0(n);
+  return String(Math.round(n * 10) / 10).replace(".", ",");
+}
+
+function parseBranchExport(workbook) {
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]],
+    { header: 1, blankrows: false });
+  if (!rows.length) throw new Error("List je prázdný.");
+  const header = (rows[0] || []).map((h) => String(h === null || h === undefined ? "" : h).trim());
+  const firstNorm = normHeader(header[0]);
+  if (!["id pobocky", "branch id", "id", "id pobocka"].includes(firstNorm)) {
+    throw new Error(`První sloupec má být „ID Pobočky“, je tam „${header[0]}“.`);
+  }
+  // Prázdné a duplicitní hlavičky dostanou jednoznačný název, aby se hodnota
+  // sloupce neztratila.
+  const names = [];
+  header.forEach((h, i) => {
+    let name = h || `sloupec ${i + 1}`;
+    while (names.includes(name)) name += " ";
+    names.push(name);
+  });
+
+  const branches = [];
+  rows.slice(1).forEach((r) => {
+    const id = r[0];
+    if (id === undefined || id === null || String(id).trim() === "") return;
+    const payload = {};
+    names.forEach((name, i) => {
+      const v = r[i];
+      if (v !== undefined && v !== null && v !== "") payload[name] = v;
+    });
+    branches.push({
+      branch_id: String(id).trim(),
+      branch_name: String(r[1] === undefined || r[1] === null ? "" : r[1]).trim(),
+      payload,
+    });
+  });
+  return { branches, columns: names.filter((n) => !/^sloupec \d+$/.test(n)) };
+}
+
+// Ze surových sloupců vytáhne to, co aplikace umí zobrazit. Zbytek zůstává
+// dostupný v `raw`, takže se ze slovníku nic neztrácí.
+function branchFields(payload) {
+  const keys = Object.keys(payload || {});
+  const norm = {};
+  keys.forEach((k) => { norm[k] = normHeader(k); });
+  const pick = (fn) => keys.find((k) => fn(norm[k]));
+  const text = (k) => (k && payload[k] !== undefined ? String(payload[k]).trim() : null);
+  const number = (k) => (k ? branchNum(payload[k]) : null);
+
+  // Výnosy a nové výnosy po letech: „Výnosy 23“, „Nové výnosy 25“ atd.
+  const yearly = (isNew) => keys
+    .map((k) => {
+      const n = norm[k];
+      const isNewCol = n.startsWith("nove ");
+      if (isNewCol !== isNew || !n.includes("vynosy") || n.includes("kvintil")
+        || n.includes("trend") || n.includes("zmena")) return null;
+      const m = /(\d{2})(?!.*\d)/.exec(n);
+      return m ? { year: Number(m[1]), value: branchNum(payload[k]), header: k } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.year - b.year);
+
+  const revenues = yearly(false);
+  const newRevenues = yearly(true);
+
+  // Prodeje po produktech — sloupec s „kvintil“ je kvintil, sloupec s „objem“
+  // (pokud v exportu je) objem, ostatní je počet prodejů. Delší názvy se
+  // přiřazují první, aby „Revol. úvěry“ nesebraly „Úvěry“.
+  const claimed = new Set();
+  const products = [...BRANCH_SALES_PRODUCTS].sort((a, b) => b.match.length - a.match.length);
+  const salesByKey = {};
+  products.forEach((prod) => {
+    keys.forEach((k) => {
+      const n = norm[k];
+      if (claimed.has(k) || !n.includes(prod.match)) return;
+      if (!n.includes("prodej") && !n.includes("kvintil") && !n.includes("objem")
+        && !n.includes("ks") && n !== prod.match) return;
+      claimed.add(k);
+      const slot = n.includes("kvintil") ? "kvintil" : (n.includes("objem") ? "volume" : "count");
+      salesByKey[prod.key] = salesByKey[prod.key] || { key: prod.key, label: prod.label };
+      if (salesByKey[prod.key][slot] === undefined) {
+        salesByKey[prod.key][slot] = branchNum(payload[k]);
+        salesByKey[prod.key][`${slot}Header`] = k;
+      }
+    });
+  });
+  const sales = BRANCH_SALES_PRODUCTS.map((prod) => salesByKey[prod.key])
+    .filter((x) => x && (x.count !== undefined || x.kvintil !== undefined));
+
+  const mesto = text(pick((n) => n === "mesto"));
+  const obvod = text(pick((n) => n.startsWith("obvod")));
+  const ulice = text(pick((n) => n === "ulice"));
+  const cp = text(pick((n) => n.startsWith("c popisne")));
+  const co = text(pick((n) => n.startsWith("c orientacni")));
+  const cislo = [cp, co].filter(Boolean).join("/");
+  const address = [[ulice, cislo].filter(Boolean).join(" "),
+    [mesto, obvod && obvod !== mesto ? obvod : null].filter(Boolean).join(" – ")]
+    .filter(Boolean).join(", ");
+
+  return {
+    id: text(pick((n) => n === "id pobocky" || n === "branch id" || n === "id")),
+    nazev: text(pick((n) => n.startsWith("nazev pobocky"))),
+    region: text(pick((n) => n === "region")),
+    regionFixed: text(pick((n) => n === "region fixed")),
+    oblast: text(pick((n) => n === "oblast")),
+    mesto, obvod, ulice, cisloPopisne: cp, cisloOrientacni: co, address,
+    orp: text(pick((n) => n === "orp")),
+    orpKod: text(pick((n) => n.startsWith("orp kod"))),
+    krajskeMesto: text(pick((n) => n.includes("krajske") && n.includes("mesto"))),
+    ruian: text(pick((n) => n.startsWith("ruian"))),
+    rating: {
+      r23: number(pick((n) => n === "rating 23")),
+      r24: number(pick((n) => n === "rating 24")),
+      r25: number(pick((n) => n === "rating 25")),
+      r25text: text(pick((n) => n === "rating 25")),
+      kvintil: number(pick((n) => n.includes("rating") && n.includes("kvintil"))),
+      trend: text(pick((n) => n.includes("trend") && n.includes("rating"))),
+      change: number(pick((n) => n.includes("zmena ratingu") && !n.includes("perc"))),
+      changePerc: number(pick((n) => n.includes("zmena ratingu") && n.includes("perc"))),
+      danger: text(pick((n) => n.includes("nebezpecna zona"))),
+    },
+    revenues,
+    revenueLast: revenues.length ? revenues[revenues.length - 1] : null,
+    revenueTrend: text(pick((n) => n.includes("trend") && n.includes("vynos"))),
+    newRevenues,
+    newRevenueLast: newRevenues.length ? newRevenues[newRevenues.length - 1] : null,
+    newRevenueKvintil: number(pick((n) => n.startsWith("nove vynosy") && n.includes("kvintil"))),
+    newRevenueChange: number(pick((n) => n.includes("zmena novych vynosu"))),
+    salesTotal: number(pick((n) => n.includes("prodeje celkem"))),
+    salesTotalHeader: pick((n) => n.includes("prodeje celkem")) || null,
+    sales,
+    raw: payload,
+  };
+}
+
+// Nejlepší prodejní kategorie pobočky — podle počtu prodejů, při shodě podle
+// kvintilu (1 = nejlepší pětina poboček).
+function topBranchSales(fields, count = 4) {
+  return (fields.sales || [])
+    .filter((s) => branchNum(s.count) !== null && branchNum(s.count) > 0)
+    .sort((a, b) => (branchNum(b.count) - branchNum(a.count))
+      || ((branchNum(a.kvintil) ?? 9) - (branchNum(b.kvintil) ?? 9)))
+    .slice(0, count);
+}
+
+async function handleBranchExportFile(file) {
+  if (!requireDb()) return;
+  const data = new Uint8Array(await file.arrayBuffer());
+  const parsed = parseBranchExport(XLSX.read(data, { type: "array" }));
+  const importedAt = nowIso();
+  dbRun("DELETE FROM branch_export");
+  const ins = db.prepare(`INSERT INTO branch_export
+    (branch_id, branch_name, imported_at, source, payload) VALUES (?, ?, ?, ?, ?)`);
+  parsed.branches.forEach((b) => {
+    ins.run([b.branch_id, b.branch_name, importedAt, file.name, JSON.stringify(b.payload)]);
+  });
+  ins.free();
+  await persistDatabase();
+  return { branches: parsed.branches.length, columns: parsed.columns.length };
+}
+
+function branchExportInfo() {
+  if (!db) return null;
+  try {
+    const row = dbAll(`SELECT COUNT(*) AS n, MAX(imported_at) AS imported_at, MAX(source) AS source
+      FROM branch_export`)[0];
+    return row && row.n ? row : null;
+  } catch (e) { return null; }
+}
+
+function branchExportRowFor(pobockaId, pobockaNazev) {
+  if (!db) return null;
+  try {
+    if (pobockaId !== null && pobockaId !== undefined && String(pobockaId).trim() !== "") {
+      const byId = dbAll("SELECT * FROM branch_export WHERE branch_id = ?", [String(pobockaId).trim()])[0];
+      if (byId) return byId;
+    }
+    if (!pobockaNazev) return null;
+    return dbAll("SELECT * FROM branch_export WHERE LOWER(branch_name) = ?",
+      [String(pobockaNazev).trim().toLowerCase()])[0] || null;
+  } catch (e) { return null; }
+}
+
+// Model pro hlavičku PDF a kartu pobočky: rating, zařazení, adresa, výnosy
+// a nejlepší prodeje. Když pobočka v exportu není, vrací null a hlavička se
+// prostě nevykreslí.
+function branchProfile(pobockaId, pobockaNazev) {
+  const row = branchExportRowFor(pobockaId, pobockaNazev);
+  if (!row) return null;
+  let payload = {};
+  try { payload = JSON.parse(row.payload || "{}"); } catch (e) { return null; }
+  const fields = branchFields(payload);
+  return {
+    branchId: row.branch_id,
+    branchName: row.branch_name || fields.nazev || "",
+    importedAt: row.imported_at,
+    source: row.source,
+    fields,
+    topSales: topBranchSales(fields),
+  };
+}
+
+// Trend ratingu / výnosů: v exportu může být číslo i slovo — barva se hádá
+// z obojího, ať je pill čitelný v aplikaci i v PDF.
+function trendTone(value) {
+  const n = branchNum(value);
+  if (n !== null && String(value).trim() !== "") {
+    if (n > 0) return "up";
+    if (n < 0) return "down";
+    return "flat";
+  }
+  const t = normHeader(value);
+  if (!t) return "flat";
+  if (/rost|up|zlep|vzest|leps/.test(t) || String(value).includes("↑")) return "up";
+  if (/kles|down|zhors|pokles|horsi/.test(t) || String(value).includes("↓")) return "down";
+  return "flat";
+}
+
+const TREND_COLORS = { up: "#0e9f6e", down: "#e02424", flat: "#6b7482" };
+const TREND_ARROWS = { up: "▲", down: "▼", flat: "→" };
+
+function trendLabel(value) {
+  const tone = trendTone(value);
+  const raw = value === null || value === undefined || String(value).trim() === "" ? "—" : String(value).trim();
+  return { tone, color: TREND_COLORS[tone], text: `${TREND_ARROWS[tone]} ${raw}` };
+}
+
+/* ------------- Karta pobočky v aplikaci (stejná data jako v PDF) ----------- */
+
+function branchProfileHtml(profile, options = {}) {
+  if (!profile) {
+    return options.quiet ? "" : `<p class="muted">Pro tuto pobočku nejsou data z exportu poboček
+      (<code>pobocky-export.xlsx</code>) — připojte ho v části „Dodatečná analytika“.</p>`;
+  }
+  const f = profile.fields;
+  const rating = f.rating.r25text || "—";
+  const ratingColor = quintileColor(f.rating.kvintil);
+  const trend = trendLabel(f.rating.trend);
+  const kv = (q) => (branchNum(q) === null ? "" :
+    ` <span class="bx-kv" style="background:${quintileColor(q)};">kvintil ${fmtPieces(branchNum(q))}</span>`);
+  const salesHtml = profile.topSales.length
+    ? profile.topSales.map((s) => `<li><strong>${esc(s.label)}</strong>
+        ${fmtNum0(s.count)} prodejů${s.volume !== undefined && s.volume !== null
+          ? ` · objem ${fmtNum0(s.volume)}` : ""}${kv(s.kvintil)}</li>`).join("")
+    : `<li class="muted">Export neobsahuje počty prodejů.</li>`;
+
+  return `<div class="bx-card ${options.compact ? "bx-compact" : ""}">
+    <div class="bx-pills">
+      <span class="bx-pill" style="background:${ratingColor};">Rating 25: ${esc(rating)}</span>
+      <span class="bx-pill" style="background:${trend.color};">Trend ratingu 23–25: ${esc(trend.text)}</span>
+      ${f.rating.danger ? `<span class="bx-pill" style="background:#e02424;">⚠️ Nebezpečná zóna:
+        ${esc(f.rating.danger)}</span>` : ""}
+      ${srcBadgeHtml("branch")}
+    </div>
+    <div class="bx-grid">
+      <div><span class="muted">Region</span><strong>${esc(f.region || f.regionFixed || "—")}</strong></div>
+      <div><span class="muted">Oblast</span><strong>${esc(f.oblast || "—")}</strong></div>
+      <div><span class="muted">Adresa</span><strong>${esc(f.address || "—")}</strong></div>
+      <div><span class="muted">Nové výnosy${f.newRevenueLast ? ` ${f.newRevenueLast.year}` : ""}</span>
+        <strong>${f.newRevenueLast ? fmtNum0(f.newRevenueLast.value) : "—"}${kv(f.newRevenueKvintil)}
+        ${branchNum(f.newRevenueChange) !== null
+          ? `<span class="muted">(změna 25/24: ${fmtNumAuto(f.newRevenueChange)})</span>` : ""}</strong></div>
+      <div><span class="muted">Výnosy${f.revenueLast ? ` ${f.revenueLast.year}` : ""}</span>
+        <strong>${f.revenueLast ? fmtNum0(f.revenueLast.value) : "—"}
+        ${f.revenueTrend ? `<span class="muted">(trend ${esc(f.revenueTrend)})</span>` : ""}</strong></div>
+      <div><span class="muted">Prodeje celkem</span><strong>${fmtNum0(f.salesTotal)}</strong></div>
+    </div>
+    <div class="bx-sales">
+      <span class="muted">Nejlepší obchody pobočky (podle počtu prodejů):</span>
+      <ul>${salesHtml}</ul>
+    </div>
+    <p class="muted bx-note">Data z exportu poboček${profile.source ? ` (${esc(profile.source)})` : ""}${
+      profile.importedAt ? `, import ${new Date(profile.importedAt).toLocaleString("cs-CZ")}` : ""}.
+      Objem prodeje po kategoriích export obsahuje jen tehdy, je-li v něm sloupec „objem“ —
+      jinak jsou peněžní hodnoty dostupné jako výnosy a nové výnosy.</p>
+  </div>`;
+}
+
+/* ------- Porovnání zadaných FTE se skutečným stavem z exportu specialistů --- */
+// Zadané FTE (checklist / manuální zadání) proti aktuální obsazenosti pobočky
+// v `export_specialiste.xlsx`. Slouží ke kontrole vstupu — do PDF exportu se
+// tato část záměrně netiskne.
+
+function compareFteWithSpecialists(inputRows, pobockaId, pobockaNazev) {
+  if (!db || !(inputRows || []).length) return null;
+  const row = specialistRowFor(pobockaId, pobockaNazev);
+  if (!row) return null;
+  const actual = JSON.parse(row.payload || "{}");
+  const known = positionSegmentMap();
+
+  const map = {};   // "pozice" -> { pozice, segment, planned, actual }
+  const put = (pozice, segment, key, value) => {
+    const k = normalizePozice(pozice);
+    if (!map[k]) map[k] = { pozice, segment: segment || "", planned: 0, actual: 0 };
+    if (segment && !map[k].segment) map[k].segment = segment;
+    map[k][key] += value;
+  };
+  inputRows.forEach((r) => put(r.pozice, r.segment, "planned", Number(r.fte) || 0));
+  Object.entries(actual).forEach(([pozice, count]) => {
+    const found = known[normalizePozice(pozice)];
+    put(pozice, found ? found.segment : "", "actual", Number(count) || 0);
+  });
+
+  const rows = Object.values(map).map((x) => ({ ...x, diff: round1(x.planned - x.actual) }))
+    .sort((a, b) => (a.segment || "").localeCompare(b.segment || "", "cs")
+      || a.pozice.localeCompare(b.pozice, "cs"));
+  const totals = rows.reduce((acc, x) => ({
+    planned: acc.planned + x.planned, actual: acc.actual + x.actual,
+  }), { planned: 0, actual: 0 });
+  return {
+    branch: { id: row.branch_id, nazev: row.branch_name, importedAt: row.imported_at },
+    rows,
+    totals: { ...totals, diff: round1(totals.planned - totals.actual) },
+    onlyPlanned: rows.filter((x) => x.planned > 0 && x.actual === 0),
+    onlyActual: rows.filter((x) => x.actual > 0 && x.planned === 0),
+    changed: rows.filter((x) => x.planned > 0 && x.actual > 0 && Math.abs(x.diff) > 0.001),
+  };
+}
+
+function diffCellHtml(diff) {
+  if (Math.abs(diff) < 0.001) return `<span class="cmp-same">0</span>`;
+  return `<span class="${diff > 0 ? "cmp-plus" : "cmp-minus"}">${diff > 0 ? "+" : ""}${fmt1(diff)}</span>`;
+}
+
+function renderFteComparisonHtml(cmp, options = {}) {
+  if (!cmp) {
+    return options.quiet ? "" : `<details class="cmp-box"><summary>Porovnání se skutečným stavem
+      ${srcBadgeHtml("hr")}</summary>
+      <p class="muted">Pro tuto pobočku nejsou data v exportu specialistů. Načtěte
+        <code>export_specialiste.xlsx</code> v části „Dodatečná analytika“ nebo v manuálním zadání.</p></details>`;
+  }
+  const rowHtml = cmp.rows.map((r) => `<tr class="${Math.abs(r.diff) > 0.001 ? "cmp-diff-row" : ""}">
+    <td>${r.segment ? segmentBadgeHtml(r.segment) : '<span class="muted">—</span>'}</td>
+    <td>${esc(r.pozice)}</td>
+    <td class="num">${r.planned ? fmt1(r.planned) : '<span class="muted">—</span>'}</td>
+    <td class="num">${r.actual ? fmt1(r.actual) : '<span class="muted">—</span>'}</td>
+    <td class="num">${diffCellHtml(r.diff)}</td>
+  </tr>`).join("");
+
+  const verdict = Math.abs(cmp.totals.diff) < 0.001
+    ? `Zadané FTE se skutečným stavem <strong>souhlasí</strong> (${fmt1(cmp.totals.planned)} FTE).`
+    : `Zadáno <strong>${fmt1(cmp.totals.planned)} FTE</strong>, aktuální stav dle exportu`
+      + ` <strong>${fmt1(cmp.totals.actual)} FTE</strong> — rozdíl`
+      + ` <strong>${cmp.totals.diff > 0 ? "+" : ""}${fmt1(cmp.totals.diff)} FTE</strong>`
+      + `${cmp.totals.diff > 0 ? " (kalkulace počítá s více lidmi, než je dnes na pobočce)"
+        : " (kalkulace počítá s méně lidmi, než je dnes na pobočce)"}.`;
+
+  return `<details class="cmp-box"${options.open ? " open" : ""}>
+    <summary>Porovnání zadaných FTE se skutečným stavem ${srcBadgeHtml("hr")}
+      <span class="muted">${esc(cmp.branch.nazev || "")} (ID ${esc(cmp.branch.id)})</span></summary>
+    <p>${verdict}</p>
+    <div class="table-wrap"><table class="visitor-table">
+      <thead><tr><th>Segment</th><th>Pozice</th><th>Zadáno (FTE)</th><th>Aktuální stav</th><th>Rozdíl</th></tr></thead>
+      <tbody>${rowHtml}
+        <tr class="total-row"><td>Celkem</td><td></td>
+          <td class="num"><strong>${fmt1(cmp.totals.planned)}</strong></td>
+          <td class="num"><strong>${fmt1(cmp.totals.actual)}</strong></td>
+          <td class="num"><strong>${diffCellHtml(cmp.totals.diff)}</strong></td></tr>
+      </tbody></table></div>
+    <p class="muted">${cmp.changed.length} pozic se počtem navíc/méně ·
+      ${cmp.onlyPlanned.length} jen v kalkulaci · ${cmp.onlyActual.length} jen v aktuálním stavu.
+      Aktuální stav je z exportu specialistů${cmp.branch.importedAt
+        ? ` (import ${new Date(cmp.branch.importedAt).toLocaleString("cs-CZ")})` : ""}.
+      <strong>Do PDF exportu se toto porovnání netiskne.</strong></p>
+  </details>`;
+}
+
+/* ------- Porovnání zadaných FTE se skutečným stavem — konec sekce ---------- */
+
+/* --------------------------- Směnový režim pobočky -------------------------- */
+// Když je otevírací doba pobočky (např. 70 h/týden v obchodním centru) výrazně
+// vyšší než doba vytížení jedné pozice (např. 40 h/týden), nejsou všichni
+// zaměstnanci na pobočce naráz — točí se na směny. Kalkulace to zvládá už svým
+// vzorcem (dělí se otevírací dobou), takže na jedno pracovní místo pak vychází
+// méně WPL na FTE. Aplikace tento stav pojmenuje, ukáže „směnový faktor“
+// a nechá ho u checklistu potvrdit zaškrtávátkem.
+
+const SHIFT_TOLERANCE_H = 2;   // menší rozdíl je jen zaokrouhlení, ne směny
+
+// Uložený příznak u nahrávky checklistu; když chybí (starší databáze), pozná se
+// z rozdílu otevírací doby a doby vytížení.
+function shiftModeOfLoad(loadKey, openHours, loadHours) {
+  if (db && loadKey) {
+    try {
+      const row = dbAll("SELECT shift_mode FROM excel_loads WHERE load_key = ? LIMIT 1", [loadKey])[0];
+      if (row && row.shift_mode !== null && row.shift_mode !== undefined) return !!row.shift_mode;
+    } catch (e) { /* starší databáze bez sloupce */ }
+  }
+  return isShiftMode(openHours, loadHours);
+}
+
+function isShiftMode(openHours, loadHours) {
+  const open = Number(openHours) || 0;
+  const load = Number(loadHours) || 0;
+  return open > 0 && load > 0 && open - load > SHIFT_TOLERANCE_H;
+}
+
+// Kolik FTE je potřeba na pokrytí jednoho pracovního místa po celou otevírací
+// dobu (70 ÷ 40 = 1,75) a jaká část otevírací doby je pokrytá jednou pozicí.
+function shiftFactor(openHours, loadHours) {
+  const open = Number(openHours) || 0;
+  const load = Number(loadHours) || 0;
+  if (!open || !load) return null;
+  return { open, load, ftePerSeat: open / load, coverage: load / open };
+}
+
+function shiftBadgeHtml(on) {
+  return on ? `<span class="badge shift" title="Otevírací doba je vyšší než doba vytížení pozice —
+    zaměstnanci se na pobočce střídají na směny.">🔁 Směnový režim</span>` : "";
+}
+
+// Vysvětlující řádek pod formulářem i u výsledku kalkulace.
+function shiftInfoHtml(openHours, loadHours, on) {
+  const f = shiftFactor(openHours, loadHours);
+  if (!f) return "";
+  const detected = isShiftMode(openHours, loadHours);
+  if (!detected && !on) {
+    return `<p class="muted">Otevírací doba ${fmt1(f.open)} h/týden = doba vytížení pozice`
+      + ` ${fmt1(f.load)} h/týden — všichni jsou na pobočce ve stejnou dobu (bez směn).</p>`;
+  }
+  return `<p class="${on ? "shift-note" : "shift-note warn"}">${on ? "🔁" : "⚠️"}
+    Otevírací doba <strong>${fmt1(f.open)} h/týden</strong> je vyšší než doba vytížení jedné pozice
+    <strong>${fmt1(f.load)} h/týden</strong> — jedna pozice pokryje jen
+    <strong>${Math.round(f.coverage * 100)} %</strong> otevírací doby, na plné pokrytí jednoho
+    pracovního místa je potřeba <strong>${fmt1(f.ftePerSeat)} FTE</strong>.
+    ${on ? "Checklist je označený jako směnový režim — kalkulace tak počítá s tím, že se lidé střídají."
+      : "Pokud se na pobočce střídají směny, zaškrtněte „Pobočka se směnovým režimem“."}</p>`;
+}
+
 /* --------------------------------- Wizard ----------------------------------- */
 // Průvodce "Nový výpočet" má 4 kroky: 1) volba zdroje dat, 2) zadání pozic
 // (Excel nebo manuálně), 3) výsledek, 4) sestavení layoutu. Kroky 3 a 4 se
@@ -1734,7 +2280,13 @@ function chooseSource(mode) {
   document.getElementById("sourceSummaryText").textContent = mode === "excel" ? "Excel checklist" : "Manuální zadání";
   document.getElementById("modeExcel").style.display = mode === "excel" ? "block" : "none";
   document.getElementById("modeManual").style.display = mode === "manual" ? "block" : "none";
-  if (mode === "manual") renderSpecialistInfo();
+  if (mode === "manual") {
+    renderSpecialistInfo();
+    const open = toNumberOrNull(document.getElementById("manualOtevDoba").value) ?? 0;
+    const load = toNumberOrNull(document.getElementById("manualVytezeniWpl").value) ?? 0;
+    document.getElementById("manualShiftInfo").innerHTML =
+      shiftInfoHtml(open, load, document.getElementById("manualShiftMode").checked);
+  }
   if (mode === "manual" && document.getElementById("manualRowsTbody").children.length === 0) {
     addManualRow();
   }
@@ -1776,9 +2328,12 @@ async function handleCommitManual() {
     return;
   }
 
-  const committed = await commitLoad(pobocka_id, pobocka_nazev, oteviraci_doba, rows);
+  const shiftMode = document.getElementById("manualShiftMode").checked;
+  const committed = await commitLoad(pobocka_id, pobocka_nazev, oteviraci_doba, rows, shiftMode);
+  committed.doba_vytezeni_wpl = toNumberOrNull(doba_vytezeni_wpl) ?? oteviraci_doba;
   msgsEl.innerHTML = `<div class="msg ok">Kalkulace vytvořena manuálně: <strong>${esc(pobocka_nazev)}</strong>
-    (ID ${esc(pobocka_id)}), ${rows.length} pozic s FTE &gt; 0.</div>`;
+    (ID ${esc(pobocka_id)}), ${rows.length} pozic s FTE &gt; 0.`
+    + `${shiftMode ? " Pobočka je označená jako <strong>směnový režim</strong>." : ""}</div>`;
   renderExcelPreview(committed);
 }
 
@@ -1892,8 +2447,14 @@ function runCalculation() {
 
   persistDatabase();
 
+  // Doba vytížení pozice (u ne-cestovních řádků je u všech stejná) a příznak
+  // směnového režimu putují do výsledku, aby se daly ukázat i vysvětlit.
+  const loadHours = (inputRows.find((r) => String(r.segment).trim().toUpperCase() !== "CESTOVNÍ") || {}).wpl_load
+    ?? oteviraci_doba;
+  const shiftMode = shiftModeOfLoad(load_key, oteviraci_doba, loadHours);
   renderResults({ calculation_key, load_key, createdAt, rows: resultRows, celkem: celkemRow, warnings, inputRows,
-    refVersionId, pobocka_id: pendingLoad.pobocka_id, pobocka_nazev: pendingLoad.pobocka_nazev, oteviraci_doba, duvod });
+    refVersionId, pobocka_id: pendingLoad.pobocka_id, pobocka_nazev: pendingLoad.pobocka_nazev, oteviraci_doba,
+    doba_vytezeni_wpl: loadHours, shiftMode, duvod });
   goToWizardStep(4);
   toast("Kalkulace byla spočítána a uložena do historie.", "ok");
   renderHistoryList();
@@ -1918,8 +2479,10 @@ function renderResults(result) {
     ${srcLegendHtml()}
     <p class="muted">Calculation key: <code>${esc(result.calculation_key)}</code> · Load key: <code>${esc(result.load_key)}</code></p>
     ${result.duvod ? `<p class="muted">Důvod kalkulace: <strong>${esc(result.duvod)}</strong></p>` : ""}
-    <div class="status-row">${statusBadgeHtml(status)}
+    <div class="status-row">${statusBadgeHtml(status)}${shiftBadgeHtml(result.shiftMode)}
       <span class="muted">stav se přepíná na konci, v části „Výstup a sestava“</span></div>
+    ${shiftInfoHtml(result.oteviraci_doba, result.doba_vytezeni_wpl, !!result.shiftMode)}
+    ${branchProfileHtml(branchProfile(result.pobocka_id, result.pobocka_nazev), { quiet: true })}
     <h3>Výsledek kalkulace ${srcBadgeHtml("calc")}${calcResultHelpHtml(result)}</h3>
     <div class="table-wrap src-box-calc">
       <table>
@@ -1928,6 +2491,8 @@ function renderResults(result) {
         <tbody>${rowsHtml}</tbody>
       </table>
     </div>
+    ${renderFteComparisonHtml(compareFteWithSpecialists(result.inputRows, result.pobocka_id, result.pobocka_nazev),
+      { quiet: true })}
     ${refVersionDetailsHtml(result.refVersionId)}
     ${renderStatsSection(stats)}
     ${renderYearCapacityHtml(computeYearCapacity({ stats, visitor, calcResult: result }))}
@@ -3086,8 +3651,10 @@ function pdfOptionsBoxHtml(suffix, { hasVisitor = false, hasLayout = false, stat
     <div class="pdf-scope">${scopeHtml}</div>
     <div class="pdf-opt-grid">${groupHtml}</div>
     <div class="pdf-box-note">
-      <label class="muted" for="pdfNote${suffix}">Poznámka do PDF (nepovinné):</label>
-      <textarea id="pdfNote${suffix}" rows="2"></textarea>
+      <label class="muted" for="pdfNote${suffix}">Poznámka do PDF (nepovinné) — vytiskne se
+        <strong>v záhlaví první stránky</strong>, žlutě podbarvená s vykřičníkem:</label>
+      <textarea id="pdfNote${suffix}" rows="2"
+        placeholder="Např. Pozor: kalkulace vychází z plánovaného stavu po přestavbě."></textarea>
     </div>
     <div class="row" style="margin-top:12px;">
       <button class="btn" id="btnExportPdf${suffix}">Vygenerovat PDF</button>
@@ -3160,6 +3727,13 @@ function exportPdfByScope(result, layoutRows, meta, segmentRows, options) {
   let y = 18;
   let first = true;
 
+  // Poznámka uživatele patří do záhlaví titulní stránky — žlutě podbarvená
+  // s vykřičníkem, aby ji nikdo nepřehlédl.
+  y = drawPdfHeaderNote(pdf, y, opt.note, marginX);
+
+  // Profil pobočky z exportu poboček — rating, zařazení, výnosy, nejlepší obchody.
+  y = drawPdfBranchHeader(pdf, y, branchProfile(result.pobocka_id, result.pobocka_nazev), marginX);
+
   const startChapter = (chapterKey) => {
     const chapter = pdfChapter(chapterKey);
     if (!first) { pdf.addPage(); y = 18; }
@@ -3179,16 +3753,6 @@ function exportPdfByScope(result, layoutRows, meta, segmentRows, options) {
   if (chapters.includes("layout") && layoutRows && layoutRows.length) {
     const chapter = startChapter("layout");
     y = drawLayoutChapterPdf(pdf, y, layoutRows, meta, segmentRows, opt, chapter);
-  }
-
-  // Poznámka uživatele patří na konec celé sestavy.
-  if (opt.note) {
-    if (y > 260) { pdf.addPage(); y = 18; }
-    y += 4;
-    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
-    pdf.text("Poznámka:", marginX, y); y += 6;
-    pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(9);
-    pdf.splitTextToSize(opt.note, 180).forEach((line) => { pdf.text(line, marginX, y); y += 5; });
   }
 
   const prefix = scope === "vse" ? "sestava"
@@ -3515,10 +4079,17 @@ function drawCalcChapterPdf(pdf, startY, result, opt, stats, chapter) {
       `Název pobočky: ${result.pobocka_nazev}`,
       `ID pobočky: ${result.pobocka_id}`,
       `Otevírací doba: ${result.oteviraci_doba} h/týden`,
+      `Doba vytížení WPL: ${result.doba_vytezeni_wpl ?? result.oteviraci_doba} h/týden`
+        + `${result.shiftMode ? " — pobočka se směnovým režimem" : ""}`,
       `Load key: ${result.load_key}`,
       `Calculation key: ${result.calculation_key}`,
       `Datum vytvoření: ${new Date(result.createdAt).toLocaleString("cs-CZ")}`,
     ];
+    const sf = result.shiftMode ? shiftFactor(result.oteviraci_doba, result.doba_vytezeni_wpl) : null;
+    if (sf) {
+      detailLines.push(`Směnový režim: jedna pozice pokryje ${Math.round(sf.coverage * 100)} % otevírací doby,`
+        + ` na plné pokrytí jednoho pracovního místa je potřeba ${fmt1(sf.ftePerSeat)} FTE.`);
+    }
     if (opt.refData) {
       if (version) {
         detailLines.push(`Referenční data: verze #${version.id} — ${version.note}`
@@ -3834,6 +4405,340 @@ async function handleVisitorReportFile(file) {
     console.error(e);
     statusEl.innerHTML = `<div class="msg err">Report se nepodařilo načíst: ${esc(e.message)}</div>`;
   }
+}
+
+/* --------------------------- Dodatečná analytika --------------------------- */
+// Záložka „Dodatečná analytika“ sdružuje všechna doplňková data, která aplikace
+// umí použít vedle vlastní kalkulace:
+//   • report_navstevnost.html   — návštěvy po hodinách, doporučení prostor, Monte Carlo
+//   • export_specialiste.xlsx   — aktuální obsazenost pozic po pobočkách
+//   • pobocky-export.xlsx       — rating, výnosy a prodeje pobočky
+// Soubory se hledají samy ve složce s aplikací (a v podsložce `data`). Když
+// aplikace běží přes file://, prohlížeč interní fetch() na souboru zakáže —
+// v tom případě se dá jednou připojit celá složka (File System Access API,
+// handle se pamatuje v IndexedDB) nebo připojit každý soubor ručně.
+
+const ANALYTICS_DIRS = ["", "data/"];      // kde se soubory hledají
+
+const ANALYTICS_SOURCES = [
+  {
+    key: "visitor",
+    file: "report_navstevnost.html",
+    label: "Report návštěvnosti",
+    accept: ".html,.htm",
+    src: "visit",
+    desc: "Návštěvy po hodinách, doporučení prostor a Monte Carlo model průměrného dne. "
+      + "Používá se v kapitole „Kapacita pobočky“.",
+    info: () => {
+      if (!db) return null;
+      try {
+        const row = dbAll(`SELECT COUNT(*) AS n, MAX(imported_at) AS imported_at, MAX(source) AS source,
+          MAX(report_title) AS title FROM visitor_data`)[0];
+        return row && row.n ? row : null;
+      } catch (e) { return null; }
+    },
+    detail: (info) => `${info.n} poboček${info.title ? ` — ${esc(info.title)}` : ""}`,
+    attach: (file) => handleVisitorReportFile(file),
+  },
+  {
+    key: "specialist",
+    file: "export_specialiste.xlsx",
+    label: "Export specialistů",
+    accept: ".xlsx,.xls",
+    src: "hr",
+    desc: "Aktuální obsazenost pozic po pobočkách. Umí předvyplnit manuální zadání a slouží "
+      + "k porovnání zadaných FTE se skutečným stavem.",
+    info: () => specialistExportInfo(),
+    detail: (info) => `${info.n} poboček`,
+    attach: (file) => handleSpecialistExportFile(file),
+  },
+  {
+    key: "branches",
+    file: "pobocky-export.xlsx",
+    label: "Export poboček",
+    accept: ".xlsx,.xls",
+    src: "branch",
+    desc: "Rating pobočky 23–25 včetně trendu a kvintilu, výnosy a nové výnosy, prodeje po produktech. "
+      + "Tiskne se do hlavičky titulní stránky PDF sestavy.",
+    info: () => branchExportInfo(),
+    detail: (info) => `${info.n} poboček`,
+    attach: async (file) => {
+      const res = await handleBranchExportFile(file);
+      renderBranchExportList();
+      return res;
+    },
+  },
+];
+
+function analyticsSource(key) { return ANALYTICS_SOURCES.find((s) => s.key === key); }
+
+function analyticsSetStatus(html, cls) {
+  const el = document.getElementById("analyticsStatus");
+  if (el) el.innerHTML = html ? `<div class="msg ${cls || ""}">${html}</div>` : "";
+}
+
+// Zkusí soubor najít vedle aplikace přes fetch() — funguje, když je aplikace
+// vystavená přes http(s). Na file:// fetch spadne a vrací se null.
+async function fetchLocalFile(name) {
+  // U souborového režimu (file://) prohlížeč fetch() na soubor vedle aplikace
+  // zakazuje (CORS) — nemá smysl to zkoušet a plnit konzoli chybami.
+  if (location.protocol === "file:") return null;
+  for (const dir of ANALYTICS_DIRS) {
+    try {
+      const res = await fetch(`${dir}${name}`, { cache: "no-store" });
+      if (!res || !res.ok) continue;
+      const blob = await res.blob();
+      if (blob.size > 0) return new File([blob], name, { type: blob.type });
+    } catch (e) { /* file:// nebo soubor neexistuje — hledá se dál */ }
+  }
+  return null;
+}
+
+// Druhá cesta: uživatel jednou povolí složku s daty, handle se zapamatuje
+// a příště už se soubory načtou samy i na file://.
+async function dataDirHandle() {
+  if (!fsaSupported) return null;
+  try {
+    const dir = await idbGet("dataDir");
+    if (!dir) return null;
+    const perm = await dir.queryPermission({ mode: "read" });
+    return perm === "granted" ? dir : null;
+  } catch (e) { return null; }
+}
+
+async function dirFile(dir, name) {
+  const targets = [];
+  targets.push(dir);
+  try { targets.push(await dir.getDirectoryHandle("data")); } catch (e) { /* podsložka není */ }
+  for (const target of targets) {
+    try {
+      const fh = await target.getFileHandle(name);
+      return await fh.getFile();
+    } catch (e) { /* v této složce soubor není */ }
+  }
+  return null;
+}
+
+async function findAnalyticsFile(name) {
+  const byFetch = await fetchLocalFile(name);
+  if (byFetch) return { file: byFetch, how: "ze složky s aplikací" };
+  const dir = await dataDirHandle();
+  if (dir) {
+    const f = await dirFile(dir, name);
+    if (f) return { file: f, how: `z připojené složky ${dir.name}` };
+  }
+  return null;
+}
+
+// Automatické připojení. Bez `force` se přeskočí zdroje, které už v databázi
+// jsou — aby import po každém přepnutí záložky nepřepisoval načtená data.
+let analyticsAutoRunning = false;
+
+async function autoAttachAnalytics(options = {}) {
+  if (!db || analyticsAutoRunning) return [];
+  analyticsAutoRunning = true;
+  const results = [];
+  try {
+    for (const source of ANALYTICS_SOURCES) {
+      const info = source.info();
+      if (info && !options.force) { results.push({ source, skipped: true, info }); continue; }
+      const found = await findAnalyticsFile(source.file);
+      if (!found) { results.push({ source, missing: true }); continue; }
+      try {
+        await source.attach(found.file);
+        results.push({ source, attached: true, how: found.how });
+      } catch (e) {
+        console.error(e);
+        results.push({ source, error: e.message });
+      }
+    }
+  } finally {
+    analyticsAutoRunning = false;
+  }
+  renderAnalyticsSources();
+  {
+    const attached = results.filter((r) => r.attached);
+    const errors = results.filter((r) => r.error);
+    const missing = results.filter((r) => r.missing);
+    const parts = [];
+    if (attached.length) {
+      parts.push(`Připojeno automaticky: ${attached.map((r) => `<strong>${esc(r.source.file)}</strong>`
+        + ` (${esc(r.how)})`).join(", ")}.`);
+    }
+    if (missing.length) {
+      parts.push(`Ve složce s aplikací nebyly nalezeny: ${missing.map((r) => `<code>${esc(r.source.file)}</code>`)
+        .join(", ")} — připojte je tlačítkem u dané položky${fsaSupported
+          ? ", nebo připojte celou složku s daty" : ""}.`);
+    }
+    errors.forEach((r) => parts.push(`<strong>${esc(r.source.file)}</strong>: ${esc(r.error)}`));
+    // Při tichém běhu (přepnutí záložky) se hlásí jen to, co se opravdu připojilo,
+    // ať uživatele nezahlcuje výpis chybějících souborů po každém kliknutí.
+    if (!options.silent) analyticsSetStatus(parts.join("<br>"), errors.length ? "err" : (attached.length ? "ok" : "warn"));
+    else if (attached.length || errors.length) {
+      analyticsSetStatus([...parts.filter((_, i) => i === 0 || errors.length)].join("<br>"),
+        errors.length ? "err" : "ok");
+    }
+  }
+  return results;
+}
+
+// Připojení celé složky — jednorázové povolení, které přežije zavření aplikace.
+async function pickDataDirectory() {
+  if (!window.showDirectoryPicker) {
+    analyticsSetStatus("Tento prohlížeč neumí připojit složku. Připojte soubory jednotlivě.", "warn");
+    return;
+  }
+  try {
+    const dir = await window.showDirectoryPicker({ mode: "read" });
+    await idbSetSafe("dataDir", dir);
+    analyticsSetStatus(`Složka <strong>${esc(dir.name)}</strong> připojena — hledám v ní datové soubory…`, "ok");
+    await autoAttachAnalytics({ force: true });
+  } catch (e) {
+    if (e && e.name === "AbortError") return;
+    console.error(e);
+    analyticsSetStatus(`Složku se nepodařilo připojit: ${esc(e.message)}`, "err");
+  }
+}
+
+/* --------- Karty připojených souborů (stav + ruční připojení) -------------- */
+
+function renderAnalyticsSources() {
+  const el = document.getElementById("analyticsSources");
+  if (!el) return;
+  el.innerHTML = ANALYTICS_SOURCES.map((source) => {
+    const info = db ? source.info() : null;
+    const state = info ? "ok" : "off";
+    return `<div class="an-card an-${state}">
+      <div class="an-head">
+        <span class="an-dot"></span>
+        <strong>${esc(source.label)}</strong>
+        ${srcBadgeHtml(source.src)}
+        <code>${esc(source.file)}</code>
+      </div>
+      <p class="muted an-desc">${source.desc}</p>
+      <p class="an-state">${info
+        ? `<span class="an-ok">Připojeno</span> — ${source.detail(info)}${info.source
+            ? `, soubor <strong>${esc(info.source)}</strong>` : ""}${info.imported_at
+            ? `, import ${new Date(info.imported_at).toLocaleString("cs-CZ")}` : ""}.`
+        : `<span class="an-off-label">Nepřipojeno</span> — soubor
+            <code>${esc(source.file)}</code> nebyl ve složce nalezen.`}</p>
+      <div class="row">
+        <button class="btn secondary small an-attach" data-source="${source.key}">
+          ${info ? "Připojit jiný soubor…" : "Připojit soubor…"}</button>
+      </div>
+    </div>`;
+  }).join("");
+
+  el.querySelectorAll(".an-attach").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const source = analyticsSource(btn.dataset.source);
+      const input = document.getElementById("analyticsFileInput");
+      input.accept = source.accept;
+      input.dataset.source = source.key;
+      input.click();
+    });
+  });
+}
+
+async function handleAnalyticsPickedFile(file, key) {
+  const source = analyticsSource(key);
+  if (!source || !file) return;
+  if (!requireDb()) return;
+  analyticsSetStatus(`Načítám <strong>${esc(file.name)}</strong>…`);
+  try {
+    await source.attach(file);
+    analyticsSetStatus(`<strong>${esc(source.label)}</strong> načten ze souboru`
+      + ` <strong>${esc(file.name)}</strong>.`, "ok");
+  } catch (e) {
+    console.error(e);
+    analyticsSetStatus(`${esc(source.label)}: soubor se nepodařilo načíst — ${esc(e.message)}`, "err");
+  }
+  renderAnalyticsSources();
+}
+
+/* ----------------- Seznam poboček z exportu poboček ------------------------ */
+
+let branchExportFilter = "";
+
+function renderBranchExportList() {
+  const el = document.getElementById("branchExportList");
+  if (!el) return;
+  if (!db || !branchExportInfo()) {
+    el.innerHTML = `<p class="muted">Export poboček není připojený — soubor
+      <code>pobocky-export.xlsx</code> patří do složky s aplikací.</p>`;
+    return;
+  }
+  const rows = dbAll("SELECT * FROM branch_export ORDER BY branch_name");
+  const q = branchExportFilter.trim().toLowerCase();
+  const shown = rows.filter((r) => !q
+    || String(r.branch_name || "").toLowerCase().includes(q)
+    || String(r.branch_id || "").toLowerCase().includes(q));
+  if (!shown.length) {
+    el.innerHTML = `<p class="muted">Filtru „${esc(branchExportFilter)}“ neodpovídá žádná pobočka.</p>`;
+    return;
+  }
+  const body = shown.slice(0, 400).map((r) => {
+    let f = null;
+    try { f = branchFields(JSON.parse(r.payload || "{}")); } catch (e) { f = null; }
+    const kvColor = f ? quintileColor(f.rating.kvintil) : "#6b7482";
+    return `<tr class="bx-row" data-id="${esc(r.branch_id)}">
+      <td>${esc(r.branch_id)}</td>
+      <td><strong>${esc(r.branch_name)}</strong></td>
+      <td>${esc(f ? (f.region || f.regionFixed || "") : "")}</td>
+      <td>${esc(f ? (f.oblast || "") : "")}</td>
+      <td class="num"><span class="bx-kv" style="background:${kvColor};">${f && f.rating.r25text
+        ? esc(f.rating.r25text) : "—"}</span></td>
+      <td class="num">${f && f.revenueLast ? fmtNum0(f.revenueLast.value) : "—"}</td>
+      <td class="num">${f ? fmtNum0(f.salesTotal) : "—"}</td>
+    </tr>`;
+  }).join("");
+
+  el.innerHTML = `<p class="muted">${shown.length} z ${rows.length} poboček${shown.length > 400
+    ? " (zobrazeno prvních 400)" : ""} · klikněte na řádek pro kartu pobočky.</p>
+    <div class="table-wrap"><table class="visitor-table">
+      <thead><tr><th>ID</th><th>Pobočka</th><th>Region</th><th>Oblast</th><th>Rating 25</th>
+        <th>Výnosy</th><th>Prodeje celkem</th></tr></thead>
+      <tbody>${body}</tbody></table></div>`;
+
+  el.querySelectorAll(".bx-row").forEach((tr) => {
+    tr.addEventListener("click", () => showBranchExportDetail(tr.dataset.id));
+  });
+}
+
+function showBranchExportDetail(branchId) {
+  const panel = document.getElementById("branchExportDetailPanel");
+  const el = document.getElementById("branchExportDetail");
+  if (!panel || !el) return;
+  const profile = branchProfile(branchId, null);
+  if (!profile) { panel.style.display = "none"; return; }
+  panel.style.display = "block";
+  const f = profile.fields;
+  const yearRow = (label, list) => (list.length
+    ? `<tr><th>${label}</th>${list.map((x) => `<td class="num">${fmtNum0(x.value)}</td>`).join("")}</tr>` : "");
+  const years = f.revenues.length ? f.revenues : f.newRevenues;
+  el.innerHTML = `<h3>${esc(profile.branchName)} <span class="muted">(ID ${esc(profile.branchId)})</span></h3>
+    ${branchProfileHtml(profile)}
+    ${years.length ? `<h4>Výnosy po letech</h4>
+      <div class="table-wrap"><table class="visitor-table">
+        <thead><tr><th></th>${years.map((x) => `<th class="num">${x.year}</th>`).join("")}</tr></thead>
+        <tbody>${yearRow("Výnosy", f.revenues)}${yearRow("Nové výnosy", f.newRevenues)}</tbody>
+      </table></div>` : ""}
+    ${f.sales.length ? `<h4>Prodeje po kategoriích</h4>
+      <div class="table-wrap"><table class="visitor-table">
+        <thead><tr><th>Kategorie</th><th class="num">Prodeje</th><th class="num">Kvintil</th>
+          ${f.sales.some((x) => x.volume !== undefined) ? '<th class="num">Objem</th>' : ""}</tr></thead>
+        <tbody>${f.sales.map((sp) => `<tr><td>${esc(sp.label)}</td>
+          <td class="num">${fmtNum0(sp.count)}</td>
+          <td class="num">${branchNum(sp.kvintil) === null ? "—"
+            : `<span class="bx-kv" style="background:${quintileColor(sp.kvintil)};">${fmtPieces(branchNum(sp.kvintil))}</span>`}</td>
+          ${f.sales.some((x) => x.volume !== undefined)
+            ? `<td class="num">${sp.volume === undefined ? "—" : fmtNum0(sp.volume)}</td>` : ""}</tr>`).join("")}
+        </tbody></table></div>` : ""}
+    <details class="cmp-box"><summary>Všechny sloupce z exportu (${Object.keys(f.raw).length})</summary>
+      <div class="table-wrap"><table class="visitor-table"><tbody>${Object.entries(f.raw)
+        .map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</tbody></table></div>
+    </details>`;
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 /* --------------------- Přístup k datům + snapshot ke kalkulaci -------------- */
@@ -5086,6 +5991,140 @@ function drawPdfDetailBox(pdf, startY, lines, marginX, pageBottom, width = 182) 
   return y + boxH + 1;
 }
 
+/* -------------------- Poznámka v záhlaví titulní stránky -------------------- */
+// Poznámka od uživatele se tiskne hned na začátek první stránky sestavy, aby ji
+// čtenář nemohl přehlédnout: žlutě podbarvený rámeček s vykřičníkem v kolečku.
+function drawPdfHeaderNote(pdf, startY, note, marginX, width = PDF_CONTENT_W) {
+  const text = String(note || "").trim();
+  if (!text) return startY;
+  const padX = 7;
+  const badgeW = 10;             // místo pro kolečko s vykřičníkem
+  const textX = marginX + padX + badgeW;
+  const textW = width - padX * 2 - badgeW;
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(9.5);
+  const wrapped = [];
+  text.split(/\r?\n/).forEach((par) => {
+    if (!par.trim()) { wrapped.push(""); return; }
+    pdf.splitTextToSize(par, textW).forEach((w) => wrapped.push(w));
+  });
+  const lineH = 5;
+  const boxH = Math.max(wrapped.length * lineH + 7, 14);
+  const y = startY;
+
+  pdf.setFillColor(255, 246, 199);        // světle žlutá
+  pdf.setDrawColor(217, 119, 6);          // jantarový rámeček
+  pdf.setLineWidth(0.5);
+  pdf.roundedRect(marginX, y, width, boxH, 2.2, 2.2, "FD");
+
+  // kolečko s vykřičníkem
+  pdf.setFillColor(217, 119, 6);
+  pdf.circle(marginX + padX + 1.6, y + 6.2, 3.2, "F");
+  pdf.setTextColor(255, 255, 255);
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(10);
+  pdf.text("!", marginX + padX + 0.6, y + 7.7);
+
+  pdf.setTextColor(124, 45, 18);          // tmavě hnědočervený text
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(9.5);
+  let ty = y + 6.6;
+  wrapped.forEach((l) => { if (l) pdf.text(l, textX, ty); ty += lineH; });
+
+  pdf.setFont("DejaVuSans", "normal");
+  pdf.setTextColor(0, 0, 0);
+  pdf.setDrawColor(0, 0, 0);
+  pdf.setLineWidth(0.2);
+  return y + boxH + 5;
+}
+
+/* ---------------- Hlavička titulní stránky: profil pobočky ------------------ */
+// Barevné „pilulky“ (rating a jeho trend) a pod nimi zařazení, adresa, výnosy
+// a nejlepší obchody pobočky — vše z exportu poboček. Kreslí se na začátek
+// první stránky sestavy, pod poznámku uživatele.
+
+function hexRgb(hex) {
+  const h = String(hex || "").replace("#", "");
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+
+// Vykreslí jednu pilulku a vrátí její šířku (včetně mezery za ní).
+function drawPdfPill(pdf, x, y, text, hex, height = 7) {
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(8.5);
+  const w = pdf.getTextWidth(text) + 8;
+  const [r, g, b] = hexRgb(hex);
+  pdf.setFillColor(r, g, b);
+  pdf.roundedRect(x, y, w, height, height / 2, height / 2, "F");
+  pdf.setTextColor(255, 255, 255);
+  pdf.text(text, x + 4, y + height / 2 + 1.5);
+  pdf.setTextColor(0, 0, 0);
+  return w + 3;
+}
+
+function drawPdfBranchHeader(pdf, startY, profile, marginX, width = PDF_CONTENT_W) {
+  if (!profile) return startY;
+  const f = profile.fields;
+  let y = startY;
+
+  // 1) pilulky: rating (barva podle kvintilu) a trend ratingu
+  let x = marginX;
+  x += drawPdfPill(pdf, x, y, `Rating 25: ${f.rating.r25text || "—"}`, quintileColor(f.rating.kvintil));
+  const trend = trendLabel(f.rating.trend);
+  x += drawPdfPill(pdf, x, y, `Trend ratingu 23–25: ${f.rating.trend || "—"}`, trend.color);
+  if (branchNum(f.rating.kvintil) !== null) {
+    x += drawPdfPill(pdf, x, y, `Rating kvintil ${fmtPieces(branchNum(f.rating.kvintil))}`,
+      quintileColor(f.rating.kvintil));
+  }
+  if (f.rating.danger) x += drawPdfPill(pdf, x, y, `Nebezpečná zóna: ${f.rating.danger}`, "#e02424");
+  y += 11;
+
+  // 2) zařazení, adresa a výnosy
+  const kv = (q) => (branchNum(q) === null ? "" : ` (kvintil ${fmtPieces(branchNum(q))})`);
+  const lines = [
+    ["Region / Oblast", [f.region || f.regionFixed || "—", f.oblast || "—"].join("  ·  ")],
+    ["Adresa", f.address || "—"],
+    ["Nové výnosy" + (f.newRevenueLast ? ` ${f.newRevenueLast.year}` : ""),
+      (f.newRevenueLast ? fmtNum0(f.newRevenueLast.value) : "—") + kv(f.newRevenueKvintil)
+      + (branchNum(f.newRevenueChange) !== null
+        ? `  ·  změna 25/24: ${fmtNumAuto(f.newRevenueChange)}` : "")],
+    ["Výnosy" + (f.revenueLast ? ` ${f.revenueLast.year}` : ""),
+      (f.revenueLast ? fmtNum0(f.revenueLast.value) : "—")
+      + (f.revenueTrend ? `  ·  trend 21–25: ${f.revenueTrend}` : "")],
+  ];
+
+  const top = topBranchSales(f);
+  const salesText = top.length
+    ? top.map((sp) => `${sp.label} ${fmtNum0(sp.count)} prodejů`
+      + (sp.volume !== undefined && sp.volume !== null ? `, objem ${fmtNum0(sp.volume)}` : "")
+      + kv(sp.kvintil)).join("  ·  ")
+    : "export neobsahuje počty prodejů";
+  lines.push([`Nejlepší obchody${branchNum(f.salesTotal) !== null
+    ? ` (celkem ${fmtNum0(f.salesTotal)})` : ""}`, salesText]);
+
+  const labelW = 34;
+  const valueW = width - labelW - 8;
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(8.5);
+  const wrapped = lines.map(([label, value]) => ({
+    label, rows: pdf.splitTextToSize(String(value), valueW),
+  }));
+  const lineH = 4.6;
+  const boxH = wrapped.reduce((acc, w) => acc + w.rows.length * lineH, 0) + 6;
+
+  pdf.setFillColor(240, 247, 250);
+  pdf.setDrawColor(14, 116, 144);
+  pdf.setLineWidth(0.3);
+  pdf.roundedRect(marginX, y, width, boxH, 2, 2, "FD");
+  let ty = y + 5.4;
+  wrapped.forEach((w) => {
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(8.5); pdf.setTextColor(14, 116, 144);
+    pdf.text(w.label, marginX + 4, ty, { maxWidth: labelW - 2 });
+    pdf.setFont("DejaVuSans", "normal"); pdf.setTextColor(40, 46, 56);
+    w.rows.forEach((row, i) => { pdf.text(row, marginX + 4 + labelW, ty + i * lineH); });
+    ty += w.rows.length * lineH;
+  });
+  pdf.setTextColor(0, 0, 0);
+  pdf.setDrawColor(0, 0, 0);
+  pdf.setLineWidth(0.2);
+  return y + boxH + 5;
+}
+
 /* --------------------- Tabulková pomůcka pro PDF --------------------------- */
 // Vykreslí jednoduchou tabulku (hlavička + řádky s pevnými šířkami sloupců)
 // a vrátí novou souřadnici y. Řádek může být pole hodnot, nebo objekt
@@ -6070,6 +7109,19 @@ function calcExampleHtml(result, poziceLower) {
     <p style="margin:0 0 6px;">Celkem tato pozice generuje <strong>${total.toFixed(2)} WPL</strong>.</p>`;
 }
 
+// Vysvětlení směnového režimu do nápovědy u výsledku kalkulace — proč při
+// otevírací době vyšší než doba vytížení vychází na jedno místo více FTE.
+function shiftHelpHtml(result) {
+  const f = result ? shiftFactor(result.oteviraci_doba, result.doba_vytezeni_wpl) : null;
+  if (!f || !isShiftMode(result.oteviraci_doba, result.doba_vytezeni_wpl)) return "";
+  return `<p style="margin:8px 0 0; padding-top:6px; border-top:1px dashed rgba(255,255,255,.3);">
+    <strong>Směnový režim:</strong> otevírací doba ${fmt1(f.open)} h/týden je vyšší než doba vytížení
+    pozice ${fmt1(f.load)} h/týden (typicky obchodní centrum otevřené 7 dní v týdnu). Ve vzorci se dělí
+    otevírací dobou, takže jedna pozice pokryje jen ${Math.round(f.coverage * 100)} % otevírací doby —
+    na jedno pracovní místo obsazené po celou otevírací dobu je potřeba ${fmt1(f.ftePerSeat)} FTE.
+    Kalkulace tím sama počítá s tím, že lidé nejsou na pobočce všichni naráz, ale střídají se.</p>`;
+}
+
 function calcResultHelpHtml(result) {
   const openHours = (result && result.oteviraci_doba) || 40;
   const examples = CALC_EXAMPLE_POSITIONS.map((pz) => calcExampleHtml(result, pz)).filter(Boolean).join("");
@@ -6085,6 +7137,7 @@ function calcResultHelpHtml(result) {
     ${examples || '<p style="margin:0;">Pro ukázku chybí časové dotace pozic v referenčních datech.</p>'}
     <p style="margin:6px 0 0;">WPL jednotlivých řádků se sečtou po zónách do segmentu a do řádku
       „Celkem“ — to je potřeba pracovních míst, kterou pak pokrývá layout.</p>
+    ${shiftHelpHtml(result)}
   </span></span>`;
 }
 
@@ -6900,6 +7953,9 @@ function showHistoryDetail(calculationKey, loadKey) {
     backoffice_zone, office_room, created_at, ref_version_id, duvod FROM calculations WHERE calculation_key = ?
     ORDER BY (segment = 'Celkem'), id`, [calculationKey]);
   const branch = dbAll("SELECT pobocka_id, pobocka_nazev, oteviraci_doba FROM excel_loads WHERE load_key = ? LIMIT 1", [loadKey])[0];
+  const loadHours = (inputRows.find((r) => String(r.segment).trim().toUpperCase() !== "CESTOVNÍ") || {}).wpl_load
+    ?? branch?.oteviraci_doba;
+  const shiftMode = shiftModeOfLoad(loadKey, branch?.oteviraci_doba, loadHours);
 
   const refVersionIdForSplit = dbAll("SELECT ref_version_id FROM calculations WHERE calculation_key = ? LIMIT 1",
     [calculationKey])[0]?.ref_version_id;
@@ -6925,6 +7981,7 @@ function showHistoryDetail(calculationKey, loadKey) {
     inputRows: mappedInputRows,
     warnings: [], pobocka_id: branch?.pobocka_id, pobocka_nazev: branch?.pobocka_nazev,
     oteviraci_doba: branch?.oteviraci_doba, refVersionId,
+    doba_vytezeni_wpl: loadHours, shiftMode,
     duvod: resultRows[0] ? resultRows[0].duvod : null,
   };
 
@@ -6933,15 +7990,19 @@ function showHistoryDetail(calculationKey, loadKey) {
     <p class="muted">${branch ? `${esc(branch.pobocka_nazev)} (ID ${esc(branch.pobocka_id)}) · otevírací doba ${esc(branch.oteviraci_doba)} h/týden` : ""}</p>
     <p>Load key: <code>${esc(loadKey)}</code><br>Calculation key: <code>${esc(calculationKey)}</code></p>
     ${resultRows[0] && resultRows[0].duvod ? `<p class="muted">Důvod kalkulace: <strong>${esc(resultRows[0].duvod)}</strong></p>` : ""}
-    <div class="status-row">${statusBadgeHtml(status)}
+    <div class="status-row">${statusBadgeHtml(status)}${shiftBadgeHtml(shiftMode)}
       <span class="muted">stav se přepíná na konci, v části „Výstup a sestava“</span>
       <button class="btn danger small" id="btnDeleteCalc"
         title="Smaže kalkulaci včetně layoutu a uložených ukazatelů">🗑 Smazat kalkulaci</button></div>
+    ${shiftInfoHtml(branch?.oteviraci_doba, loadHours, shiftMode)}
+    ${branchProfileHtml(branchProfile(branch?.pobocka_id, branch?.pobocka_nazev), { quiet: true })}
     <h3>Vstupní data z checklistu ${srcBadgeHtml("calc")}</h3>
     ${zoneLegendHtml()}
     <div class="table-wrap"><table><thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Vytížení WPL</th>
       <th>Vytížení zón</th></tr></thead>
     <tbody>${inputHtml}</tbody></table></div>
+    ${renderFteComparisonHtml(compareFteWithSpecialists(mappedInputRows, branch?.pobocka_id, branch?.pobocka_nazev),
+      { quiet: true })}
     <h3>Výsledek kalkulace ${srcBadgeHtml("calc")}${calcResultHelpHtml(calcResult)}</h3>
     <div class="table-wrap"><table><thead><tr><th>Segment</th><th>FTE celkem</th><th>Pozice (FTE)</th>
       <th>Service zone</th><th>Meeting zone</th><th>Backoffice zone</th><th>Office room</th></tr></thead>
@@ -8622,6 +9683,12 @@ function generateChecklistTemplate() {
       vs[`C${r}`] = { f: formula, v: "", s: vstupyCell };
       vs[`D${r}`] = str("", vstupyCell);
     });
+  // Směnový režim: otevírací doba výrazně vyšší než doba vytížení pozice znamená,
+  // že se zaměstnanci na pobočce střídají (typicky obchodní centrum otevřené 7 dní
+  // v týdnu). Příznak se počítá vzorcem, aby ho vyplněný checklist nesl s sebou;
+  // v aplikaci se pak dá u načteného checklistu přepnout zaškrtávátkem.
+  vs.E1 = str("Směnový režim (otevírací doba > doba vytěžení)", vstupyHeader);
+  vs.F1 = { f: `IF(CHL!I3-CHL!I6>${SHIFT_TOLERANCE_H},"ANO","NE")`, v: "", t: "str", s: vstupyCell };
   ["Segment", "Pozice", "Počet FTE", "Vytěžení WPL"].forEach((h, i) => {
     vs[`${"ABCD"[i]}5`] = str(h, vstupyHeaderB);
   });
@@ -8719,6 +9786,11 @@ function refreshAllTabsAfterDbChange() {
   renderSegmentsTable();
   renderFurnitureTable();
   renderVisitorList();
+  renderAnalyticsSources();
+  renderBranchExportList();
+  // Doplňkové soubory ve složce s aplikací se zkusí připojit samy — jen ty,
+  // které v databázi ještě nejsou.
+  autoAttachAnalytics({ silent: true });
   document.getElementById("refVersionDetail").style.display = "none";
   document.getElementById("historyDetailPanel").style.display = "none";
 }
@@ -8730,6 +9802,13 @@ function setupTabs() {
       document.querySelectorAll("section.tab").forEach((s) => s.classList.remove("active"));
       btn.classList.add("active");
       document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
+      // Na záložce s dodatečnou analytikou se zkusí doplnit, co ve složce
+      // přibylo (už načtené zdroje zůstanou nedotčené).
+      if (btn.dataset.tab === "analytics") {
+        renderAnalyticsSources();
+        renderBranchExportList();
+        autoAttachAnalytics({ silent: true });
+      }
     });
   });
 }
@@ -8790,6 +9869,20 @@ async function init() {
     }
   });
   document.getElementById("btnAddManualRow").addEventListener("click", addManualRow);
+  // Směnový režim: info řádek se přepočítává při každé změně hodin a při rozdílu
+  // se zaškrtávátko nabídne samo (uživatel ho může odškrtnout).
+  const refreshShiftInfo = (autoCheck) => {
+    const open = toNumberOrNull(document.getElementById("manualOtevDoba").value) ?? 0;
+    const load = toNumberOrNull(document.getElementById("manualVytezeniWpl").value) ?? 0;
+    const box = document.getElementById("manualShiftMode");
+    if (autoCheck && isShiftMode(open, load)) box.checked = true;
+    if (autoCheck && !isShiftMode(open, load)) box.checked = false;
+    document.getElementById("manualShiftInfo").innerHTML = shiftInfoHtml(open, load, box.checked);
+  };
+  ["manualOtevDoba", "manualVytezeniWpl"].forEach((id) => {
+    document.getElementById(id).addEventListener("input", () => refreshShiftInfo(true));
+  });
+  document.getElementById("manualShiftMode").addEventListener("change", () => refreshShiftInfo(false));
   const specialistInput = document.getElementById("specialistInput");
   document.getElementById("btnPickSpecialistFile").addEventListener("click", () => specialistInput.click());
   specialistInput.addEventListener("change", () => {
@@ -8841,6 +9934,23 @@ async function init() {
     visitorFilterText = e.target.value;
     renderVisitorList();
   });
+
+  // Dodatečná analytika: automatické hledání souborů, připojení složky
+  // a ruční připojení jednotlivých souborů.
+  document.getElementById("btnAutoAttach").addEventListener("click", () => autoAttachAnalytics({ force: true }));
+  document.getElementById("btnPickDataDir").addEventListener("click", pickDataDirectory);
+  const analyticsInput = document.getElementById("analyticsFileInput");
+  analyticsInput.addEventListener("change", () => {
+    const file = analyticsInput.files[0];
+    const key = analyticsInput.dataset.source;
+    analyticsInput.value = "";
+    if (file) handleAnalyticsPickedFile(file, key);
+  });
+  document.getElementById("branchExportFilter").addEventListener("input", (e) => {
+    branchExportFilter = e.target.value;
+    renderBranchExportList();
+  });
+  renderAnalyticsSources();
 
   // Nápověda k pravidlům předvyplnění layoutu — obsah se generuje z LAYOUT_RULES.
   document.getElementById("layoutRulesHelp").innerHTML = layoutRulesHelpHtml();

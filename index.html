@@ -180,6 +180,15 @@
   .src-visit{background:#e7f7f0; color:#0a6b4a; border-color:#b6e5d1;}
   .src-mix{background:#f3edfe; color:#5b2ec4; border-color:#d9c9fb;}
   .src-ref{background:#eef1f5; color:#4b5563; border-color:#d3d9e2;}
+  .src-hr{background:#fff3e2; color:#8a5206; border-color:#f6d5a6;}
+  .src-branch{background:#e6f4f8; color:#0b5f74; border-color:#b6dee9;}
+  .src-box-hr{border-left:4px solid #d97706;}
+  .cmp-box{margin-top:14px; border:1px solid var(--border); border-left:4px solid #d97706; border-radius:10px;
+           padding:10px 14px; background:#fffdf8;}
+  .cmp-box summary{cursor:pointer; font-weight:600;}
+  .cmp-plus{color:#0a6b4a; font-weight:700;} .cmp-minus{color:#a41f1f; font-weight:700;}
+  .cmp-same{color:var(--muted);}
+  tr.cmp-diff-row{background:#fff8ea;}
   .src-legend{display:flex; flex-wrap:wrap; gap:14px; align-items:center; font-size:11px; margin:0 0 12px;
               padding:8px 10px; background:#f7f9fc; border:1px solid var(--border); border-radius:8px;}
   .src-legend-item{display:inline-flex; align-items:center; gap:5px;}
@@ -548,12 +557,52 @@
   .hidden-variant > summary{cursor:pointer; font-weight:600; color:#8a5c00;}
   .hidden-variant .num{text-align:right; white-space:nowrap;}
   #visitorList tr.visitor-row:hover td{background:#eef3fb;}
+  .shift-check{display:flex; gap:8px; align-items:flex-start; margin-top:12px; font-size:13px; cursor:pointer;}
+  .shift-check span{max-width:760px;}
+  .shift-note{margin:8px 0 0; padding:8px 11px; border-radius:8px; font-size:12.5px; background:#eef6ff;
+              border:1px solid #bfdbfe; color:#14446f;}
+  .shift-note.warn{background:#fff8e6; border-color:#f6dfa0; color:#7a5a05;}
+  .badge.shift{background:#e0edff; color:#14446f; border:1px solid #bfdbfe;}
   .spec-box{margin:10px 0 12px; padding:10px 12px; border:1px dashed var(--border); border-radius:8px; background:#fbfcfe;}
   .spec-box .msg{margin-top:8px;}
   /* Barevný pruh podle zdroje dat — až za obecnými rámečky boxů, aby je přebil. */
   .src-box-calc{border-left:4px solid #2770f0;}
   .src-box-visit{border-left:4px solid #0e9f6e;}
   .src-box-mix{border-left:4px solid #8b5cf6;}
+  .src-box-branch{border-left:4px solid #0e7490;}
+
+  /* --- Dodatečná analytika: karty připojených souborů --- */
+  .an-cards{display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px; margin-top:14px;}
+  .an-card{border:1px solid var(--border); border-radius:10px; padding:12px 14px; background:#fff;}
+  .an-card.an-ok{border-left:4px solid var(--ok); background:#f8fdfa;}
+  .an-card.an-off{border-left:4px solid #d3d9e2; background:#fbfcfe;}
+  .an-head{display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:13.5px;}
+  .an-head code{font-size:11px; color:var(--muted);}
+  .an-dot{width:9px; height:9px; border-radius:50%; background:#cbd3de; flex:none;}
+  .an-card.an-ok .an-dot{background:var(--ok);}
+  .an-desc{margin:8px 0 6px; font-size:12px;}
+  .an-state{margin:0 0 10px; font-size:12px;}
+  .an-ok{color:#0a6b4a; font-weight:700;}
+  .an-off-label{color:#8a5206; font-weight:700;}
+
+  /* --- Karta pobočky z exportu poboček --- */
+  .bx-card{border:1px solid var(--border); border-left:4px solid #0e7490; border-radius:10px;
+           padding:12px 14px; background:#f8fcfe; margin:10px 0 14px;}
+  .bx-card.bx-compact{padding:10px 12px;}
+  .bx-pills{display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px;}
+  .bx-pill{display:inline-block; color:#fff; font-weight:700; font-size:11.5px; padding:3px 11px;
+           border-radius:11px; white-space:nowrap;}
+  .bx-kv{display:inline-block; color:#fff; font-weight:700; font-size:10px; padding:1px 7px;
+         border-radius:9px; margin-left:6px; white-space:nowrap;}
+  .bx-grid{display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:10px 16px;}
+  .bx-grid > div{display:flex; flex-direction:column; gap:2px; font-size:13px;}
+  .bx-grid span.muted{font-size:11px;}
+  .bx-sales{margin-top:12px; font-size:12.5px;}
+  .bx-sales ul{margin:6px 0 0; padding-left:18px;}
+  .bx-sales li{margin:2px 0;}
+  .bx-note{margin:10px 0 0; font-size:11px;}
+  #branchExportList tr.bx-row{cursor:pointer;}
+  #branchExportList tr.bx-row:hover td{background:#eef7fa;}
 </style>
 </head>
 <body>
@@ -574,7 +623,7 @@
   <button class="tabbtn active" data-tab="new">Nový výpočet</button>
   <button class="tabbtn" data-tab="history">Historie kalkulací</button>
   <button class="tabbtn" data-tab="data">Data a Excel šablona</button>
-  <button class="tabbtn" data-tab="visitor">Návštěvnost</button>
+  <button class="tabbtn" data-tab="analytics">Dodatečná analytika</button>
 </nav>
 
 <main>
@@ -669,6 +718,10 @@
             <input type="number" id="manualVytezeniWpl" value="40" step="0.5" min="0">
           </div>
         </div>
+        <label class="shift-check"><input type="checkbox" id="manualShiftMode">
+          <span><strong>Pobočka se směnovým režimem</strong> — otevírací doba je delší než doba vytížení
+          jedné pozice (typicky obchodní centra otevřená 7 dní v týdnu), zaměstnanci se střídají.</span></label>
+        <div id="manualShiftInfo"></div>
 
         <h3 style="margin-top:16px;">Pozice</h3>
         <div class="spec-box">
@@ -738,20 +791,28 @@
   </div>
 </section>
 
-<section class="tab" id="tab-visitor">
+<section class="tab" id="tab-analytics">
   <div class="panel">
-    <h2>Report návštěvnosti</h2>
-    <p class="muted">Nahrajte HTML report návštěvnosti („Analýza návštěvnosti“). Aplikace si z něj pro každou
-      pobočku uloží <strong>doporučení prostor</strong> (zasedací místnosti a servisní místa),
-      <strong>detail návštěv po hodinách</strong> a <strong>Monte Carlo model</strong> průměrného dne.
-      Tato data se pak zobrazují u zpracované kalkulace dané pobočky (a v jejím PDF) jako druhý pohled
-      na potřebu míst — vedle potřeby WPL spočítané z FTE.</p>
-    <p class="muted">Report se načítá celý v prohlížeči, nikam se neodesílá. Nový import přepíše data poboček,
-      které report obsahuje; už spočítané kalkulace si drží snapshot dat z doby svého vzniku.</p>
+    <h2>Dodatečná analytika</h2>
+    <p class="muted">Vedle vlastní kalkulace umí aplikace pracovat se třemi doplňkovými soubory:
+      <strong>report návštěvnosti</strong> (návštěvy po hodinách, doporučení prostor, Monte Carlo),
+      <strong>export specialistů</strong> (aktuální obsazenost pozic po pobočkách) a
+      <strong>export poboček</strong> (rating, výnosy a prodeje pobočky). Soubory se hledají samy
+      ve složce s aplikací (i v podsložce <code>data</code>). Když je aplikace otevřená přímo ze souboru
+      (<code>file://</code>), prohlížeč čtení okolních souborů zakazuje — v tom případě jednou klikněte na
+      <strong>Připojit složku s daty…</strong> (aplikace si povolení zapamatuje a příště už soubory najde
+      sama) nebo připojte každý soubor zvlášť.</p>
+    <p class="muted">Všechno se načítá v prohlížeči, nikam se neodesílá. Nový import přepíše data poboček,
+      které soubor obsahuje; už spočítané kalkulace si drží snapshot dat z doby svého vzniku.</p>
     <div class="row">
-      <button class="btn" id="btnPickVisitorReport">Nahrát HTML report návštěvnosti</button>
+      <button class="btn" id="btnAutoAttach">🔄 Najít soubory ve složce</button>
+      <button class="btn secondary" id="btnPickDataDir">📁 Připojit složku s daty…</button>
+      <button class="btn secondary" id="btnPickVisitorReport">Nahrát HTML report návštěvnosti</button>
       <input type="file" id="visitorReportInput" accept=".html,.htm" style="display:none;">
+      <input type="file" id="analyticsFileInput" style="display:none;">
     </div>
+    <div id="analyticsSources" class="an-cards"></div>
+    <div id="analyticsStatus" style="margin-top:10px;"></div>
     <div id="visitorImportStatus" style="margin-top:10px;"></div>
   </div>
   <div class="panel">
@@ -763,6 +824,20 @@
   <div class="panel" id="visitorDetailPanel" style="display:none;">
     <h2>Detail návštěvnosti pobočky</h2>
     <div id="visitorDetail"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Pobočky v exportu poboček</h2>
+    <p class="muted">Data ze souboru <code>pobocky-export.xlsx</code>: rating pobočky a jeho trend,
+      výnosy po letech a prodeje po produktech. Profil pobočky se tiskne do hlavičky titulní stránky
+      PDF sestavy.</p>
+    <div class="filterbox"><input type="text" id="branchExportFilter"
+      placeholder="Filtrovat dle názvu nebo ID pobočky…"></div>
+    <div id="branchExportList"></div>
+  </div>
+  <div class="panel" id="branchExportDetailPanel" style="display:none;">
+    <h2>Karta pobočky</h2>
+    <div id="branchExportDetail"></div>
   </div>
 </section>
 
