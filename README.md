@@ -14,7 +14,7 @@ app.js                      – veškerá logika (parsování Excelu, výpočet,
 xlsx_writer.js              – vlastní zapisovač .xlsx s formátováním (viz "Data a Excel šablona")
 fte_wpl_calculator.db       – vzorová SQLite databáze s výchozími referenčními daty
 data/export_specialiste.xlsx – obsazenost pozic po pobočkách (viz „Dodatečná analytika“)
-vendor/                     – vendorované knihovny (sql.js, SheetJS, jsPDF, DejaVu font)
+vendor/                     – vendorované knihovny (sql.js, SheetJS, jsPDF, DejaVu font, Fabric.js)
 tools/gen_seed_db.py        – skript, kterým byla vygenerována fte_wpl_calculator.db
 ```
 
@@ -586,7 +586,10 @@ město, obvod, ulice, č. popisné/orientační, RUIAN, ORP), **rating pobočky 
 
 Karta pobočky se zobrazuje i **u výsledku kalkulace** a v detailu v historii, aby
 bylo hned vidět, o jakou pobočku jde. Je označená štítkem „z exportu poboček“
-(tmavě modrozelená barva zdroje dat).
+(tmavě modrozelená barva zdroje dat). Pilulky na kartě i v hlavičce PDF jsou:
+**Rating 25**, **Změna ratingu 25/24** (ze stejnojmenného sloupce, v závorce
+procentní změna ze sloupce `Změna ratingu perc 25/24`), **Trend ratingu 23–25**
+a **Nové výnosy kvintil**.
 
 ### Porovnání zadaných FTE se skutečným stavem
 
@@ -661,10 +664,12 @@ Nad první kapitolou se tisknou dvě věci — v tomto pořadí:
    s vykřičníkem v jantarovém kolečku. Když je pole prázdné, netiskne se nic.
 2. **Profil pobočky z exportu poboček** (`pobocky-export.xlsx`), pokud je pobočka
    v exportu:
-   - barevná pilulka **Rating 25** (barva podle kvintilu ratingu: 1 = zelená
-     nejlepší pětina … 5 = červená), pilulka **Trend ratingu 23–25** (zelená při
-     růstu, červená při poklesu) a pilulka s kvintilem; je-li pobočka označená
-     jako **⚠️ Nebezpečná zóna**, přidá se červená pilulka i s touto informací,
+   - barevné pilulky v tomto pořadí: **Rating 25** (barva podle kvintilu ratingu:
+     1 = zelená nejlepší pětina … 5 = červená), **Rating kvintil**, **Změna ratingu
+     25/24** ze sloupce `Změna ratingu 25/24` (v závorce procentní změna ze sloupce
+     `Změna ratingu perc 25/24`; zelená při zlepšení, červená při zhoršení),
+     **Trend ratingu 23–25** a **Nové výnosy kvintil**. Pilulky se zalamují na další
+     řádek, když se do šířky stránky nevejdou,
    - pod pilulkami rámeček s **Regionem a Oblastí**, **adresou**, **novými výnosy**
      (včetně kvintilu a změny 25/24), **výnosy** (včetně trendu 21–25) a
      **čtyřmi nejlepšími obchody pobočky** — kategorie s nejvyšším počtem prodejů,
@@ -835,6 +840,11 @@ i nad rámec výpočtu (např. ruční rezervu), pokud je potřeba kalkulaci př
 Uložený layout lze kdykoliv upravit tlačítkem „Upravit layout“ — formulář se
 znovu otevře s předvyplněnými počty kusů a uložení přepíše původní přiřazení.
 
+Tlačítka **„💾 Uložit layout“** a **„✎ Upravit layout“** jsou ve zvýrazněné akční
+liště (odsazené od tabulek, s rámečkem v barvě akce — modrá u ukládání, zelená
+u uloženého layoutu) a doplněné vysvětlením, co uložení znamená. Nedají se tak
+přehlédnout mezi tabulkami s počty kusů.
+
 Pokud pro nějaký segment/zónu není v databázi definovaný žádný nábytek,
 zobrazí se u dané zóny informační poznámka místo formuláře.
 
@@ -957,6 +967,47 @@ spočítána**, takže pozdější úpravy referenčních dat rozpočet zpětně
 pravidel či ručně). Na pozice je rozdělit nelze — v takové zóně žádná pozice WPL
 negeneruje, takže neexistuje podíl, kterým by se dělil. Vykazují se proto zvlášť,
 aby součty odpovídaly skutečnému obsahu layoutu a žádný prvek „nezmizel“.
+
+### Schéma pobočky (půdorys kreslený z layoutu)
+
+Pod formulářem layoutu (a stejně tak pod uloženým layoutem, i v detailu
+v historii) je sekce **„Schéma pobočky (půdorys)“**: z počtů kusů se nakreslí
+půdorysné schéma pobočky přes **Fabric.js** (`vendor/fabric.min.js`).
+
+- Zóny jsou nakreslené jako **místnosti pod sebou** v pořadí service → meeting →
+  → backoffice → office room, každá s pruhem v barvě zóny, názvem a počtem kusů.
+  U první místnosti (hala) je vyznačený **vstup** včetně otevírání dveří a volné
+  místo, aby na něm nestál nábytek.
+- V místnostech je **přesný počet zadaných prvků** — každý kus je samostatný
+  symbol, ne jen číslo v tabulce. Prvky se kreslí podle druhu:
+
+  | Prvek v layoutu | Symbol |
+  | --- | --- |
+  | Theke (nízká/vysoká), pult | pracovní deska s monitorem, židle bankéře a židle klienta |
+  | Jednací místnost, zasedací místnost | vlastní místnost se stolem, židlemi (6, u „malé“ 4) a otevíráním dveří |
+  | Pokladní ostrov | pult se dvěma pracovními místy, židlemi a místy pro klienty |
+  | Kancelářské místo | stůl s monitorem a židlí |
+  | Fast track (stolek a židle) | kulatý stolek se dvěma židlemi |
+  | Fast track backoffice | úzký stůl s monitorem a židlí |
+  | Lenka (vítací) | zaoblený vítací pult se židlí |
+  | Čekací zóna (obývák) | pohovka pro tři osoby |
+  | Čekací zóna (židle) | jedna židle |
+  | cokoli dalšího | obecný obdélník s barvou segmentu |
+
+- Barva výplně je **světlý odstín barvy segmentu**, obrys je barva segmentu —
+  na první pohled je vidět, čí je které pracoviště. Židle jsou šedé.
+- **Prvky lze chytit myší a přesunout** (přichytávají se na mřížku 5 px),
+  tlačítkem **„↺ Přeskládat“** se schéma vrátí do automatického rozvržení.
+  Dále je v liště **zoom** (50–200 %) a **„📷 Uložit jako PNG“**.
+- Po přejetí kurzorem se zobrazí bublina s názvem prvku, jeho pořadím
+  (např. „2/4“), segmentem a zónou.
+- Ve formuláři se schéma **překresluje průběžně** (s krátkým zpožděním po
+  poslední změně počtu), takže je hned vidět, co přidání dalšího kusu znamená.
+- Pod schématem je **legenda**: prvek, segment, zóna, počet kusů a jakým symbolem
+  se kreslí.
+- Rozměry jsou schematické (1 px ≈ 2 cm) — jde o **návrh rozmístění**, ne
+  o projektovou dokumentaci. Při více než 320 prvcích schéma nakreslí prvních 320
+  a upozorní na to, aby zůstalo čitelné.
 
 ### Export layoutu do PDF
 
@@ -1186,6 +1237,11 @@ záznam v tabulce časových dotací, řádek se vynechá a zobrazí se upozorn�
   česká diakritika. Grafy Monte Carla v PDF se kreslí přímo z čar a obdélníků
   (jsPDF grafy neumí) podle stejných dat a stejného vzhledu jako SVG grafy
   v HTML reportu.
+- Schéma pobočky (půdorys) kreslí **Fabric.js 5.3** (`vendor/fabric.min.js`,
+  MIT licence v `vendor/fabric-LICENSE.txt`) do HTML canvasu. Symboly nábytku jsou
+  skládané z primitiv (obdélníky, kružnice, oblouk dveří) a seskupené do
+  `fabric.Group`, takže se každý kus chová jako jeden posuvný objekt. Každá
+  instance sekce (kalkulace / historie) má vlastní canvas i stav (`floorPlanState`).
 - Doplňkové datové soubory („Dodatečná analytika“) se hledají dvěma cestami:
   přes `fetch()` (funguje jen při běhu na http/https) a přes **File System Access
   API** — handle složky s daty se ukládá do IndexedDB (`dataDir`) vedle handle

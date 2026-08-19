@@ -2023,6 +2023,18 @@ function trendTone(value) {
 const TREND_COLORS = { up: "#0e9f6e", down: "#e02424", flat: "#6b7482" };
 const TREND_ARROWS = { up: "▲", down: "▼", flat: "→" };
 
+// Změna hodnoty mezi dvěma roky: znaménko, barva a případně i procentní změna
+// z vedlejšího sloupce. Vrací null, když sloupec v exportu chybí.
+function changeLabel(value, percValue) {
+  const n = branchNum(value);
+  const perc = branchNum(percValue);
+  if (n === null && perc === null) return null;
+  const base = n === null ? null : `${n > 0 ? "+" : ""}${fmtNumAuto(n)}`;
+  const pct = perc === null ? null : `${perc > 0 ? "+" : ""}${fmtNumAuto(perc)} %`;
+  const tone = trendTone(n !== null ? n : perc);
+  return { tone, color: TREND_COLORS[tone], text: [base, pct && base ? `(${pct})` : pct].filter(Boolean).join(" ") };
+}
+
 function trendLabel(value) {
   const tone = trendTone(value);
   const raw = value === null || value === undefined || String(value).trim() === "" ? "—" : String(value).trim();
@@ -2040,6 +2052,9 @@ function branchProfileHtml(profile, options = {}) {
   const rating = f.rating.r25text || "—";
   const ratingColor = quintileColor(f.rating.kvintil);
   const trend = trendLabel(f.rating.trend);
+  // Změna ratingu se bere ze sloupce „Změna ratingu 25/24“ (v procentech je vedle
+  // ve sloupci „Změna ratingu perc 25/24“).
+  const change = changeLabel(f.rating.change, f.rating.changePerc);
   const kv = (q) => (branchNum(q) === null ? "" :
     ` <span class="bx-kv" style="background:${quintileColor(q)};">kvintil ${fmtPieces(branchNum(q))}</span>`);
   const salesHtml = profile.topSales.length
@@ -2051,9 +2066,11 @@ function branchProfileHtml(profile, options = {}) {
   return `<div class="bx-card ${options.compact ? "bx-compact" : ""}">
     <div class="bx-pills">
       <span class="bx-pill" style="background:${ratingColor};">Rating 25: ${esc(rating)}</span>
+      ${change ? `<span class="bx-pill" style="background:${change.color};">Změna ratingu 25/24:
+        ${esc(change.text)}</span>` : ""}
       <span class="bx-pill" style="background:${trend.color};">Trend ratingu 23–25: ${esc(trend.text)}</span>
-      ${f.rating.danger ? `<span class="bx-pill" style="background:#e02424;">⚠️ Nebezpečná zóna:
-        ${esc(f.rating.danger)}</span>` : ""}
+      <span class="bx-pill" style="background:${quintileColor(f.newRevenueKvintil)};">Nové výnosy kvintil:
+        ${branchNum(f.newRevenueKvintil) === null ? "—" : fmtPieces(branchNum(f.newRevenueKvintil))}</span>
       ${srcBadgeHtml("branch")}
     </div>
     <div class="bx-grid">
@@ -6063,16 +6080,28 @@ function drawPdfBranchHeader(pdf, startY, profile, marginX, width = PDF_CONTENT_
   const f = profile.fields;
   let y = startY;
 
-  // 1) pilulky: rating (barva podle kvintilu) a trend ratingu
-  let x = marginX;
-  x += drawPdfPill(pdf, x, y, `Rating 25: ${f.rating.r25text || "—"}`, quintileColor(f.rating.kvintil));
+  // 1) pilulky: rating (barva podle kvintilu ratingu), změna ratingu 25/24,
+  // trend ratingu 23–25 a kvintil nových výnosů. Když se do řádku nevejdou,
+  // pokračují na dalším.
+  const change = changeLabel(f.rating.change, f.rating.changePerc);
   const trend = trendLabel(f.rating.trend);
-  x += drawPdfPill(pdf, x, y, `Trend ratingu 23–25: ${f.rating.trend || "—"}`, trend.color);
-  if (branchNum(f.rating.kvintil) !== null) {
-    x += drawPdfPill(pdf, x, y, `Rating kvintil ${fmtPieces(branchNum(f.rating.kvintil))}`,
-      quintileColor(f.rating.kvintil));
-  }
-  if (f.rating.danger) x += drawPdfPill(pdf, x, y, `Nebezpečná zóna: ${f.rating.danger}`, "#e02424");
+  const pills = [
+    { text: `Rating 25: ${f.rating.r25text || "—"}`, color: quintileColor(f.rating.kvintil) },
+    branchNum(f.rating.kvintil) === null ? null
+      : { text: `Rating kvintil ${fmtPieces(branchNum(f.rating.kvintil))}`, color: quintileColor(f.rating.kvintil) },
+    change ? { text: `Změna ratingu 25/24: ${change.text}`, color: change.color } : null,
+    { text: `Trend ratingu 23–25: ${f.rating.trend || "—"}`, color: trend.color },
+    { text: `Nové výnosy kvintil: ${branchNum(f.newRevenueKvintil) === null
+      ? "—" : fmtPieces(branchNum(f.newRevenueKvintil))}`, color: quintileColor(f.newRevenueKvintil) },
+  ].filter(Boolean);
+  let x = marginX;
+  pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(8.5);
+  pills.forEach((pill) => {
+    const w = pdf.getTextWidth(pill.text) + 8;
+    if (x > marginX && x + w > marginX + width) { x = marginX; y += 10; }
+    x += drawPdfPill(pdf, x, y, pill.text, pill.color);
+    pdf.setFont("DejaVuSans", "bold"); pdf.setFontSize(8.5);
+  });
   y += 11;
 
   // 2) zařazení, adresa a výnosy
@@ -7250,11 +7279,20 @@ function renderLayoutForm(container, segmentRows, meta, existingRows) {
     container.innerHTML = `<p class="muted">Pro tuto kalkulaci nejsou v databázi definované žádné nábytkové prvky — sestavení layoutu se neprovádí.</p>`;
     return;
   }
+  const suffix = meta.pdfOptionsSuffix || "";
   container.innerHTML = `${groupsHtml}
-    <div class="row" style="margin-top:14px;">
-      <button class="btn" id="btnSaveLayout">Uložit layout</button>
+    <div class="layout-actions">
+      <button class="btn big" id="btnSaveLayout">💾 Uložit layout</button>
+      <span class="muted">Uložením se layout zapíše ke kalkulaci — teprve pak se dá vygenerovat
+        kapitola „Layout pobočky“ v PDF a zkopírovat nábytek do schránky.</span>
     </div>
-    <div class="cap-box-holder"></div>`;
+    <div class="cap-box-holder"></div>
+    <div class="fp-panel">
+      <h4>Schéma pobočky (půdorys) ${srcBadgeHtml("calc")}</h4>
+      <p class="muted">Kreslí se z počtů zadaných výše — každý kus nábytku je samostatný symbol.
+        Schéma se překresluje průběžně, jak počty měníte.</p>
+      <div id="floorPlanArea${suffix}"></div>
+    </div>`;
   wireLayoutFormListeners(container);
 
   // Kapacitní shrnutí se přepočítává rovnou při zadávání počtů kusů, aby
@@ -7266,7 +7304,17 @@ function renderLayoutForm(container, segmentRows, meta, existingRows) {
     capHolder.innerHTML = capacityCheckHtmlFor(meta, readLayoutFormRows(container), visitorForCap);
   };
   refreshCapBox();
-  container.addEventListener("input", (e) => { if (e.target.classList.contains("layout-qty")) refreshCapBox(); });
+  // Schéma pobočky se překresluje ze stejných dat, ale se zpožděním — překreslení
+  // celého plánu při každém stisku klávesy by zdržovalo psaní.
+  const drawPlan = () => renderFloorPlan(`floorPlanArea${suffix}`, readLayoutFormRows(container), meta, suffix);
+  drawPlan();
+  let planTimer = null;
+  container.addEventListener("input", (e) => {
+    if (!e.target.classList.contains("layout-qty")) return;
+    refreshCapBox();
+    clearTimeout(planTimer);
+    planTimer = setTimeout(drawPlan, 450);
+  });
   // Tlačítka se hledají v rámci `container`, ne přes document.getElementById —
   // sekce layoutu je na stránce dvakrát (krok 4 průvodce a detail v historii),
   // takže stejná id existují ve dvou instancích a globální hledání by našlo
@@ -7599,6 +7647,425 @@ function renderPositionFurnitureHtml(calcResult, layoutRows) {
   </details>`;
 }
 
+/* ------------------- Schéma pobočky (půdorys) — Fabric.js ------------------- */
+// Z uloženého (nebo právě zadávaného) layoutu se nakreslí půdorysné schéma
+// pobočky: zóny jako místnosti a v nich **přesný počet** zadaných nábytkových
+// prvků nakreslených jako symboly (theke s židlí, jednací místnost se stolem
+// a židlemi, pokladní ostrov, čekací židle, obývák, fast tracky, kancelářská
+// místa). Kreslí se přes Fabric.js (`vendor/fabric.min.js`), takže se s prvky
+// dá i hýbat — schéma je návrh rozmístění, ne CAD výkres.
+
+// 1 px schématu ≈ 2 cm skutečnosti. Velikosti symbolů jsou v těchto pixelech.
+const PLAN_STROKE = "#5b6472";
+const PLAN_WALL = "#41495a";
+const PLAN_CHAIR = "#9aa6b8";
+const PLAN_GRID = 5;                 // krok přichytávání při posunu prvku
+const PLAN_MAX_PIECES = 320;         // pojistka proti extrémně velkému schématu
+
+// Katalog symbolů. `match` se testuje na název prvku bez diakritiky a malými
+// písmeny, první shoda vyhrává (proto je „fast track backoffice“ před
+// „fast track“). `draw(w, h, colors)` vrací fabric objekty v lokálních
+// souřadnicích od (0,0).
+const PLAN_SYMBOLS = [
+  {
+    key: "cash", match: /pokladn/, w: 150, h: 86, short: "Pokladna",
+    draw: (w, h, c) => [
+      // pult ve tvaru ostrova + dvě pracovní místa za ním, klienti před ním
+      planRect(0, 18, w, 40, c.body, { rx: 6, ry: 6, strokeWidth: 1.4, stroke: c.line }),
+      planRect(10, 24, 26, 12, "#ffffff", { rx: 2, ry: 2 }),
+      planRect(w - 36, 24, 26, 12, "#ffffff", { rx: 2, ry: 2 }),
+      ...planChair(w * 0.22 - 11, 62, 22),
+      ...planChair(w * 0.72 - 11, 62, 22),
+      ...planChair(w * 0.22 - 9, 0, 18, PLAN_CHAIR, 0.6),
+      ...planChair(w * 0.72 - 9, 0, 18, PLAN_CHAIR, 0.6),
+    ],
+  },
+  {
+    key: "meetingSmall", match: /(zasedac|jednac).*(mal)|mal.*(zasedac|jednac)/, w: 150, h: 118,
+    short: "Zasedačka malá", room: true,
+    draw: (w, h, c) => planMeetingRoom(w, h, c, 4),
+  },
+  {
+    key: "meeting", match: /jednac|zasedac|meeting/, w: 186, h: 132, short: "Jednací místnost", room: true,
+    draw: (w, h, c) => planMeetingRoom(w, h, c, 6),
+  },
+  {
+    key: "office", match: /kancelar/, w: 104, h: 74, short: "Kancelářské místo",
+    draw: (w, h, c) => [
+      planRect(0, 14, w, 34, c.body, { rx: 3, ry: 3, strokeWidth: 1.2, stroke: c.line }),
+      planRect(w - 34, 18, 26, 14, "#ffffff", { rx: 2, ry: 2 }),   // monitor
+      ...planChair(w / 2 - 12, 50, 24),
+    ],
+  },
+  {
+    key: "ftBack", match: /fast\s*track\s*backoffice/, w: 92, h: 62, short: "Fast track BO",
+    draw: (w, h, c) => [
+      planRect(0, 10, w, 28, c.body, { rx: 3, ry: 3, strokeWidth: 1.2, stroke: c.line }),
+      planRect(w - 30, 14, 22, 12, "#ffffff", { rx: 2, ry: 2 }),
+      ...planChair(w / 2 - 11, 40, 22),
+    ],
+  },
+  {
+    key: "fastTrack", match: /fast\s*track/, w: 86, h: 74, short: "Fast track",
+    draw: (w, h, c) => [
+      planCircle(w / 2, h / 2 - 4, 20, c.body, c.line),
+      ...planChair(4, h / 2 - 15, 20, PLAN_CHAIR, 0.9),
+      ...planChair(w - 24, h / 2 - 15, 20, PLAN_CHAIR, 0.9),
+    ],
+  },
+  {
+    key: "theke", match: /theke|pult/, w: 118, h: 76, short: "Theke",
+    draw: (w, h, c) => [
+      planRect(0, 20, w, 32, c.body, { rx: 4, ry: 4, strokeWidth: 1.4, stroke: c.line }),
+      planRect(w - 32, 25, 24, 12, "#ffffff", { rx: 2, ry: 2 }),
+      ...planChair(w / 2 - 12, 54, 24),                       // bankéř
+      ...planChair(w / 2 - 10, 0, 20, PLAN_CHAIR, 0.6),       // klient
+    ],
+  },
+  {
+    key: "welcome", match: /lenka|vitac|welcome/, w: 96, h: 58, short: "Lenka",
+    draw: (w, h, c) => [
+      planRect(0, 8, w, 30, c.body, { rx: 14, ry: 14, strokeWidth: 1.4, stroke: c.line }),
+      ...planChair(w / 2 - 11, 36, 22),
+    ],
+  },
+  {
+    key: "sofa", match: /obyvak|pohovka|sofa|sedack/, w: 124, h: 58, short: "Obývák (3 místa)",
+    draw: (w, h, c) => [
+      planRect(0, 0, w, 16, c.line, { rx: 6, ry: 6 }),                 // opěradlo
+      planRect(0, 14, w, 34, c.body, { rx: 6, ry: 6, stroke: c.line }),
+      planRect(w / 3 - 1, 16, 2, 30, c.line, { strokeWidth: 0 }),
+      planRect((2 * w) / 3 - 1, 16, 2, 30, c.line, { strokeWidth: 0 }),
+    ],
+  },
+  {
+    key: "chair", match: /zidle|seat/, w: 42, h: 48, short: "Židle",
+    draw: (w, h, c) => planChair(2, 6, 36, c.body, 1, c.line),
+  },
+  {
+    key: "generic", match: /.*/, w: 104, h: 60, short: null,
+    draw: (w, h, c) => [
+      planRect(0, 8, w, 40, c.body, { rx: 3, ry: 3, strokeWidth: 1.2, stroke: c.line }),
+    ],
+  },
+];
+
+function planSymbolFor(furniture) {
+  const n = deacc(furniture).toLowerCase();
+  return PLAN_SYMBOLS.find((s) => s.match.test(n)) || PLAN_SYMBOLS[PLAN_SYMBOLS.length - 1];
+}
+
+/* --- kreslicí pomůcky (vše v lokálních souřadnicích symbolu) --- */
+
+function planRect(x, y, w, h, fill, opts = {}) {
+  return new fabric.Rect({
+    left: x, top: y, width: w, height: h, fill,
+    stroke: opts.stroke === undefined ? PLAN_STROKE : opts.stroke,
+    strokeWidth: opts.strokeWidth === undefined ? 1 : opts.strokeWidth,
+    rx: opts.rx || 0, ry: opts.ry || 0, opacity: opts.opacity === undefined ? 1 : opts.opacity,
+  });
+}
+
+function planCircle(cx, cy, r, fill, stroke) {
+  return new fabric.Circle({
+    left: cx - r, top: cy - r, radius: r, fill,
+    stroke: stroke || PLAN_STROKE, strokeWidth: 1.2,
+  });
+}
+
+// Židle = sedák + opěradlo; `scale` zmenší celý symbol (klientské židle).
+function planChair(x, y, size, fill, scale = 1, stroke) {
+  const s = size * scale;
+  return [
+    planRect(x, y, s, s * 0.22, stroke || PLAN_STROKE, { rx: 2, ry: 2, strokeWidth: 0 }),
+    planRect(x, y + s * 0.2, s, s * 0.8, fill || PLAN_CHAIR, { rx: 3, ry: 3, stroke: stroke || PLAN_STROKE }),
+  ];
+}
+
+// Jednací místnost: vlastní stěny, stůl a židle okolo.
+function planMeetingRoom(w, h, c, seats) {
+  const objs = [
+    planRect(0, 0, w, h, "#ffffff", { stroke: PLAN_WALL, strokeWidth: 2.2, rx: 2, ry: 2 }),
+    planRect(w * 0.26, h * 0.3, w * 0.48, h * 0.4, c.body, { rx: 6, ry: 6, strokeWidth: 1.4, stroke: c.line }),
+  ];
+  const perSide = Math.max(1, Math.round(seats / 2));
+  for (let i = 0; i < perSide; i++) {
+    const cx = w * 0.26 + ((i + 0.5) * (w * 0.48)) / perSide;
+    objs.push(...planChair(cx - 9, h * 0.3 - 22, 18, PLAN_CHAIR));
+    objs.push(...planChair(cx - 9, h * 0.7 + 4, 18, PLAN_CHAIR));
+  }
+  // dveře v levé stěně
+  objs.push(planRect(0, h - 34, 3, 26, "#ffffff", { strokeWidth: 0 }));
+  objs.push(new fabric.Path(`M 3 ${h - 34} A 26 26 0 0 1 29 ${h - 8}`, {
+    fill: "", stroke: PLAN_WALL, strokeWidth: 1, opacity: 0.5,
+  }));
+  return objs;
+}
+
+/* --- model schématu: co se má kreslit --- */
+
+// Z řádků layoutu udělá seznam jednotlivých kusů po zónách.
+function floorPlanModel(rows) {
+  const zones = [];
+  const counts = {};
+  let pieces = 0;
+  ZONES.forEach((zone) => {
+    const items = (rows || [])
+      .filter((r) => r.zone === zone && Math.round(Number(r.piece_count) || 0) > 0)
+      .map((r) => ({
+        segment: r.segment, furniture: r.furniture,
+        pieces: Math.round(Number(r.piece_count) || 0),
+        symbol: planSymbolFor(r.furniture),
+      }));
+    if (!items.length) return;
+    items.forEach((it) => {
+      pieces += it.pieces;
+      const key = `${it.furniture}||${it.segment}`;
+      counts[key] = counts[key] || { furniture: it.furniture, segment: it.segment, zone, pieces: 0, symbol: it.symbol };
+      counts[key].pieces += it.pieces;
+    });
+    zones.push({ zone, items });
+  });
+  return { zones, pieces, legend: Object.values(counts) };
+}
+
+/* --- rozvržení a vykreslení --- */
+
+const floorPlanState = {};   // suffix -> { canvas, model, width }
+
+// Rozloží prvky do „místností“ (jedna zóna = jedna místnost pod sebou) a vrátí
+// celkovou výšku schématu. Prvky tečou zleva doprava a zalamují se.
+function drawFloorPlanScene(canvas, model, width) {
+  const pad = 16;             // vnitřní odsazení místnosti
+  const gap = 10;             // mezera mezi prvky
+  const wall = 6;             // šířka vnější zdi
+  const headerH = 22;         // pruh s názvem zóny
+  const outerPad = 12;
+  const entranceW = 58;        // volné místo u dveří v první místnosti
+  const contentW = width - 2 * (outerPad + wall + pad);
+
+  canvas.clear();
+  canvas.setBackgroundColor("#f7f9fc", () => {});
+
+  // rozvržení nasucho — nejdřív se spočítají výšky místností
+  const plan = model.zones.map((z, zi) => {
+    const inset = zi === 0 ? entranceW : 0;   // u vstupu se nekreslí nábytek
+    const roomW = contentW - inset;
+    let x = 0; let y = 0; let lineH = 0;
+    const placed = [];
+    z.items.forEach((item) => {
+      for (let i = 0; i < item.pieces; i++) {
+        const w = item.symbol.w; const h = item.symbol.h;
+        if (x > 0 && x + w > roomW) { x = 0; y += lineH + gap; lineH = 0; }
+        placed.push({ item, x: x + inset, y, w, h, index: i + 1 });
+        x += w + gap;
+        lineH = Math.max(lineH, h);
+      }
+    });
+    return { zone: z.zone, placed, height: y + lineH };
+  });
+
+  const totalH = outerPad * 2 + wall * 2
+    + plan.reduce((s, r) => s + headerH + r.height + pad * 2 + wall, 0);
+
+  // vnější obvod pobočky
+  canvas.add(new fabric.Rect({
+    left: outerPad, top: outerPad, width: width - 2 * outerPad, height: totalH - 2 * outerPad,
+    fill: "#ffffff", stroke: PLAN_WALL, strokeWidth: wall, rx: 4, ry: 4,
+    selectable: false, evented: false,
+  }));
+
+  let top = outerPad + wall;
+  plan.forEach((room, ri) => {
+    const roomH = headerH + room.height + pad * 2;
+    const color = ZONE_COLORS[room.zone] || "#6b7684";
+    const left = outerPad + wall;
+    const roomW = width - 2 * (outerPad + wall);
+
+    canvas.add(new fabric.Rect({
+      left, top, width: roomW, height: roomH, fill: `${color}0f`,
+      stroke: color, strokeWidth: 1.2, selectable: false, evented: false,
+    }));
+    canvas.add(new fabric.Rect({
+      left, top, width: roomW, height: headerH, fill: color,
+      selectable: false, evented: false,
+    }));
+    canvas.add(new fabric.Text(`${ZONE_LABELS[room.zone]}`.toUpperCase(), {
+      left: left + 10, top: top + 5, fontSize: 11, fontWeight: "bold",
+      fontFamily: "Segoe UI, Arial, sans-serif", fill: "#ffffff",
+      selectable: false, evented: false,
+    }));
+    const pieceCount = room.placed.length;
+    canvas.add(new fabric.Text(`${pieceCount} ks`, {
+      left: left + roomW - 46, top: top + 5, fontSize: 11,
+      fontFamily: "Segoe UI, Arial, sans-serif", fill: "#ffffff",
+      selectable: false, evented: false,
+    }));
+
+    // vstup do pobočky se kreslí u první místnosti (hala)
+    if (ri === 0) {
+      canvas.add(new fabric.Rect({
+        left: outerPad - wall / 2, top: top + roomH / 2 - 26, width: wall * 2, height: 52,
+        fill: "#ffffff", selectable: false, evented: false,
+      }));
+      canvas.add(new fabric.Path(`M ${outerPad + wall} ${top + roomH / 2 - 26}
+        A 52 52 0 0 1 ${outerPad + wall + 52} ${top + roomH / 2 + 26}`, {
+        fill: "", stroke: color, strokeWidth: 1.2, opacity: 0.65, selectable: false, evented: false,
+      }));
+      canvas.add(new fabric.Text("VSTUP", {
+        left: outerPad + wall + 6, top: top + roomH / 2 + 30, fontSize: 10, fontWeight: "bold",
+        fontFamily: "Segoe UI, Arial, sans-serif", fill: color, selectable: false, evented: false,
+      }));
+    }
+
+    room.placed.forEach((pl) => {
+      const meta = getSegmentMeta(pl.item.segment);
+      const [tr, tg, tb] = segmentTintRgb(pl.item.segment, 0.55);
+      const colors = { body: `rgb(${tr},${tg},${tb})`, line: meta.color };
+      const objs = pl.item.symbol.draw(pl.w, pl.h, colors);
+      const group = new fabric.Group(objs, {
+        left: left + pad + pl.x, top: top + headerH + pad + pl.y,
+        hasControls: false, hasBorders: true, lockRotation: true,
+        borderColor: meta.color, cornerColor: meta.color,
+        hoverCursor: "move",
+      });
+      group.planInfo = {
+        furniture: pl.item.furniture, segment: pl.item.segment, zone: room.zone,
+        index: pl.index, total: pl.item.pieces, color: meta.color,
+      };
+      canvas.add(group);
+    });
+
+    top += roomH + wall;
+  });
+
+  canvas.setDimensions({ width, height: totalH });
+  canvas.requestRenderAll();
+  return totalH;
+}
+
+// Legenda pod schématem: symbol, prvek, segment, zóna a počet kusů.
+function floorPlanLegendHtml(model) {
+  if (!model.legend.length) return "";
+  const rows = model.legend.map((l) => {
+    const meta = getSegmentMeta(l.segment);
+    return `<li><span class="fp-swatch" style="background:${meta.color}33; border-color:${meta.color};"></span>
+      <strong>${esc(l.furniture)}</strong> ${segmentBadgeHtml(l.segment)}
+      <span class="muted">${ZONE_LABELS[l.zone]}</span> — <strong>${fmtPieces(l.pieces)} ks</strong>
+      ${l.symbol.short ? `<span class="muted">(kresleno jako ${esc(l.symbol.short)})</span>` : ""}</li>`;
+  }).join("");
+  return `<ul class="fp-legend">${rows}</ul>`;
+}
+
+// Hlavní vstupní bod: vykreslí (nebo překreslí) schéma do daného kontejneru.
+// `rows` jsou řádky layoutu — buď uložené, nebo přečtené z formuláře.
+function renderFloorPlan(containerId, rows, meta, suffix = "") {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const model = floorPlanModel(rows);
+
+  if (!model.pieces) {
+    container.innerHTML = `<p class="muted">Zadejte počty nábytkových prvků — schéma se nakreslí
+      z uloženého layoutu (nebo hned z rozpracovaného zadání).</p>`;
+    return;
+  }
+  if (typeof fabric === "undefined") {
+    container.innerHTML = `<p class="msg err">Knihovna Fabric.js se nenačetla
+      (<code>vendor/fabric.min.js</code>) — schéma nelze nakreslit.</p>`;
+    return;
+  }
+
+  const cut = model.pieces > PLAN_MAX_PIECES;
+  container.innerHTML = `
+    <div class="fp-toolbar">
+      <button class="btn secondary small" id="fpRelayout${suffix}"
+        title="Vrátí prvky do automatického rozvržení">↺ Přeskládat</button>
+      <button class="btn secondary small" id="fpZoomOut${suffix}">−</button>
+      <span class="muted fp-zoom" id="fpZoomLabel${suffix}">100 %</span>
+      <button class="btn secondary small" id="fpZoomIn${suffix}">+</button>
+      <button class="btn secondary small" id="fpPng${suffix}">📷 Uložit jako PNG</button>
+      <span class="muted">Celkem <strong>${fmtPieces(model.pieces)}</strong> prvků ·
+        prvky lze chytit myší a přesunout.</span>
+    </div>
+    ${cut ? `<div class="msg warn">Layout obsahuje ${fmtPieces(model.pieces)} prvků — schéma kreslí
+      prvních ${PLAN_MAX_PIECES}, aby zůstalo čitelné.</div>` : ""}
+    <div class="fp-wrap" id="fpWrap${suffix}"><canvas id="fpCanvas${suffix}"></canvas>
+      <div class="fp-tip" id="fpTip${suffix}"></div></div>
+    ${floorPlanLegendHtml(model)}
+    <p class="muted">Schéma je <strong>návrh rozmístění</strong> — zóny jsou nakreslené jako místnosti
+      pod sebou v pořadí service → meeting → backoffice → office room a v nich je přesný počet zadaných
+      prvků. Rozměry jsou schematické (1 px ≈ 2 cm), skutečné rozvržení pobočky určuje projektant.</p>`;
+
+  if (cut) {
+    let left = PLAN_MAX_PIECES;
+    model.zones.forEach((z) => z.items.forEach((it) => {
+      const take = Math.max(0, Math.min(it.pieces, left));
+      left -= take;
+      it.pieces = take;
+    }));
+    model.zones.forEach((z) => { z.items = z.items.filter((it) => it.pieces > 0); });
+    model.zones = model.zones.filter((z) => z.items.length);
+  }
+
+  const wrap = document.getElementById(`fpWrap${suffix}`);
+  const width = Math.max(720, Math.min(1180, (wrap.clientWidth || 960) - 4));
+  const canvas = new fabric.Canvas(`fpCanvas${suffix}`, {
+    selection: false, preserveObjectStacking: true, backgroundColor: "#f7f9fc",
+  });
+  const baseH = drawFloorPlanScene(canvas, model, width);
+  floorPlanState[suffix] = { canvas, model, width, baseH, zoom: 1 };
+
+  // přichytávání k mřížce při posunu
+  canvas.on("object:moving", (e) => {
+    const o = e.target;
+    o.set({ left: Math.round(o.left / PLAN_GRID) * PLAN_GRID, top: Math.round(o.top / PLAN_GRID) * PLAN_GRID });
+  });
+
+  // bublina s názvem prvku pod kurzorem
+  const tip = document.getElementById(`fpTip${suffix}`);
+  canvas.on("mouse:over", (e) => {
+    const info = e.target && e.target.planInfo;
+    if (!info) { tip.style.display = "none"; return; }
+    tip.innerHTML = `<strong>${esc(info.furniture)}</strong> ${esc(info.index)}/${esc(info.total)}<br>`
+      + `${esc(info.segment)} · ${ZONE_LABELS[info.zone]}`;
+    tip.style.borderColor = info.color;
+    tip.style.display = "block";
+  });
+  canvas.on("mouse:move", (e) => {
+    if (tip.style.display !== "block" || !e.pointer) return;
+    tip.style.left = `${Math.min(e.pointer.x + 14, width - 200)}px`;
+    tip.style.top = `${e.pointer.y + 14}px`;
+  });
+  canvas.on("mouse:out", () => { tip.style.display = "none"; });
+
+  const applyZoom = (z) => {
+    const st = floorPlanState[suffix];
+    st.zoom = Math.max(0.5, Math.min(2, z));
+    canvas.setZoom(st.zoom);
+    canvas.setDimensions({ width: st.width * st.zoom, height: st.baseH * st.zoom });
+    document.getElementById(`fpZoomLabel${suffix}`).textContent = `${Math.round(st.zoom * 100)} %`;
+    canvas.requestRenderAll();
+  };
+  document.getElementById(`fpZoomIn${suffix}`).addEventListener("click",
+    () => applyZoom(floorPlanState[suffix].zoom + 0.15));
+  document.getElementById(`fpZoomOut${suffix}`).addEventListener("click",
+    () => applyZoom(floorPlanState[suffix].zoom - 0.15));
+  document.getElementById(`fpRelayout${suffix}`).addEventListener("click", () => {
+    const st = floorPlanState[suffix];
+    st.baseH = drawFloorPlanScene(canvas, st.model, st.width);
+    applyZoom(st.zoom);
+  });
+  document.getElementById(`fpPng${suffix}`).addEventListener("click", () => {
+    const st = floorPlanState[suffix];
+    const url = canvas.toDataURL({ format: "png", multiplier: 2 / (st.zoom || 1) });
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `schema_pobocky_${meta && meta.pobocka_nazev ? deacc(meta.pobocka_nazev).replace(/\s+/g, "_") : "layout"}.png`;
+    a.click();
+    toast("Schéma bylo uloženo jako PNG.", "ok");
+  });
+}
+
 function renderLayoutReadonly(container, rows, meta, segmentRows) {
   const bySegZone = {};
   const order = [];
@@ -7618,17 +8085,27 @@ function renderLayoutReadonly(container, rows, meta, segmentRows) {
   }).join("");
 
   const overview = computeWplOverview(segmentRows, rows, meta.calcResult?.celkem);
+  const suffix = meta.pdfOptionsSuffix || "";
   container.innerHTML = `
     <div class="layout-group">${renderWplOverviewHtml(overview)}</div>
     ${groupsHtml}
     ${renderZoneAnalysisHtml(overview, rows)}
     ${renderPositionFurnitureHtml(meta.calcResult, rows)}
-    <div class="row" style="margin-top:14px;">
-      <button class="btn secondary" id="btnEditLayout">Upravit layout</button>
+    <div class="layout-actions saved">
+      <button class="btn big secondary" id="btnEditLayout">✎ Upravit layout</button>
+      <span class="muted">Layout je uložený ke kalkulaci. Úpravou se otevře formulář s počty kusů —
+        po změně nezapomeňte znovu uložit.</span>
     </div>
     ${capacityCheckHtmlFor(meta, rows)}
+    <div class="fp-panel">
+      <h4>Schéma pobočky (půdorys) ${srcBadgeHtml("calc")}</h4>
+      <p class="muted">Uložený layout nakreslený jako půdorys — zóny jsou místnosti a v nich je přesný
+        počet zadaných nábytkových prvků.</p>
+      <div id="floorPlanArea${suffix}"></div>
+    </div>
     <p class="muted">Generování PDF, kopírování do schránky a potvrzení kalkulace najdete v části
       <strong>„Výstup a sestava“</strong> na konci.</p>`;
+  renderFloorPlan(`floorPlanArea${suffix}`, rows, meta, suffix);
   // Hledání v rámci `container` — viz poznámka v renderLayoutForm().
   container.querySelector("#btnEditLayout").addEventListener("click", () => renderLayoutForm(container, segmentRows, meta, rows));
 }

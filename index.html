@@ -603,6 +603,35 @@
   .bx-note{margin:10px 0 0; font-size:11px;}
   #branchExportList tr.bx-row{cursor:pointer;}
   #branchExportList tr.bx-row:hover td{background:#eef7fa;}
+
+  /* --- Zvýrazněná akční lišta layoutu (Uložit / Upravit layout) --- */
+  .layout-actions{
+    margin:26px 0 18px; padding:14px 18px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    border:2px solid var(--accent); border-radius:12px; background:#eef4ff;
+    box-shadow:0 2px 10px rgba(39,112,240,.14);
+  }
+  .layout-actions.saved{border-color:#0bb43f; background:#f0fbf3; box-shadow:0 2px 10px rgba(11,180,63,.12);}
+  .layout-actions span{max-width:640px; font-size:12.5px;}
+  .btn.big{font-size:15px; padding:12px 24px; font-weight:700;}
+
+  /* --- Schéma pobočky (Fabric.js) --- */
+  .fp-panel{margin-top:22px; border:1px solid var(--border); border-left:4px solid #2770f0;
+            border-radius:10px; padding:12px 16px; background:#fbfdff;}
+  .fp-panel h4{margin:0 0 4px; font-size:14px;}
+  .fp-toolbar{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:10px 0;}
+  .fp-toolbar .fp-zoom{min-width:46px; text-align:center;}
+  .fp-wrap{position:relative; overflow:auto; max-height:660px; border:1px solid var(--border);
+           border-radius:8px; background:#f7f9fc;}
+  .fp-wrap canvas{display:block;}
+  .fp-tip{
+    position:absolute; display:none; pointer-events:none; z-index:5; max-width:220px;
+    background:#fff; border:2px solid var(--accent); border-radius:8px; padding:5px 9px;
+    font-size:11.5px; line-height:1.35; box-shadow:0 4px 14px rgba(20,30,50,.16);
+  }
+  .fp-legend{list-style:none; margin:12px 0 0; padding:0; display:grid;
+             grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:4px 16px; font-size:12px;}
+  .fp-legend li{display:flex; align-items:center; gap:6px; flex-wrap:wrap;}
+  .fp-swatch{width:20px; height:11px; border-radius:2px; border:1.5px solid; flex:none;}
 </style>
 </head>
 <body>
@@ -960,6 +989,7 @@
 <script src="vendor/sql-wasm-binary.js"></script>
 <script src="vendor/sql-wasm.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
+<script src="vendor/fabric.min.js"></script>
 <script src="vendor/jspdf.umd.min.js"></script>
 <script src="vendor/dejavu-fonts.js"></script>
 <script src="xlsx_writer.js"></script>
