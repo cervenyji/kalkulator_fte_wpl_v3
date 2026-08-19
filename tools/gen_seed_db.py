@@ -91,6 +91,25 @@ def main():
     )
     """)
 
+    # Vybavení pobočky (bankomaty, denní místnost, …) a přiřazení lidí na místa
+    # ve schématu — obojí patří ke konkrétní kalkulaci.
+    cur.execute("""
+    CREATE TABLE layout_extras (
+        calculation_key TEXT PRIMARY KEY,
+        payload TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE layout_staff (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        calculation_key TEXT,
+        piece_key TEXT,
+        segment TEXT,
+        pozice TEXT
+    )
+    """)
+
     cur.execute("""
     CREATE TABLE branch_export (
         branch_id TEXT PRIMARY KEY,

@@ -300,6 +300,19 @@ backoffice** místo vlastního kancelářského místa.
 - Sloupec se **verzuje** společně s časovými dotacemi (je i ve snapshotu verze),
   takže kalkulace zůstává reprodukovatelná — starší kalkulace se dopočítají
   podílem z verze, se kterou vznikly.
+- **Vizuální označení:** podbarvená je jen buňka, kde je nějaká hodnota (nula
+  zůstává bílá), a řádek s nastaveným podílem má **na začátku červenou tečku** —
+  pozice s fast trackem se tak dají najít i bez filtrování.
+- Tabulka je **kompaktní** (menší písmo a odsazení, pevná šířka číselných polí),
+  takže se vejde na šířku panelu a není potřeba s ní vodorovně posouvat.
+
+### Nákres prvku přímo v tabulce nábytku
+
+Tabulka **Nábytek** má první sloupec **„Nákres“** — malý obrázek toho, jak se
+prvek kreslí ve schématu pobočky. Nákres se vygeneruje přímo v prohlížeči
+(Fabric.js do skrytého canvasu) a cachuje se podle druhu symbolu, takže se každý
+druh kreslí jen jednou. Pod tabulkou je rozbalovací blok **„Legenda nákresů“**
+se všemi druhy pohromadě, včetně popisu, z čeho je symbol složený.
 
 ### Kopírování vyfiltrovaného nábytku do schránky
 
@@ -1013,15 +1026,17 @@ půdorysné schéma pobočky přes **Fabric.js** (`vendor/fabric.min.js`).
 
   | Prvek v layoutu | Jak je nakreslený |
   | --- | --- |
-  | **Theke - vysoká / nízká** | kulatý pult s vnitřní pracovní plochou, monitorem a přísedy okolo; vysoká je větší (2,4 m) než nízká (1,9 m) |
+  | **Theke - nízká** | kulatý pult na kulatém koberci, uprostřed **1 židle bankéře**, klientské židle žádné (klient stojí) |
+  | **Theke - vysoká** | totéž větší (2,6 m) a uprostřed **2 židle bankéřů** |
   | **Fast track (stolek a židle)** | kulatý stolek se **třemi zaoblenými přísedy** okolo |
   | **Lenka** | stůl s počítačem, židle bankéře a **dvě židle klienta** |
   | **Lenka vítací**, **Recepce** | **půlkruhový pult s přísedem a půlkruhovým paravánem** za ním |
   | **Martička** | hranatý stůl s počítačem, dvě židle klienta a jedna bankéře |
   | **Martička s TT** | totéž s **pokladnou (TT)** na stole |
-  | **Pokladna s bezpečnostní nástavbou** | těžký pult s prosklenou nástavbou a trezorovým blokem |
-  | **Pokladní ostrov typu C** | hranatý pult se **dvěma** pracovišti s TT, židle jen pro bankéře |
-  | **Pokladní ostrov typu 1/2C** | hranatý pult s **jedním** pracovištěm s TT, židle jen pro bankéře |
+  | **Pokladna s bezpečnostní nástavbou** | **uzavřená budka** s prosklenou přepážkou, pokladnou, trezorkem a židlí |
+  | **Pokladní ostrov typu C (…2WPL)** | jediná varianta se **dvěma** židlemi bankéřů (dvě pracoviště s TT), klientská židle žádná |
+  | **ostatní pokladní ostrovy C a 1/2C** | hranatý pult s TT, **jedna** židle bankéře, klientská židle žádná |
+  | **Remote room** | skleněná budka se židlí, malým stolkem a televizí s **AI avatarem** |
   | **Čekací zóna (židle)** | obyčejná židle u stěny |
   | **Čekací zóna (obývák)** | tři židle a stoleček na **dřevěné podlaze 2 × 2 m** |
   | **Čekací zóna (lounge)** | pohovka, dvě křesla a stolek na dřevěné podlaze |
@@ -1037,6 +1052,12 @@ půdorysné schéma pobočky přes **Fabric.js** (`vendor/fabric.min.js`).
   | **Relax zóna** | místnost s pohovkou, stolkem, **květinou a tapetou** |
   | cokoli dalšího | obecný obdélník v barvě segmentu |
 
+- **Pod každým prvkem je jeho celý název** (láme se do dvou i více řádků), takže
+  je bez legendy jasné, o co jde.
+- **Prvky bez WPL** (fast tracky, čekací zóna, relax zóna, vybavení pobočky) jsou
+  v každé místnosti **vpravo za čerchovanou čárou** s poznámkou „PRVKY BEZ WPL
+  (nepočítají se do plochy)“ — na první pohled je vidět, co plochu místnosti
+  nezvětšuje.
 - **Barevné označení segmentů:** výplň prvku je světlý odstín barvy segmentu,
   obrys jeho plná barva a u větších prvků je v levém horním rohu ještě **štítek
   s klíčem segmentu** (MMMA, PROVOZ, …). Židle a přísedy jsou neutrálně šedé,
@@ -1053,6 +1074,40 @@ půdorysné schéma pobočky přes **Fabric.js** (`vendor/fabric.min.js`).
 - Jde o **návrh rozmístění**, ne o projektovou dokumentaci — skutečné rozvržení
   určuje projektant. Při více než 320 prvcích schéma nakreslí prvních 320
   a upozorní na to, aby zůstalo čitelné.
+
+#### Vybavení pobočky (bankomaty, denní místnost, Frontmatic, schránky, trezory)
+
+Nad schématem je blok **„Vybavení pobočky“** — prvky, které nevyplývají z výpočtu
+WPL, ale na pobočce jsou. Co se zaškrtne (nebo zadá počtem), se hned přikreslí do
+schématu a uloží ke kalkulaci (tabulka `layout_extras`):
+
+| Nastavení | Co se nakreslí a kam |
+| --- | --- |
+| **Bankomaty** — počet po typech (Výběrový, Vkladový, Recyklační, Transakční, Příprava) | při **jednom a více** se v service zone přikreslí vyznačená **Samoobslužná servisní zóna** s tolika bankomaty, kolik je zadáno; každý má u sebe zkratku a typ |
+| **Denní místnost** (zaškrtávátko) | do backoffice **místnost s kuchyňkou, mikrovlnkou, jídelním stolem se čtyřmi židlemi, televizí, květinou a koši** |
+| **Frontmatic** (zaškrtávátko) | do service zone **vyvolávací systém** — kiosek s výdejem lístků a tabule s čísly |
+| **Bezpečnostní schránky pro klienty** (zaškrtávátko) | do service zone **stěna schránek**, kam si klienti ukládají věci |
+| **Trezory** — počet | do backoffice zadaný **počet trezorů** |
+
+Vybavení nemá WPL, takže se kreslí vpravo za čerchovanou čárou a **nezvětšuje
+potřebnou plochu** místnosti. Nastavení se ukládá okamžitě (nezávisle na tlačítku
+„Uložit layout“) a v detailu v historii je stejné, včetně schématu.
+
+#### Lidé na místech (postavičky ve schématu)
+
+Pod schématem je blok **„Lidé na místech“**: nabídne pozice z checklistu (počet
+lidí = FTE zaokrouhlené na osoby) a umožní je **alokovat na konkrétní místo**:
+
+1. klikněte na pozici (chip se zvýrazní),
+2. klikněte ve schématu na prvek — k místu se přikreslí **postavička** v barvě
+   segmentu a prvek se orámuje modrou přerušovanou čárou,
+3. přiřazení se objeví v seznamu pod schématem, kde se dá tlačítkem **✕** zrušit.
+
+Na jedno místo lze přiřadit i více lidí (např. dva bankéře k vysoké thece).
+U pozice je vidět počítadlo **přiřazeno/celkem**; jakmile jsou přiřazení všichni,
+chip se zneaktivní. Přiřazení se ukládá ke kalkulaci (tabulka `layout_staff`),
+takže přežije uložení layoutu, znovuotevření aplikace i zobrazení v historii,
+a tiskne se i do schématu v PDF.
 
 #### Schéma v PDF sestavě
 
@@ -1301,7 +1356,9 @@ záznam v tabulce časových dotací, řádek se vynechá a zobrazí se upozorn�
   skládané z primitiv (obdélníky, kružnice, oblouky dveří, cesty půlkruhových stolů)
   a seskupené do `fabric.Group`, takže se každý kus chová jako jeden posuvný objekt.
   Rozměry symbolů jsou zadané **v metrech** a přepočítávají se konstantou
-  `PLAN_PX_PER_M` (40 px = 1 m). Každá instance sekce (kalkulace / historie) má
+  `PLAN_PX_PER_M` (40 px = 1 m). Vybavení pobočky a přiřazení lidí se ukládá do
+  tabulek `layout_extras` (JSON u kalkulace) a `layout_staff` (kalkulace + klíč
+  místa `zóna||segment||prvek||pořadí` + pozice); mazání kalkulace maže i je. Každá instance sekce (kalkulace / historie) má
   vlastní canvas i stav (`floorPlanState`). Pro PDF se stejná scéna vykreslí do
   odloženého `fabric.StaticCanvas` a exportuje jako PNG, takže tisk nezávisí na
   aktuálním zoomu ani na ručně posunutých prvcích.

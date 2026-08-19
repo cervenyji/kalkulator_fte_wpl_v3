@@ -97,9 +97,10 @@
   #manualRowsTbody td:nth-child(1) select{min-width:110px;}
   #manualRowsTbody td:nth-child(2) select{min-width:280px;}
   #absenceTbody td:nth-child(1) input{min-width:110px;}
-  #dotaceTbody td:nth-child(1) input{min-width:90px;}
-  #dotaceTbody td:nth-child(2) input{min-width:320px;}
-  #dotaceTbody td:nth-child(n+3) input{min-width:70px;}
+  /* Sloupec 1 je značka (červená tečka), 2 segment, 3 pozice, dál dotace. */
+  #dotaceTbody td:nth-child(2) input{min-width:86px;}
+  #dotaceTbody td:nth-child(3) input{min-width:210px;}
+  #dotaceTbody td:nth-child(n+4) input{min-width:46px;}
   .table-wrap{overflow-x:auto;}
   .msg{padding:10px 12px; border-radius:8px; font-size:13px; margin-bottom:12px;}
   .msg.ok{background:#e8f9ee; color:#0a7a33;}
@@ -194,9 +195,22 @@
   .src-legend-item{display:inline-flex; align-items:center; gap:5px;}
   .src-legend i{width:10px; height:10px; border-radius:2px; display:inline-block;}
   td.heat input{background:transparent; border-color:transparent;}
-  /* Podíl fast tracku u pozice — odlišený sloupec, ať se neplete s dotacemi zón. */
-  td.ft-cell{background:#fff8e6;}
-  td.ft-cell input{background:transparent; border-color:#f0dcae; text-align:right;}
+  /* Podíl fast tracku u pozice — podbarví se jen buňka s hodnotou. */
+  td.ft-cell input{background:transparent; border-color:#e4e9f0; text-align:right;}
+  td.ft-cell.ft-on{background:#fff3d6;}
+  td.ft-cell.ft-on input{border-color:#f0cf8a; font-weight:700; color:#8a5206;}
+  /* Řádek s nastaveným podílem fast tracku pozná uživatel podle červené tečky. */
+  td.ft-flag{width:14px; padding:0 0 0 6px;}
+  td.ft-flag i{display:none; width:8px; height:8px; border-radius:50%; background:#e02424;}
+  tr.ft-row td.ft-flag i{display:inline-block;}
+
+  /* Kompaktní tabulka pozic — jinak se kvůli šířce musí vodorovně posouvat. */
+  #dotaceTable table{font-size:12px;}
+  #dotaceTable th, #dotaceTable td{padding:3px 5px;}
+  #dotaceTable input[type="text"]{padding:3px 5px; font-size:12px;}
+  #dotaceTable input[type="number"]{width:52px; min-width:46px; padding:3px 4px; font-size:12px;}
+  #dotaceTable .zbar-cell{width:110px;}
+  #dotaceTable .zbar{height:8px;}
   td.heat{transition:background .15s;}
   #toast-area{position:fixed; bottom:16px; right:16px; display:flex; flex-direction:column; gap:8px; z-index:999;}
   .toast{padding:10px 14px; border-radius:8px; font-size:13px; color:#fff; box-shadow:0 4px 14px rgba(0,0,0,.15); max-width:340px;}
@@ -282,10 +296,11 @@
   /* --- Struktura checklistu: segmenty/pozice/nábytek --- */
   #segmentsTbody input[type="color"]{width:44px; height:30px; padding:2px; cursor:pointer;}
   #segmentsTbody td:nth-child(1) input, #segmentsTbody td:nth-child(2) input{min-width:120px;}
-  #furnitureTbody td:nth-child(1) input{min-width:100px;}
-  #furnitureTbody td:nth-child(3) input{min-width:220px;}
-  #dotaceTable td:nth-child(1) input{min-width:90px;}
-  #dotaceTable td:nth-child(2) input{min-width:320px;}
+  /* Sloupec 1 je nákres prvku, 2 segment, 3 zóna, 4 název prvku. */
+  #furnitureTbody td:nth-child(2) input{min-width:100px;}
+  #furnitureTbody td:nth-child(4) input{min-width:220px;}
+  #dotaceTable td:nth-child(2) input{min-width:86px;}
+  #dotaceTable td:nth-child(3) input{min-width:210px;}
 
   /* --- Ikona nápovědy s bublinou (pravidla předvyplnění layoutu) --- */
   .help-icon{
@@ -606,6 +621,46 @@
   .bx-note{margin:10px 0 0; font-size:11px;}
   #branchExportList tr.bx-row{cursor:pointer;}
   #branchExportList tr.bx-row:hover td{background:#eef7fa;}
+
+  /* --- Vybavení pobočky (bankomaty, denní místnost, …) --- */
+  .ex-box{margin:0 0 16px; border:1px solid var(--border); border-left:4px solid #6b7684;
+          border-radius:10px; padding:12px 14px; background:#fbfcfe;}
+  .ex-box h4{margin:0 0 4px; font-size:14px;}
+  .ex-grid{display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px; margin-top:10px;}
+  .ex-card{border:1px solid var(--border); border-radius:8px; padding:10px 12px; background:#fff;
+           display:flex; flex-direction:column; gap:6px; font-size:12.5px;}
+  .ex-atms{display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:6px 10px; margin-top:4px;}
+  .ex-atm{display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px;}
+  .ex-atm input{width:56px; text-align:right;}
+  .ex-check{display:flex; gap:8px; align-items:flex-start; font-size:12.5px; cursor:pointer;}
+  .ex-num{display:flex; gap:10px; align-items:center; justify-content:space-between; font-size:12.5px;}
+  .ex-num input{width:70px; text-align:right;}
+
+  /* --- Lidé na místech ve schématu --- */
+  .st-box{margin-top:14px; border-top:1px dashed var(--border); padding-top:12px;}
+  .st-box h4{margin:0 0 4px; font-size:14px;}
+  .st-chips{display:flex; flex-wrap:wrap; gap:6px; margin:8px 0;}
+  .st-chip{display:inline-flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;
+           border:1px solid var(--border); border-radius:14px; padding:4px 10px; background:#fff;}
+  .st-chip:hover{border-color:var(--accent);}
+  .st-chip.armed{border-color:var(--accent); background:#eaf1fe; box-shadow:0 0 0 2px #bcd2f7;}
+  .st-chip.done{opacity:.55; cursor:default;}
+  .st-chip .st-count{color:var(--muted); font-variant-numeric:tabular-nums;}
+  .st-dot{width:9px; height:9px; border-radius:50%; background:var(--seg, #6b7684); flex:none;}
+  .st-list{list-style:none; margin:8px 0 0; padding:0; display:grid;
+           grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:4px 14px; font-size:12px;}
+  .st-list li{display:flex; align-items:center; gap:6px;}
+  .st-list .btn{padding:1px 7px;}
+
+  /* --- Legenda nákresů v tabulce nábytku --- */
+  td.fn-thumb{width:76px; padding:2px 4px;}
+  td.fn-thumb img{display:block; width:70px; height:auto; border:1px solid var(--border);
+                  border-radius:4px; background:#fff;}
+  .fn-legend{display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:10px; margin-top:10px;}
+  .fn-legend figure{margin:0; border:1px solid var(--border); border-radius:8px; padding:6px;
+                    background:#fff; text-align:center;}
+  .fn-legend img{width:100%; height:auto;}
+  .fn-legend figcaption{font-size:11.5px; margin-top:4px; color:#3d4655;}
 
   /* --- Zvýrazněná akční lišta layoutu (Uložit / Upravit layout) --- */
   .layout-actions{
