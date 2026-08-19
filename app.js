@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS casove_dotace (
   meeting_zone REAL,
   backoffice_zone REAL,
   office_room REAL,
+  fasttrack_share REAL,
   ref_version_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS excel_loads (
@@ -149,6 +150,27 @@ CREATE TABLE IF NOT EXISTS calculation_visitor (
 `;
 
 // Doplní chybějící tabulky/sloupce v databázích vytvořených starší verzí aplikace.
+// Výchozí podíl fast tracku u pozic (v %) — přesně to, co dřív bylo v kódu.
+// Od teď je hodnota u každé pozice v tabulce `casove_dotace` a dá se změnit
+// v „Data a Excel šablona → Pozice a jejich časové dotace“.
+const DEFAULT_FASTTRACK_SHARE = {
+  "osobní bankéř - medior": 20,
+  "osobní bankéř - senior": 10,
+};
+
+// Doplní výchozí podíl fast tracku, pokud ho ještě žádná pozice nastavený nemá
+// (nová databáze nebo databáze ze starší verze aplikace). Vynulované hodnoty od
+// uživatele se nepřepíšou — ukládají se jako 0, ne NULL.
+function applyFasttrackDefaults(dbi) {
+  const set = dbAll("SELECT COUNT(*) AS n FROM casove_dotace WHERE fasttrack_share IS NOT NULL", [], dbi)[0].n;
+  if (set === 0) {
+    Object.entries(DEFAULT_FASTTRACK_SHARE).forEach(([pozice, pct]) => {
+      dbi.run("UPDATE casove_dotace SET fasttrack_share = ? WHERE LOWER(pozice) = ?", [pct, pozice]);
+    });
+  }
+  dbi.run("UPDATE casove_dotace SET fasttrack_share = 0 WHERE fasttrack_share IS NULL");
+}
+
 function migrateSchema(dbi) {
   dbi.run(SCHEMA_SQL);
   try { dbi.run("ALTER TABLE calculations ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
@@ -158,6 +180,11 @@ function migrateSchema(dbi) {
   // Verze referenčních dat, ve které daný řádek naposledy vznikl nebo se změnil.
   try { dbi.run("ALTER TABLE absence ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
   try { dbi.run("ALTER TABLE casove_dotace ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
+  // Podíl backoffice času, který pozice odsedí na fast tracku místo vlastního
+  // kancelářského místa (v %). Dřív byl zadrátovaný v kódu, teď je to nastavení
+  // u každé pozice — výchozí hodnoty odpovídají dosavadnímu chování.
+  try { dbi.run("ALTER TABLE casove_dotace ADD COLUMN fasttrack_share REAL"); } catch (e) { /* sloupec už existuje */ }
+  applyFasttrackDefaults(dbi);
   try { dbi.run("ALTER TABLE furniture_to_zone ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
   // Směnový režim pobočky (otevírací doba > doba vytížení pozice).
   try { dbi.run("ALTER TABLE excel_loads ADD COLUMN shift_mode INTEGER"); } catch (e) { /* sloupec už existuje */ }
@@ -878,6 +905,25 @@ function dotaceSplitMap(refVersionId) {
   return map;
 }
 
+// Mapa "segment||pozice" -> podíl fast tracku v % (nastavení u pozice).
+// Stejně jako dotace se bere přednostně ze snapshotu verze, se kterou kalkulace
+// vznikla; starší verze snapshotu podíl neobsahují, tam je 0.
+function fasttrackShareMap(refVersionId) {
+  const map = {};
+  const version = refVersionId ? getRefVersionById(refVersionId) : null;
+  if (version && version.dotace) {
+    version.dotace.forEach(([seg, poz, sv, me, bo, of, ft]) => { map[`${seg}||${poz}`] = Number(ft) || 0; });
+    return map;
+  }
+  if (!db) return map;
+  try {
+    dbAll("SELECT segment, pozice, fasttrack_share FROM casove_dotace").forEach((r) => {
+      map[`${r.segment}||${r.pozice}`] = Number(r.fasttrack_share) || 0;
+    });
+  } catch (e) { /* starší databáze bez sloupce */ }
+  return map;
+}
+
 function zoneSplitTotal(split) {
   return ZONES.reduce((sum, z) => sum + (Number(split && split[z]) || 0), 0);
 }
@@ -1007,6 +1053,7 @@ function createNewDatabase() {
     (segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room) VALUES (?, ?, ?, ?, ?, ?)`);
   SEED_CASOVE_DOTACE.forEach((r) => { insDotace.run(r); });
   insDotace.free();
+  applyFasttrackDefaults(db);
   const insFurniture = db.prepare("INSERT INTO furniture_to_zone (segment, furniture, zone, wpl_counter) VALUES (?, ?, ?, ?)");
   SEED_FURNITURE.forEach((r) => { insFurniture.run(r); });
   insFurniture.free();
@@ -3588,6 +3635,10 @@ const PDF_OPTION_DEFS = [
     label: "Seznam nábytku po zónách a segmentech (kompaktní výpis)" },
   { key: "layoutAnalysis", id: "pdfIncLayoutAnalysis", group: "layout", def: true,
     label: "Analýza segmentů, zón a jejich prvků" },
+  // Schéma je obrázek na celou šířku stránky — proto je ve výchozím stavu vypnuté
+  // a uživatel si ho do sestavy přidá zaškrtnutím.
+  { key: "layoutFloorPlan", id: "pdfIncLayoutFloorPlan", group: "layout", def: false,
+    label: "Schéma pobočky (půdorys s nakresleným nábytkem)" },
 ];
 
 // Zpětná kompatibilita: starší nastavení (i testy) používaly jedno zaškrtávátko
@@ -3900,7 +3951,7 @@ function computeCalculationStats(result) {
     meetingZoneWpl: meetingZoneTotal,
     backofficeZoneWpl: backofficeZone,
     officeRoomWpl: officeRoom,
-    requiredAreaM2: celkemWpl * 25,
+    requiredAreaM2: celkemWpl * PLAN_M2_PER_WPL,   // stejné pravidlo jako plochy místností ve schématu
     wplFteRatio: celkemFte > 0 ? (celkemWpl / celkemFte) * 100 : null,
     backofficePct: celkemWpl > 0 ? (backofficeZone / celkemWpl) * 100 : null,
     meetingPct: celkemWpl > 0 ? (meetingZoneTotal / celkemWpl) * 100 : null,
@@ -6919,26 +6970,21 @@ function computeWplOverview(segmentRows, layoutRows, celkemRow) {
 // (pozice „bankéř klientské péče - junior“ — viz ROLE_POSITIONS.cashier).
 const CASHIER_FURNITURE = "Pokladní ostrov typu C (1:1,TT+TT,1WPL)";
 
-// Podíl backoffice času, který daná pozice odsedí na fast tracku místo
-// vlastního kancelářského místa. Fast track se nevykazuje jako WPL, takže
-// každé takto přesunuté procento šetří náklady na plochu.
-const BACKOFFICE_FASTTRACK_SHARE = {
-  "osobní bankéř - medior": 0.20,
-  "osobní bankéř - senior": 0.10,
-};
-
-// Kolik WPL v backoffice zóně segmentu připadá na pozice z tabulky výše —
-// tato část potřeby se přesune z „Kancelářské místo“ na „Fast track backoffice“.
+// Kolik WPL v backoffice zóně segmentu připadá na pozice, které mají nastavený
+// podíl fast tracku — tato část potřeby se přesune z „Kancelářské místo“ na
+// „Fast track backoffice“. Podíl je nastavení u pozice (sloupec
+// `casove_dotace.fasttrack_share` v %), ne pevná hodnota v kódu.
 // Počítá se ze stejných vstupů jako kalkulace: FTE × doba vytížení ×
 // (1 − nepřítomnost − homeoffice) × dotace backoffice % ÷ otevírací doba.
 function backofficeFastTrackShift(segment, calcResult) {
   if (!calcResult || !(calcResult.inputRows || []).length || !calcResult.oteviraci_doba) return 0;
   const splits = dotaceSplitMap(calcResult.refVersionId);
+  const shares = fasttrackShareMap(calcResult.refVersionId);
   const openHours = calcResult.oteviraci_doba;
   let shift = 0;
   calcResult.inputRows.forEach((r) => {
     if (r.segment !== segment) return;
-    const share = BACKOFFICE_FASTTRACK_SHARE[String(r.pozice).trim().toLowerCase()];
+    const share = (shares[`${r.segment}||${r.pozice}`] || 0) / 100;
     if (!share) return;
     const split = splits[`${r.segment}||${r.pozice}`];
     if (!split || !split.backoffice_zone) return;
@@ -6948,6 +6994,16 @@ function backofficeFastTrackShift(segment, calcResult) {
     shift += wpl * share;
   });
   return shift;
+}
+
+// Přehled pozic s nastaveným podílem fast tracku — do nápovědy k pravidlům,
+// aby text odpovídal tomu, co je v referenčních datech.
+function fasttrackShareList() {
+  if (!db) return [];
+  try {
+    return dbAll(`SELECT pozice, MAX(fasttrack_share) AS share FROM casove_dotace
+      WHERE fasttrack_share > 0 GROUP BY pozice ORDER BY share DESC, pozice`);
+  } catch (e) { return []; }
 }
 
 // Nepřítomnost a homeoffice segmentu (v %) — přednostně ze snapshotu verze
@@ -7048,13 +7104,19 @@ const LAYOUT_RULES = [
       const rest = Math.max(0, required - backofficeShift);
       return Math.ceil(backofficeShift) + (rest - Math.floor(rest) > 0.5 ? 1 : 0);
     },
-    text: "Část backoffice času vybraných pozic se přesune z kancelářského místa na "
-      + `<strong>Fast track backoffice</strong>: ${Object.entries(BACKOFFICE_FASTTRACK_SHARE)
-        .map(([poz, share]) => `<strong>${poz}</strong> ${Math.round(share * 100)} %`).join(", ")}. `
-      + "Tato část potřeby WPL se odečte od „Kancelářské místo“ a přiřadí se jako fast tracky "
-      + "(zaokrouhleno nahoru) — fast track se nevykazuje jako WPL, takže se šetří plocha i náklady. "
-      + "Navíc platí původní pravidlo: je-li desetinná část zbylé potřeby větší než 0,5, přidá se "
-      + "ještě 1 ks fast tracku.",
+    text: () => {
+      const list = fasttrackShareList();
+      return "Část backoffice času pozic se přesune z kancelářského místa na "
+        + "<strong>Fast track backoffice</strong> podle nastavení <strong>Fast track %</strong> u pozice "
+        + "(„Data a Excel šablona → Pozice a jejich časové dotace“): "
+        + (list.length
+          ? list.map((r) => `<strong>${esc(r.pozice)}</strong> ${fmtPieces(r.share)} %`).join(", ")
+          : "zatím žádná pozice nemá podíl fast tracku nastavený")
+        + ". Tato část potřeby WPL se odečte od „Kancelářské místo“ a přiřadí se jako fast tracky "
+        + "(zaokrouhleno nahoru) — fast track se nevykazuje jako WPL, takže se šetří plocha i náklady. "
+        + "Navíc platí původní pravidlo: je-li desetinná část zbylé potřeby větší než 0,5, přidá se "
+        + "ještě 1 ks fast tracku.";
+    },
   },
   {
     zone: "office_room", furniture: "Kancelář", formats: null,
@@ -7170,12 +7232,21 @@ function calcResultHelpHtml(result) {
   </span></span>`;
 }
 
+// Nápověda u nadpisu „Sestavení layoutu“ se překresluje po každé změně
+// referenčních dat — texty pravidel se generují z nastavení v databázi
+// (např. podíl fast tracku u pozic), takže musí být vždy aktuální.
+function renderLayoutRulesHelp() {
+  const el = document.getElementById("layoutRulesHelp");
+  if (el) el.innerHTML = layoutRulesHelpHtml();
+}
+
 // Ikona nápovědy s výpisem všech platných pravidel — obsah se generuje
 // z LAYOUT_RULES, aby odpovídal tomu, co aplikace skutečně dělá.
 function layoutRulesHelpHtml() {
   const formatLabel = (formats) => formats ? `pro formát ${formats.join(", ")}` : "pro všechny formáty";
   const items = LAYOUT_RULES.map((r) =>
-    `<li>${r.text} <span style="opacity:.7">(${ZONE_LABELS[r.zone]}, ${formatLabel(r.formats)})</span></li>`).join("");
+    `<li>${typeof r.text === "function" ? r.text() : r.text}`
+    + ` <span style="opacity:.7">(${ZONE_LABELS[r.zone]}, ${formatLabel(r.formats)})</span></li>`).join("");
   return `<span class="help-icon" tabindex="0">?<span class="help-tooltip">
     <strong>Pravidla pro předvyplnění layoutu</strong>
     <ul>${items}</ul>
@@ -7655,107 +7726,31 @@ function renderPositionFurnitureHtml(calcResult, layoutRows) {
 // místa). Kreslí se přes Fabric.js (`vendor/fabric.min.js`), takže se s prvky
 // dá i hýbat — schéma je návrh rozmístění, ne CAD výkres.
 
-// 1 px schématu ≈ 2 cm skutečnosti. Velikosti symbolů jsou v těchto pixelech.
+// Základní barvy a konstanty kreslení.
 const PLAN_STROKE = "#5b6472";
 const PLAN_WALL = "#41495a";
 const PLAN_CHAIR = "#9aa6b8";
 const PLAN_GRID = 5;                 // krok přichytávání při posunu prvku
 const PLAN_MAX_PIECES = 320;         // pojistka proti extrémně velkému schématu
+const PLAN_M2_PER_WPL = 25;          // plocha potřebná na jeden WPL (m²)
 
-// Katalog symbolů. `match` se testuje na název prvku bez diakritiky a malými
-// písmeny, první shoda vyhrává (proto je „fast track backoffice“ před
-// „fast track“). `draw(w, h, colors)` vrací fabric objekty v lokálních
-// souřadnicích od (0,0).
-const PLAN_SYMBOLS = [
-  {
-    key: "cash", match: /pokladn/, w: 150, h: 86, short: "Pokladna",
-    draw: (w, h, c) => [
-      // pult ve tvaru ostrova + dvě pracovní místa za ním, klienti před ním
-      planRect(0, 18, w, 40, c.body, { rx: 6, ry: 6, strokeWidth: 1.4, stroke: c.line }),
-      planRect(10, 24, 26, 12, "#ffffff", { rx: 2, ry: 2 }),
-      planRect(w - 36, 24, 26, 12, "#ffffff", { rx: 2, ry: 2 }),
-      ...planChair(w * 0.22 - 11, 62, 22),
-      ...planChair(w * 0.72 - 11, 62, 22),
-      ...planChair(w * 0.22 - 9, 0, 18, PLAN_CHAIR, 0.6),
-      ...planChair(w * 0.72 - 9, 0, 18, PLAN_CHAIR, 0.6),
-    ],
-  },
-  {
-    key: "meetingSmall", match: /(zasedac|jednac).*(mal)|mal.*(zasedac|jednac)/, w: 150, h: 118,
-    short: "Zasedačka malá", room: true,
-    draw: (w, h, c) => planMeetingRoom(w, h, c, 4),
-  },
-  {
-    key: "meeting", match: /jednac|zasedac|meeting/, w: 186, h: 132, short: "Jednací místnost", room: true,
-    draw: (w, h, c) => planMeetingRoom(w, h, c, 6),
-  },
-  {
-    key: "office", match: /kancelar/, w: 104, h: 74, short: "Kancelářské místo",
-    draw: (w, h, c) => [
-      planRect(0, 14, w, 34, c.body, { rx: 3, ry: 3, strokeWidth: 1.2, stroke: c.line }),
-      planRect(w - 34, 18, 26, 14, "#ffffff", { rx: 2, ry: 2 }),   // monitor
-      ...planChair(w / 2 - 12, 50, 24),
-    ],
-  },
-  {
-    key: "ftBack", match: /fast\s*track\s*backoffice/, w: 92, h: 62, short: "Fast track BO",
-    draw: (w, h, c) => [
-      planRect(0, 10, w, 28, c.body, { rx: 3, ry: 3, strokeWidth: 1.2, stroke: c.line }),
-      planRect(w - 30, 14, 22, 12, "#ffffff", { rx: 2, ry: 2 }),
-      ...planChair(w / 2 - 11, 40, 22),
-    ],
-  },
-  {
-    key: "fastTrack", match: /fast\s*track/, w: 86, h: 74, short: "Fast track",
-    draw: (w, h, c) => [
-      planCircle(w / 2, h / 2 - 4, 20, c.body, c.line),
-      ...planChair(4, h / 2 - 15, 20, PLAN_CHAIR, 0.9),
-      ...planChair(w - 24, h / 2 - 15, 20, PLAN_CHAIR, 0.9),
-    ],
-  },
-  {
-    key: "theke", match: /theke|pult/, w: 118, h: 76, short: "Theke",
-    draw: (w, h, c) => [
-      planRect(0, 20, w, 32, c.body, { rx: 4, ry: 4, strokeWidth: 1.4, stroke: c.line }),
-      planRect(w - 32, 25, 24, 12, "#ffffff", { rx: 2, ry: 2 }),
-      ...planChair(w / 2 - 12, 54, 24),                       // bankéř
-      ...planChair(w / 2 - 10, 0, 20, PLAN_CHAIR, 0.6),       // klient
-    ],
-  },
-  {
-    key: "welcome", match: /lenka|vitac|welcome/, w: 96, h: 58, short: "Lenka",
-    draw: (w, h, c) => [
-      planRect(0, 8, w, 30, c.body, { rx: 14, ry: 14, strokeWidth: 1.4, stroke: c.line }),
-      ...planChair(w / 2 - 11, 36, 22),
-    ],
-  },
-  {
-    key: "sofa", match: /obyvak|pohovka|sofa|sedack/, w: 124, h: 58, short: "Obývák (3 místa)",
-    draw: (w, h, c) => [
-      planRect(0, 0, w, 16, c.line, { rx: 6, ry: 6 }),                 // opěradlo
-      planRect(0, 14, w, 34, c.body, { rx: 6, ry: 6, stroke: c.line }),
-      planRect(w / 3 - 1, 16, 2, 30, c.line, { strokeWidth: 0 }),
-      planRect((2 * w) / 3 - 1, 16, 2, 30, c.line, { strokeWidth: 0 }),
-    ],
-  },
-  {
-    key: "chair", match: /zidle|seat/, w: 42, h: 48, short: "Židle",
-    draw: (w, h, c) => planChair(2, 6, 36, c.body, 1, c.line),
-  },
-  {
-    key: "generic", match: /.*/, w: 104, h: 60, short: null,
-    draw: (w, h, c) => [
-      planRect(0, 8, w, 40, c.body, { rx: 3, ry: 3, strokeWidth: 1.2, stroke: c.line }),
-    ],
-  },
-];
+// Měřítko schématu: 40 px = 1 metr. Rozměry symbolů jsou proto zadané v metrech
+// (`wm` × `hm`) a přepočítávají se na pixely — schéma tak drží reálné proporce
+// (stůl 160 cm je zřetelně větší než stůl 120 cm).
+const PLAN_PX_PER_M = 40;
+const mpx = (m) => Math.round(m * PLAN_PX_PER_M);
 
-function planSymbolFor(furniture) {
-  const n = deacc(furniture).toLowerCase();
-  return PLAN_SYMBOLS.find((s) => s.match.test(n)) || PLAN_SYMBOLS[PLAN_SYMBOLS.length - 1];
-}
+// Doplňkové barvy kreslení (nábytek sám má barvu podle segmentu).
+const PLAN_WOOD = "#e3c9a3";
+const PLAN_WOOD_LINE = "#c9a877";
+const PLAN_GLASS = "rgba(150, 214, 232, 0.35)";
+const PLAN_GLASS_LINE = "#3f9fb8";
+const PLAN_TT = "#4b5563";          // pokladna (TT)
+const PLAN_TV = "#2b3240";
+const PLAN_PLANT = "#2f9e5f";
+const PLAN_SCREEN = "#7c8698";      // paraván
 
-/* --- kreslicí pomůcky (vše v lokálních souřadnicích symbolu) --- */
+/* --- kreslicí pomůcky (lokální souřadnice symbolu od 0,0) --- */
 
 function planRect(x, y, w, h, fill, opts = {}) {
   return new fabric.Rect({
@@ -7763,43 +7758,457 @@ function planRect(x, y, w, h, fill, opts = {}) {
     stroke: opts.stroke === undefined ? PLAN_STROKE : opts.stroke,
     strokeWidth: opts.strokeWidth === undefined ? 1 : opts.strokeWidth,
     rx: opts.rx || 0, ry: opts.ry || 0, opacity: opts.opacity === undefined ? 1 : opts.opacity,
+    strokeDashArray: opts.dash || null,
   });
 }
 
-function planCircle(cx, cy, r, fill, stroke) {
+function planCircle(cx, cy, r, fill, stroke, opts = {}) {
   return new fabric.Circle({
     left: cx - r, top: cy - r, radius: r, fill,
-    stroke: stroke || PLAN_STROKE, strokeWidth: 1.2,
+    stroke: stroke === undefined ? PLAN_STROKE : stroke,
+    strokeWidth: opts.strokeWidth === undefined ? 1.2 : opts.strokeWidth,
+    strokeDashArray: opts.dash || null,
   });
 }
 
-// Židle = sedák + opěradlo; `scale` zmenší celý symbol (klientské židle).
-function planChair(x, y, size, fill, scale = 1, stroke) {
-  const s = size * scale;
+function planLine(x1, y1, x2, y2, color, width = 1) {
+  return new fabric.Line([x1, y1, x2, y2], { stroke: color, strokeWidth: width });
+}
+
+function planPath(d, opts = {}) {
+  return new fabric.Path(d, {
+    fill: opts.fill === undefined ? "" : opts.fill,
+    stroke: opts.stroke === undefined ? PLAN_STROKE : opts.stroke,
+    strokeWidth: opts.strokeWidth === undefined ? 1.2 : opts.strokeWidth,
+    strokeDashArray: opts.dash || null,
+    opacity: opts.opacity === undefined ? 1 : opts.opacity,
+  });
+}
+
+function planText(text, x, y, size = 8, color = "#46505f", opts = {}) {
+  return new fabric.Text(text, {
+    left: x, top: y, fontSize: size, fill: color,
+    fontFamily: "Segoe UI, Arial, sans-serif", fontWeight: opts.bold ? "bold" : "normal",
+  });
+}
+
+// Židle se sedákem a opěradlem. `dir` je strana opěradla (n/s/e/w), takže je
+// v půdorysu vidět, kam člověk kouká.
+function planChairDir(cx, cy, size, dir = "n", fill, stroke) {
+  const half = size / 2;
+  const t = Math.max(2.5, size * 0.24);
+  const back = { n: [cx - half, cy - half - t, size, t], s: [cx - half, cy + half, size, t],
+    w: [cx - half - t, cy - half, t, size], e: [cx + half, cy - half, t, size] }[dir];
   return [
-    planRect(x, y, s, s * 0.22, stroke || PLAN_STROKE, { rx: 2, ry: 2, strokeWidth: 0 }),
-    planRect(x, y + s * 0.2, s, s * 0.8, fill || PLAN_CHAIR, { rx: 3, ry: 3, stroke: stroke || PLAN_STROKE }),
+    planRect(back[0], back[1], back[2], back[3], stroke || PLAN_STROKE, { rx: 2, ry: 2, strokeWidth: 0 }),
+    planRect(cx - half, cy - half, size, size, fill || PLAN_CHAIR, { rx: 3, ry: 3, stroke: stroke || PLAN_STROKE }),
   ];
 }
 
-// Jednací místnost: vlastní stěny, stůl a židle okolo.
-function planMeetingRoom(w, h, c, seats) {
-  const objs = [
-    planRect(0, 0, w, h, "#ffffff", { stroke: PLAN_WALL, strokeWidth: 2.2, rx: 2, ry: 2 }),
-    planRect(w * 0.26, h * 0.3, w * 0.48, h * 0.4, c.body, { rx: 6, ry: 6, strokeWidth: 1.4, stroke: c.line }),
+// Monitor / počítač na stole.
+function planMonitor(cx, cy, w = 15) {
+  return [
+    planRect(cx - w / 2, cy - 5, w, 9, "#ffffff", { rx: 1.5, ry: 1.5, stroke: PLAN_STROKE }),
+    planRect(cx - 3, cy + 4, 6, 2.4, PLAN_STROKE, { strokeWidth: 0 }),
   ];
-  const perSide = Math.max(1, Math.round(seats / 2));
-  for (let i = 0; i < perSide; i++) {
-    const cx = w * 0.26 + ((i + 0.5) * (w * 0.48)) / perSide;
-    objs.push(...planChair(cx - 9, h * 0.3 - 22, 18, PLAN_CHAIR));
-    objs.push(...planChair(cx - 9, h * 0.7 + 4, 18, PLAN_CHAIR));
+}
+
+// Pokladna (TT) na pracovišti.
+function planTT(cx, cy, w = 14) {
+  return [
+    planRect(cx - w / 2, cy - 6, w, 11, PLAN_TT, { rx: 2, ry: 2, stroke: PLAN_TT }),
+    planRect(cx - w / 2 + 2, cy - 4, w - 4, 4, "#cfd6e0", { strokeWidth: 0 }),
+  ];
+}
+
+// Půlkruhový stůl — rovná strana u bankéře, oblouk ke klientům.
+function planSemiTable(cx, yFlat, r, c) {
+  return [planPath(`M ${cx - r} ${yFlat} A ${r} ${r} 0 0 0 ${cx + r} ${yFlat} Z`,
+    { fill: c.body, stroke: c.line, strokeWidth: 1.4 })];
+}
+
+// Dřevěná podlaha (čekací zóna) — podklad s prkny.
+function planWoodFloor(x, y, w, h) {
+  const objs = [planRect(x, y, w, h, PLAN_WOOD, { stroke: PLAN_WOOD_LINE, strokeWidth: 1 })];
+  for (let i = 1; i < Math.round(w / 12); i++) {
+    objs.push(planLine(x + i * 12, y + 1, x + i * 12, y + h - 1, PLAN_WOOD_LINE, 0.6));
   }
-  // dveře v levé stěně
-  objs.push(planRect(0, h - 34, 3, 26, "#ffffff", { strokeWidth: 0 }));
-  objs.push(new fabric.Path(`M 3 ${h - 34} A 26 26 0 0 1 29 ${h - 8}`, {
-    fill: "", stroke: PLAN_WALL, strokeWidth: 1, opacity: 0.5,
-  }));
   return objs;
+}
+
+// Stěny místnosti + dveře s obloukem otevírání.
+function planRoomWalls(w, h, opts = {}) {
+  const objs = [planRect(0, 0, w, h, opts.fill || "#ffffff",
+    { stroke: PLAN_WALL, strokeWidth: 2.2, rx: 2, ry: 2 })];
+  if (opts.glass) {
+    objs.push(planRect(1, 1, w - 2, h - 2, PLAN_GLASS, { stroke: PLAN_GLASS_LINE, strokeWidth: 1.4, dash: [5, 3] }));
+  }
+  const d = Math.min(26, h * 0.4);
+  objs.push(planRect(0, h - d - 8, 3, d, opts.fill || "#ffffff", { strokeWidth: 0 }));
+  objs.push(planPath(`M 3 ${h - d - 8} A ${d} ${d} 0 0 1 ${3 + d} ${h - 8}`,
+    { stroke: PLAN_WALL, strokeWidth: 1, opacity: 0.45 }));
+  return objs;
+}
+
+// Květina v květináči (relax zóna).
+function planPlant(cx, cy) {
+  return [
+    planRect(cx - 5, cy, 10, 8, "#b98b5e", { rx: 1.5, ry: 1.5 }),
+    planCircle(cx, cy - 5, 7, PLAN_PLANT, "#1e7a45"),
+  ];
+}
+
+// Televize na stěně.
+function planTV(x, y, w) {
+  return [planRect(x, y, w, 4.5, PLAN_TV, { rx: 1, ry: 1, strokeWidth: 0 })];
+}
+
+// Nabíječky u stolu — dvě malé značky.
+function planChargers(x, y) {
+  return [planCircle(x, y, 2, "#f0a020", "#b97a10", { strokeWidth: 0.8 }),
+    planCircle(x + 6, y, 2, "#f0a020", "#b97a10", { strokeWidth: 0.8 })];
+}
+
+// Pohovka (tři místa) — opěradlo, sedák, dělení.
+function planSofa(x, y, w, h, c) {
+  const objs = [
+    planRect(x, y, w, h * 0.28, c.line, { rx: 4, ry: 4, strokeWidth: 0 }),
+    planRect(x, y + h * 0.24, w, h * 0.76, c.body, { rx: 5, ry: 5, stroke: c.line }),
+  ];
+  [1, 2].forEach((i) => objs.push(planLine(x + (w * i) / 3, y + h * 0.28, x + (w * i) / 3, y + h * 0.95,
+    c.line, 0.8)));
+  return objs;
+}
+
+/* --- katalog symbolů ---------------------------------------------------------
+ * `match` se testuje na název prvku bez diakritiky a malými písmeny, první
+ * shoda vyhrává (proto je „fast track backoffice“ dřív než „fast track“).
+ * `wm`/`hm` je půdorysná velikost v metrech, `draw(w, h, colors)` vrací fabric
+ * objekty v lokálních souřadnicích. `colors.body` je světlý odstín barvy
+ * segmentu, `colors.line` plná barva segmentu.
+ * -------------------------------------------------------------------------- */
+const PLAN_SYMBOLS = [
+  // ---------- pokladní pracoviště (dřív než obecná „pokladna“) ----------
+  {
+    key: "cashSafe", match: /pokladna.*(bezpecnostn|nastavb)/, wm: 2.2, hm: 1.8,
+    short: "Pokladna s bezpečnostní nástavbou",
+    draw: (w, h, c) => [
+      // těžký pult s prosklenou nástavbou a trezorovým blokem
+      planRect(0, h * 0.3, w, h * 0.42, c.body, { rx: 3, ry: 3, strokeWidth: 2, stroke: c.line }),
+      planRect(0, h * 0.16, w, h * 0.16, PLAN_GLASS, { stroke: PLAN_GLASS_LINE, strokeWidth: 1.2 }),
+      planRect(w * 0.06, h * 0.74, w * 0.3, h * 0.22, PLAN_TT, { rx: 2, ry: 2, stroke: PLAN_TT }),
+      ...planTT(w * 0.62, h * 0.44),
+      ...planChairDir(w * 0.62, h * 0.86, 20, "s"),
+    ],
+  },
+  {
+    key: "cashIslandC", match: /pokladni ostrov typu c/, wm: 2.6, hm: 1.7,
+    short: "Pokladní ostrov C (dvě pracoviště s TT)",
+    draw: (w, h, c) => [
+      planRect(0, h * 0.28, w, h * 0.4, c.body, { rx: 3, ry: 3, strokeWidth: 1.6, stroke: c.line }),
+      ...planTT(w * 0.28, h * 0.46),
+      ...planTT(w * 0.72, h * 0.46),
+      ...planMonitor(w * 0.46, h * 0.42, 13),
+      ...planChairDir(w * 0.28, h * 0.82, 20, "s"),
+      ...planChairDir(w * 0.72, h * 0.82, 20, "s"),
+    ],
+  },
+  {
+    key: "cashIslandHalfC", match: /pokladni ostrov typu 1\/2c/, wm: 1.7, hm: 1.6,
+    short: "Pokladní ostrov 1/2C (jedno pracoviště s TT)",
+    draw: (w, h, c) => [
+      planRect(0, h * 0.28, w, h * 0.42, c.body, { rx: 3, ry: 3, strokeWidth: 1.6, stroke: c.line }),
+      ...planTT(w * 0.32, h * 0.48),
+      ...planMonitor(w * 0.7, h * 0.44, 13),
+      ...planChairDir(w * 0.5, h * 0.84, 20, "s"),
+    ],
+  },
+  {
+    key: "cash", match: /pokladn/, wm: 2.0, hm: 1.6, short: "Pokladní pracoviště",
+    draw: (w, h, c) => [
+      planRect(0, h * 0.3, w, h * 0.4, c.body, { rx: 3, ry: 3, strokeWidth: 1.6, stroke: c.line }),
+      ...planTT(w * 0.35, h * 0.48),
+      ...planChairDir(w * 0.5, h * 0.84, 20, "s"),
+    ],
+  },
+
+  // ---------- théky a pracoviště na hale ----------
+  {
+    key: "thekeHigh", match: /theke.*vysok/, wm: 2.4, hm: 2.4, short: "Theke vysoká (kulatý pult)",
+    draw: (w, h, c) => planRoundTheke(w, h, c, 4),
+  },
+  {
+    key: "thekeLow", match: /theke.*nizk/, wm: 1.9, hm: 1.9, short: "Theke nízká (kulatý pult)",
+    draw: (w, h, c) => planRoundTheke(w, h, c, 3),
+  },
+  { key: "theke", match: /theke|pult/, wm: 2.1, hm: 2.1, short: "Theke (kulatý pult)",
+    draw: (w, h, c) => planRoundTheke(w, h, c, 3) },
+  {
+    key: "marticka_tt", match: /marticka.*tt/, wm: 1.9, hm: 2.0, short: "Martička s TT",
+    draw: (w, h, c) => [
+      planRect(w * 0.1, h * 0.34, w * 0.8, h * 0.3, c.body, { rx: 2, ry: 2, strokeWidth: 1.6, stroke: c.line }),
+      ...planTT(w * 0.3, h * 0.49),
+      ...planMonitor(w * 0.68, h * 0.46, 14),
+      ...planChairDir(w * 0.5, h * 0.14, 19, "n", PLAN_CHAIR),       // bankéř
+      ...planChairDir(w * 0.3, h * 0.82, 18, "s"),                    // klienti
+      ...planChairDir(w * 0.7, h * 0.82, 18, "s"),
+    ],
+  },
+  {
+    key: "marticka", match: /marticka/, wm: 1.9, hm: 2.0, short: "Martička",
+    draw: (w, h, c) => [
+      planRect(w * 0.1, h * 0.34, w * 0.8, h * 0.3, c.body, { rx: 2, ry: 2, strokeWidth: 1.6, stroke: c.line }),
+      ...planMonitor(w * 0.5, h * 0.46, 16),
+      ...planChairDir(w * 0.5, h * 0.14, 19, "n", PLAN_CHAIR),
+      ...planChairDir(w * 0.3, h * 0.82, 18, "s"),
+      ...planChairDir(w * 0.7, h * 0.82, 18, "s"),
+    ],
+  },
+  {
+    key: "welcome", match: /lenka vitac|vitaci lenka|recepce/, wm: 2.6, hm: 1.8,
+    short: "Vítací lenka (půlkruh s paravánem)",
+    draw: (w, h, c) => {
+      const cx = w / 2; const r = Math.min(w, h * 1.6) / 2;
+      return [
+        // paraván jako půlkruh za pultem
+        planPath(`M ${cx - r} ${h * 0.78} A ${r} ${r} 0 0 1 ${cx + r} ${h * 0.78}`,
+          { stroke: PLAN_SCREEN, strokeWidth: 4, opacity: 0.85 }),
+        // půlkruhový pult
+        planPath(`M ${cx - r * 0.68} ${h * 0.78} A ${r * 0.68} ${r * 0.68} 0 0 1 ${cx + r * 0.68} ${h * 0.78} Z`,
+          { fill: c.body, stroke: c.line, strokeWidth: 1.6 }),
+        ...planMonitor(cx, h * 0.6, 14),
+        ...planChairDir(cx, h * 0.9, 19, "s"),                        // přísed
+      ];
+    },
+  },
+  {
+    key: "lenka", match: /lenka/, wm: 2.3, hm: 2.1, short: "Lenka (stůl, bankéř + 2 klienti)",
+    draw: (w, h, c) => [
+      planRect(w * 0.08, h * 0.36, w * 0.84, h * 0.28, c.body, { rx: 3, ry: 3, strokeWidth: 1.6, stroke: c.line }),
+      ...planMonitor(w * 0.5, h * 0.47, 15),
+      ...planChairDir(w * 0.5, h * 0.16, 20, "n", PLAN_CHAIR),        // bankéř s počítačem
+      ...planChairDir(w * 0.28, h * 0.84, 18, "s"),                   // klient 1
+      ...planChairDir(w * 0.72, h * 0.84, 18, "s"),                   // klient 2
+    ],
+  },
+  {
+    key: "fastTrackBo", match: /fast\s*track\s*backoffice/, wm: 1.6, hm: 1.5,
+    short: "Fast track backoffice (stůl do 120 cm, bez PC)",
+    draw: (w, h, c) => [
+      planRect(w * 0.1, h * 0.3, mpx(1.2), h * 0.28, c.body, { rx: 2, ry: 2, strokeWidth: 1.4, stroke: c.line }),
+      ...planChairDir(w * 0.1 + mpx(0.6), h * 0.78, 20, "s"),
+    ],
+  },
+  {
+    key: "fastTrackHall", match: /fast\s*track/, wm: 1.7, hm: 1.7,
+    short: "Fast track (stolek a tři přísedy)",
+    draw: (w, h, c) => {
+      // podle vzoru: kulatý stolek a tři zaoblené přísedy okolo
+      const cx = w / 2; const cy = h / 2; const r = Math.min(w, h) * 0.24;
+      const objs = [
+        planCircle(cx, cy, r, "#ffffff", c.line, { dash: [4, 3] }),
+        planCircle(cx, cy, r * 0.34, c.body, c.line),
+      ];
+      [-90, 30, 150].forEach((deg) => {
+        const rad = (deg * Math.PI) / 180;
+        const sx = cx + Math.cos(rad) * (r * 1.5) - 11;
+        const sy = cy + Math.sin(rad) * (r * 1.5) - 9;
+        objs.push(planRect(sx, sy, 22, 18, c.body, { rx: 8, ry: 8, strokeWidth: 1.4, stroke: c.line }));
+      });
+      return objs;
+    },
+  },
+
+  // ---------- čekací zóna ----------
+  {
+    key: "sofa", match: /obyvak/, wm: 2.0, hm: 2.0, short: "Obývák (3 židle + stolek, podlaha 2×2 m)",
+    draw: (w, h, c) => [
+      ...planWoodFloor(0, 0, w, h),
+      planCircle(w / 2, h / 2, mpx(0.28), c.body, c.line),            // stoleček
+      ...planChairDir(w / 2, h * 0.2, 18, "n"),
+      ...planChairDir(w * 0.22, h * 0.68, 18, "w"),
+      ...planChairDir(w * 0.78, h * 0.68, 18, "e"),
+    ],
+  },
+  {
+    key: "lounge", match: /lounge/, wm: 3.0, hm: 2.2, short: "Lounge (pohovka, křesla, stolek)",
+    draw: (w, h, c) => [
+      ...planWoodFloor(0, 0, w, h),
+      ...planSofa(w * 0.08, h * 0.1, w * 0.5, h * 0.3, c),
+      planCircle(w * 0.34, h * 0.66, mpx(0.3), c.body, c.line),
+      ...planChairDir(w * 0.7, h * 0.35, 19, "e"),
+      ...planChairDir(w * 0.7, h * 0.72, 19, "e"),
+    ],
+  },
+  {
+    key: "chair", match: /cekaci zona \(zidle\)|^zidle/, wm: 0.7, hm: 0.8, short: "Čekací židle u stěny",
+    draw: (w, h, c) => [
+      planRect(0, 0, w, 3.5, PLAN_SCREEN, { strokeWidth: 0, opacity: 0.7 }),   // stěna
+      ...planChairDir(w / 2, h * 0.6, Math.min(w, h) * 0.7, "n", c.body, c.line),
+    ],
+  },
+
+  // ---------- meeting zone ----------
+  {
+    key: "meetingRoom", match: /jednaci mistnost/, wm: 3.6, hm: 3.0,
+    short: "Jednací místnost (půlkruhový stůl, TV, PC, nabíječky)",
+    draw: (w, h, c) => [
+      ...planRoomWalls(w, h),
+      ...planTV(w * 0.34, 4, w * 0.32),                               // televize na stěně
+      ...planSemiTable(w / 2, h * 0.42, mpx(0.85), c),
+      ...planMonitor(w * 0.5, h * 0.5, 15),
+      ...planChargers(w * 0.5 - 3, h * 0.6),
+      ...planChairDir(w * 0.5, h * 0.72, 20, "s", PLAN_CHAIR),        // bankéř
+      ...planChairDir(w * 0.3, h * 0.24, 19, "n"),                    // klienti
+      ...planChairDir(w * 0.7, h * 0.24, 19, "n"),
+      planText("Jednací", 6, h - 13, 7.5, "#6b7482"),
+    ],
+  },
+  {
+    key: "semiRoom", match: /semidescreete|semi discrete|semidiskret/, wm: 2.7, hm: 2.4,
+    short: "Semidescreete room (malý půlkruhový stůl)",
+    draw: (w, h, c) => [
+      ...planRoomWalls(w, h),
+      ...planSemiTable(w / 2, h * 0.44, mpx(0.6), c),
+      ...planChairDir(w * 0.5, h * 0.7, 19, "s", PLAN_CHAIR),
+      ...planChairDir(w * 0.32, h * 0.26, 18, "n"),
+      ...planChairDir(w * 0.68, h * 0.26, 18, "n"),
+      planText("Semi", 6, h - 12, 7, "#6b7482"),
+    ],
+  },
+  {
+    key: "flexBox", match: /flex\s*box/, wm: 1.9, hm: 1.9, short: "Flex box (skleněná budka)",
+    draw: (w, h, c) => [
+      ...planRoomWalls(w, h, { glass: true }),
+      planRect(w * 0.34, h * 0.42, w * 0.32, h * 0.16, c.body, { rx: 2, ry: 2, stroke: c.line }),
+      ...planChairDir(w * 0.5, h * 0.26, 17, "n"),
+      ...planChairDir(w * 0.5, h * 0.74, 17, "s"),
+    ],
+  },
+  {
+    key: "zaliv", match: /zaliv/, wm: 2.5, hm: 2.1, short: "Záliv (polouzavřené místo s paravány)",
+    draw: (w, h, c) => [
+      planPath(`M 2 ${h - 4} L 2 6 L ${w - 2} 6 L ${w - 2} ${h - 4}`,
+        { stroke: PLAN_SCREEN, strokeWidth: 4, opacity: 0.85 }),
+      planRect(w * 0.22, h * 0.4, w * 0.56, h * 0.24, c.body, { rx: 2, ry: 2, stroke: c.line }),
+      ...planMonitor(w * 0.5, h * 0.5, 14),
+      ...planChairDir(w * 0.5, h * 0.22, 18, "n", PLAN_CHAIR),
+      ...planChairDir(w * 0.36, h * 0.78, 18, "s"),
+      ...planChairDir(w * 0.64, h * 0.78, 18, "s"),
+    ],
+  },
+
+  // ---------- backoffice / kancelář ----------
+  {
+    key: "officeRoom", match: /^kancelar$|kancelar mistnost|^kancelar /, wm: 2.9, hm: 2.5,
+    short: "Kancelář (místnost, pracovní stůl, PC, židle)",
+    draw: (w, h, c) => [
+      ...planRoomWalls(w, h),
+      planRect(w * 0.16, h * 0.24, mpx(1.6), h * 0.26, c.body, { rx: 2, ry: 2, strokeWidth: 1.4, stroke: c.line }),
+      ...planMonitor(w * 0.16 + mpx(0.8), h * 0.36, 15),
+      ...planChairDir(w * 0.16 + mpx(0.8), h * 0.64, 20, "s"),
+      planText("Kancelář", 6, h - 13, 7.5, "#6b7482"),
+    ],
+  },
+  {
+    key: "deskWork", match: /kancelarske misto/, wm: 2.0, hm: 1.7,
+    short: "Kancelářské místo (stůl 160 cm s PC)",
+    draw: (w, h, c) => [
+      planRect(w * 0.06, h * 0.28, mpx(1.6), h * 0.3, c.body, { rx: 2, ry: 2, strokeWidth: 1.4, stroke: c.line }),
+      ...planMonitor(w * 0.06 + mpx(0.8), h * 0.42, 16),
+      ...planChairDir(w * 0.06 + mpx(0.8), h * 0.76, 20, "s"),
+    ],
+  },
+  {
+    key: "internalSmall", match: /interni zasedaci mistnost - mal/, wm: 4.8, hm: 3.4,
+    short: "Interní zasedačka malá (stůl do 12 židlí)",
+    draw: (w, h, c) => planInternalMeeting(w, h, c, 5),
+  },
+  {
+    key: "internalBig", match: /interni zasedaci mistnost - velk/, wm: 6.2, hm: 4.0,
+    short: "Interní zasedačka velká (stůl nad 13 židlí)",
+    draw: (w, h, c) => planInternalMeeting(w, h, c, 7),
+  },
+  {
+    key: "internal", match: /zasedaci mistnost/, wm: 4.8, hm: 3.4, short: "Interní zasedačka",
+    draw: (w, h, c) => planInternalMeeting(w, h, c, 5),
+  },
+  {
+    key: "relax", match: /relax/, wm: 3.2, hm: 2.5, short: "Relax zóna (pohovka, květina, tapeta)",
+    draw: (w, h, c) => {
+      const objs = planRoomWalls(w, h, { fill: "#fdf6ee" });
+      // tapeta na stěně — jemný vzor
+      for (let i = 1; i < 8; i++) {
+        objs.push(planLine(4 + i * ((w - 8) / 8), 3, 4 + i * ((w - 8) / 8) - 6, h - 4, "#e6d3c0", 0.7));
+      }
+      objs.push(...planSofa(w * 0.12, h * 0.3, w * 0.46, h * 0.34, c));
+      objs.push(planCircle(w * 0.7, h * 0.52, mpx(0.3), c.body, c.line));
+      objs.push(...planPlant(w * 0.86, h * 0.62));
+      objs.push(planText("Relax", 6, h - 13, 7.5, "#8a6a4d"));
+      return objs;
+    },
+  },
+
+  // ---------- ostatní ----------
+  {
+    key: "generic", match: /.*/, wm: 1.9, hm: 1.5, short: null,
+    draw: (w, h, c) => [
+      planRect(0, h * 0.2, w, h * 0.6, c.body, { rx: 3, ry: 3, strokeWidth: 1.4, stroke: c.line }),
+    ],
+  },
+];
+
+// Kulatý pult (théka) podle skutečné podoby: vnější kruh pultu, vnitřní kruh
+// pracovní plochy a přísedy okolo. Vysoká théka je větší než nízká.
+function planRoundTheke(w, h, c, seats) {
+  const cx = w / 2; const cy = h / 2;
+  const chair = 16;
+  // Přísedy musí zůstat uvnitř půdorysu prvku, proto se rádius pultu odvozuje
+  // od velikosti židle — jinak by kolidovaly se sousedním nábytkem.
+  const r = Math.max(14, Math.min(w, h) / 2 - chair - 4);
+  const objs = [
+    planCircle(cx, cy, r, c.body, c.line, { strokeWidth: 2 }),         // pult
+    planCircle(cx, cy, r * 0.6, "#ffffff", c.line, { strokeWidth: 1 }), // pracovní plocha
+    planCircle(cx, cy, r * 0.18, c.body, c.line, { strokeWidth: 0.8 }),
+    ...planMonitor(cx, cy - r * 0.32, 12),
+  ];
+  for (let i = 0; i < seats; i++) {
+    const rad = (i / seats) * Math.PI * 2 + Math.PI / 2;
+    const sx = cx + Math.cos(rad) * (r + chair * 0.75);
+    const sy = cy + Math.sin(rad) * (r + chair * 0.75);
+    const dir = Math.abs(Math.cos(rad)) > Math.abs(Math.sin(rad))
+      ? (Math.cos(rad) > 0 ? "e" : "w") : (Math.sin(rad) > 0 ? "s" : "n");
+    objs.push(...planChairDir(sx, sy, chair, dir));
+  }
+  return objs;
+}
+
+// Interní zasedací místnost: velký hranatý stůl a židle po obou delších stranách
+// (plus po jedné na koncích). `perSide` řídí velikost — malá do 12 židlí,
+// velká nad 13.
+function planInternalMeeting(w, h, c, perSide) {
+  const objs = planRoomWalls(w, h);
+  const tw = w * 0.6; const th = h * 0.34;
+  const tx = (w - tw) / 2; const ty = (h - th) / 2;
+  objs.push(planRect(tx, ty, tw, th, c.body, { rx: 3, ry: 3, strokeWidth: 1.6, stroke: c.line }));
+  for (let i = 0; i < perSide; i++) {
+    const cx = tx + ((i + 0.5) * tw) / perSide;
+    objs.push(...planChairDir(cx, ty - 13, 18, "n"));
+    objs.push(...planChairDir(cx, ty + th + 13, 18, "s"));
+  }
+  objs.push(...planChairDir(tx - 13, ty + th / 2, 18, "w"));
+  objs.push(...planChairDir(tx + tw + 13, ty + th / 2, 18, "e"));
+  objs.push(...planTV(w * 0.4, 4, w * 0.2));
+  objs.push(planText(`${perSide * 2 + 2} míst`, 6, h - 13, 7.5, "#6b7482"));
+  return objs;
+}
+
+function planSymbolFor(furniture) {
+  const n = deacc(furniture).toLowerCase();
+  const found = PLAN_SYMBOLS.find((s) => s.match.test(n)) || PLAN_SYMBOLS[PLAN_SYMBOLS.length - 1];
+  // Rozměry v metrech se přepočtou na pixely jen jednou.
+  if (found.w === undefined) { found.w = mpx(found.wm); found.h = mpx(found.hm); }
+  return found;
 }
 
 /* --- model schématu: co se má kreslit --- */
@@ -7809,24 +8218,42 @@ function floorPlanModel(rows) {
   const zones = [];
   const counts = {};
   let pieces = 0;
+  let area = 0;
   ZONES.forEach((zone) => {
     const items = (rows || [])
       .filter((r) => r.zone === zone && Math.round(Number(r.piece_count) || 0) > 0)
       .map((r) => ({
         segment: r.segment, furniture: r.furniture,
         pieces: Math.round(Number(r.piece_count) || 0),
+        // WPL prvku na kus — z uloženého layoutu i z formuláře přichází součet
+        // za všechny kusy, tady se hodí i podíl na kus.
+        wplPerPiece: (Number(r.wpl_assigned) || 0) / Math.max(1, Math.round(Number(r.piece_count) || 0)),
         symbol: planSymbolFor(r.furniture),
       }));
     if (!items.length) return;
+    let zoneWpl = 0;
     items.forEach((it) => {
       pieces += it.pieces;
+      zoneWpl += it.wplPerPiece * it.pieces;
       const key = `${it.furniture}||${it.segment}`;
-      counts[key] = counts[key] || { furniture: it.furniture, segment: it.segment, zone, pieces: 0, symbol: it.symbol };
+      counts[key] = counts[key] || { furniture: it.furniture, segment: it.segment, zone, pieces: 0,
+        wpl: 0, symbol: it.symbol };
       counts[key].pieces += it.pieces;
+      counts[key].wpl += it.wplPerPiece * it.pieces;
     });
-    zones.push({ zone, items });
+    // Potřebná plocha místnosti: 25 m² na jeden WPL. Prvky, které se jako WPL
+    // nevykazují (fast tracky, čekací zóna, relax), do plochy nevstupují.
+    const zoneArea = zoneWpl * PLAN_M2_PER_WPL;
+    area += zoneArea;
+    zones.push({ zone, items, wpl: zoneWpl, area: zoneArea });
   });
-  return { zones, pieces, legend: Object.values(counts) };
+  return { zones, pieces, area, legend: Object.values(counts) };
+}
+
+// Formát plochy pro schéma: „62,5 m²“.
+function fmtArea(m2) {
+  const v = Math.round((Number(m2) || 0) * 10) / 10;
+  return `${String(v).replace(".", ",")} m²`;
 }
 
 /* --- rozvržení a vykreslení --- */
@@ -7877,6 +8304,7 @@ function drawFloorPlanScene(canvas, model, width) {
 
   let top = outerPad + wall;
   plan.forEach((room, ri) => {
+    const zi = ri;
     const roomH = headerH + room.height + pad * 2;
     const color = ZONE_COLORS[room.zone] || "#6b7684";
     const left = outerPad + wall;
@@ -7895,12 +8323,16 @@ function drawFloorPlanScene(canvas, model, width) {
       fontFamily: "Segoe UI, Arial, sans-serif", fill: "#ffffff",
       selectable: false, evented: false,
     }));
-    const pieceCount = room.placed.length;
-    canvas.add(new fabric.Text(`${pieceCount} ks`, {
-      left: left + roomW - 46, top: top + 5, fontSize: 11,
+    const zoneModel = model.zones[zi] || {};
+    const info = `${room.placed.length} ks · ${fmt1(zoneModel.wpl || 0)} WPL`
+      + ` · potřeba ${fmtArea(zoneModel.area || 0)}`;
+    const infoText = new fabric.Text(info, {
+      left: left + roomW - 10, top: top + 5, fontSize: 11, originX: "right",
       fontFamily: "Segoe UI, Arial, sans-serif", fill: "#ffffff",
       selectable: false, evented: false,
-    }));
+    });
+    infoText.set({ left: left + roomW - 10 - infoText.width });
+    canvas.add(infoText);
 
     // vstup do pobočky se kreslí u první místnosti (hala)
     if (ri === 0) {
@@ -7923,6 +8355,18 @@ function drawFloorPlanScene(canvas, model, width) {
       const [tr, tg, tb] = segmentTintRgb(pl.item.segment, 0.55);
       const colors = { body: `rgb(${tr},${tg},${tb})`, line: meta.color };
       const objs = pl.item.symbol.draw(pl.w, pl.h, colors);
+      // Barevné označení segmentu: u větších prvků i štítek s klíčem segmentu,
+      // aby bylo poznat, komu pracoviště patří, i bez porovnávání odstínů.
+      if (pl.w >= 62) {
+        const chipText = new fabric.Text(pl.item.segment, {
+          left: 4, top: 1.5, fontSize: 7, fontWeight: "bold",
+          fontFamily: "Segoe UI, Arial, sans-serif", fill: isDarkColor(meta.color) ? "#ffffff" : "#22282f",
+        });
+        objs.push(new fabric.Rect({
+          left: 2, top: 0, width: chipText.width + 5, height: 10, rx: 3, ry: 3,
+          fill: meta.color, opacity: 0.9, stroke: null,
+        }), chipText);
+      }
       const group = new fabric.Group(objs, {
         left: left + pad + pl.x, top: top + headerH + pad + pl.y,
         hasControls: false, hasBorders: true, lockRotation: true,
@@ -7944,6 +8388,29 @@ function drawFloorPlanScene(canvas, model, width) {
   return totalH;
 }
 
+// Vykreslí schéma do skrytého canvasu a vrátí PNG (pro PDF a pro export
+// obrázku bez ohledu na zoom, ve kterém se uživatel právě dívá).
+function floorPlanImage(rows, width = 1120) {
+  if (typeof fabric === "undefined") return null;
+  const model = floorPlanModel(rows);
+  if (!model.pieces) return null;
+  const el = document.createElement("canvas");
+  el.style.display = "none";
+  document.body.appendChild(el);
+  try {
+    const canvas = new fabric.StaticCanvas(el, { backgroundColor: "#ffffff" });
+    const height = drawFloorPlanScene(canvas, model, width);
+    const url = canvas.toDataURL({ format: "png", multiplier: 2 });
+    canvas.dispose();
+    return { url, width, height, model };
+  } catch (e) {
+    console.error("Schéma pobočky se nepodařilo vykreslit:", e);
+    return null;
+  } finally {
+    el.remove();
+  }
+}
+
 // Legenda pod schématem: symbol, prvek, segment, zóna a počet kusů.
 function floorPlanLegendHtml(model) {
   if (!model.legend.length) return "";
@@ -7952,7 +8419,9 @@ function floorPlanLegendHtml(model) {
     return `<li><span class="fp-swatch" style="background:${meta.color}33; border-color:${meta.color};"></span>
       <strong>${esc(l.furniture)}</strong> ${segmentBadgeHtml(l.segment)}
       <span class="muted">${ZONE_LABELS[l.zone]}</span> — <strong>${fmtPieces(l.pieces)} ks</strong>
-      ${l.symbol.short ? `<span class="muted">(kresleno jako ${esc(l.symbol.short)})</span>` : ""}</li>`;
+      ${l.wpl > 0 ? `<span class="muted">${fmt1(l.wpl)} WPL → ${fmtArea(l.wpl * PLAN_M2_PER_WPL)}</span>`
+        : `<span class="muted">bez WPL (do plochy se nepočítá)</span>`}
+      ${l.symbol.short ? `<span class="muted">(${esc(l.symbol.short)})</span>` : ""}</li>`;
   }).join("");
   return `<ul class="fp-legend">${rows}</ul>`;
 }
@@ -7985,7 +8454,8 @@ function renderFloorPlan(containerId, rows, meta, suffix = "") {
       <button class="btn secondary small" id="fpZoomIn${suffix}">+</button>
       <button class="btn secondary small" id="fpPng${suffix}">📷 Uložit jako PNG</button>
       <span class="muted">Celkem <strong>${fmtPieces(model.pieces)}</strong> prvků ·
-        prvky lze chytit myší a přesunout.</span>
+        potřebná plocha <strong>${fmtArea(model.area)}</strong>
+        (${PLAN_M2_PER_WPL} m² na 1 WPL) · prvky lze chytit myší a přesunout.</span>
     </div>
     ${cut ? `<div class="msg warn">Layout obsahuje ${fmtPieces(model.pieces)} prvků — schéma kreslí
       prvních ${PLAN_MAX_PIECES}, aby zůstalo čitelné.</div>` : ""}
@@ -7994,7 +8464,11 @@ function renderFloorPlan(containerId, rows, meta, suffix = "") {
     ${floorPlanLegendHtml(model)}
     <p class="muted">Schéma je <strong>návrh rozmístění</strong> — zóny jsou nakreslené jako místnosti
       pod sebou v pořadí service → meeting → backoffice → office room a v nich je přesný počet zadaných
-      prvků. Rozměry jsou schematické (1 px ≈ 2 cm), skutečné rozvržení pobočky určuje projektant.</p>`;
+      prvků. Prvky mají reálné proporce (měřítko 1 m = ${PLAN_PX_PER_M} px), skutečné rozvržení pobočky
+      určuje projektant. <strong>Potřebná velikost místnosti</strong> se počítá jako
+      <strong>${PLAN_M2_PER_WPL} m² na 1 WPL</strong>; prvky, které se jako WPL nevykazují (fast tracky,
+      čekací zóna, relax zóna), plochu nezvětšují. Barva výplně a obrysu prvku i štítek v jeho rohu
+      ukazují <strong>segment</strong>, kterému pracoviště patří.</p>`;
 
   if (cut) {
     let left = PLAN_MAX_PIECES;
@@ -8265,7 +8739,47 @@ function drawLayoutChapterPdf(pdf, startY, rows, meta, segmentRows, opt, chapter
       rows, marginX, pageBottom, color);
   }
 
+  // Schéma pobočky (půdorys) jako obrázek — vykreslí se do skrytého canvasu
+  // Fabricem a vloží se na celou šířku stránky.
+  if (opt.layoutFloorPlan) {
+    y = drawFloorPlanPdf(pdf, y, rows, marginX, pageBottom, color);
+  }
+
   return y;
+}
+
+// Schéma pobočky do PDF. Obrázek se vejde na stránku vždy — když je vysoký,
+// začne na nové stránce a případně se zmenší na dostupnou výšku.
+function drawFloorPlanPdf(pdf, startY, rows, marginX, pageBottom, color) {
+  const img = floorPlanImage(rows);
+  if (!img) return startY;
+  let y = drawPdfSectionTitle(pdf, startY, "Schéma pobočky (půdorys)", color, { need: 40 });
+
+  const maxW = PDF_CONTENT_W;
+  let w = maxW;
+  let h = (img.height / img.width) * w;
+  const roomOnPage = pageBottom - y;
+  const fullPage = pageBottom - 18;
+  if (h > roomOnPage) {
+    if (h > fullPage || roomOnPage < fullPage * 0.6) { pdf.addPage(); y = 18; }
+    const avail = pageBottom - y;
+    if (h > avail) { const k = avail / h; h = avail; w = maxW * k; }
+  }
+  pdf.addImage(img.url, "PNG", marginX + (maxW - w) / 2, y, w, h);
+  y += h + 3;
+
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.6);
+  pdf.setTextColor(107, 116, 130);
+  const note = `Zóny jsou nakreslené jako místnosti, v nich je přesný počet prvků z layoutu.`
+    + ` Potřebná plocha vychází z ${PLAN_M2_PER_WPL} m² na 1 WPL`
+    + ` (prvky bez WPL — fast tracky, čekací zóna, relax — do plochy nevstupují).`
+    + ` Celkem ${img.model.pieces} prvků, potřeba ${fmtArea(img.model.area)}.`;
+  pdf.splitTextToSize(note, PDF_CONTENT_W).forEach((line) => {
+    if (y + 4 > pageBottom) { pdf.addPage(); y = 18; }
+    pdf.text(line, marginX, y); y += 3.6;
+  });
+  pdf.setTextColor(0, 0, 0);
+  return y + 2;
 }
 
 // Analýza segmentů, zón a jejich prvků do PDF. jsPDF neumí sloučené buňky,
@@ -8520,9 +9034,11 @@ function showHistoryDetail(calculationKey, loadKey) {
 function snapshotRefData() {
   const absence = dbAll("SELECT segment, nepritomnost, homeoffice FROM absence ORDER BY segment")
     .map((r) => [r.segment, r.nepritomnost, r.homeoffice]);
-  const dotace = dbAll(`SELECT segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room
-    FROM casove_dotace ORDER BY segment, pozice`)
-    .map((r) => [r.segment, r.pozice, r.service_zone, r.meeting_zone, r.backoffice_zone, r.office_room]);
+  // Podíl fast tracku je sedmý prvek — starší verze ho nemají, čtecí kód s tím počítá.
+  const dotace = dbAll(`SELECT segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room,
+    fasttrack_share FROM casove_dotace ORDER BY segment, pozice`)
+    .map((r) => [r.segment, r.pozice, r.service_zone, r.meeting_zone, r.backoffice_zone, r.office_room,
+      r.fasttrack_share || 0]);
   // Nábytkové prvky jsou také referenční data — určují, co lze v layoutu přiřadit
   // a kolik WPL jeden kus pokryje, takže se verzují stejně jako absence a dotace.
   const furniture = dbAll("SELECT segment, zone, furniture, wpl_counter FROM furniture_to_zone ORDER BY segment, zone, furniture")
@@ -8575,11 +9091,13 @@ function renderReadonlyAbsenceTable(rows) {
 }
 
 function renderReadonlyDotaceTable(rows) {
-  const body = rows.map(([segment, pozice, s, m, b, o]) => `<tr>
+  const body = rows.map(([segment, pozice, s, m, b, o, ft]) => `<tr>
     <td>${esc(segment)}</td><td>${esc(pozice)}</td><td>${fmt1(s)}</td><td>${fmt1(m)}</td><td>${fmt1(b)}</td><td>${fmt1(o)}</td>
+    <td>${ft === undefined ? '<span class="muted">—</span>' : fmt1(ft)}</td>
   </tr>`).join("");
   return `<div class="table-wrap"><table>
-    <thead><tr><th>Segment</th><th>Pozice</th><th>ServiceZ %</th><th>MeetingZ %</th><th>BackofficeZ %</th><th>OfficeRoom %</th></tr></thead>
+    <thead><tr><th>Segment</th><th>Pozice</th><th>ServiceZ %</th><th>MeetingZ %</th><th>BackofficeZ %</th>
+      <th>OfficeRoom %</th><th title="Podíl backoffice času na Fast tracku backoffice">Fast track %</th></tr></thead>
     <tbody>${body}</tbody></table></div>`;
 }
 
@@ -9063,6 +9581,8 @@ function dotaceRowHtml(r) {
     <td><input type="text" value="${esc(r.segment)}" data-field="segment"></td>
     <td><input type="text" value="${esc(r.pozice)}" data-field="pozice"></td>
     ${ZONES.map(zoneCell).join("")}
+    <td class="ft-cell"><input type="number" step="1" min="0" max="100" value="${f(r.fasttrack_share)}"
+      data-field="fasttrack_share"></td>
     <td class="zbar-cell">${zoneSplitBarHtml(r, { compact: true })}</td>
     ${refVersionCellHtml(r.ref_version_id)}
     <td><button class="btn secondary small btn-del">✕</button></td>
@@ -9115,7 +9635,7 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
     if (!el) return;
     if (!db) { el.innerHTML = `<p class="muted">Nejprve připojte databázi.</p>`; return; }
     const rows = dbAll(`SELECT id, segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room,
-      ref_version_id FROM casove_dotace ORDER BY segment, pozice`);
+      fasttrack_share, ref_version_id FROM casove_dotace ORDER BY segment, pozice`);
     const byText = splitByFilter(filterKey, rows, (r) => `${r.segment} ${r.pozice}`);
     const byCols = splitByColumnFilters(filterKey, byText.shown);
     const shown = byCols.shown;
@@ -9132,6 +9652,10 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
     el.innerHTML = `<div class="table-wrap"><table>
       <thead><tr>${th("segment", "Segment")}${th("pozice", "Pozice")}
         ${ZONES.map((z, i) => th(z, ["ServiceZ %", "MeetingZ %", "BackofficeZ %", "OfficeRoom %"][i])).join("")}
+        ${th("fasttrack_share", "Fast track %",
+          "Kolik % backoffice času pozice odsedí na Fast tracku backoffice místo vlastního"
+          + " kancelářského místa. Tato část potřeby WPL se v layoutu přesune z „Kancelářské místo“"
+          + " na „Fast track backoffice“, který se nevykazuje jako WPL.")}
         ${th("celkem", "Vytížení zón", "Řadí podle součtu dotací")}
         <th title="Verze referenčních dat, ve které řádek naposledy vznikl nebo se změnil">Verze</th><th></th></tr></thead>
       <tbody id="${tbodyId}">
@@ -9177,10 +9701,12 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
         toNumberOrNull(tr.querySelector('[data-field="meeting_zone"]').value),
         toNumberOrNull(tr.querySelector('[data-field="backoffice_zone"]').value),
         toNumberOrNull(tr.querySelector('[data-field="office_room"]').value),
+        toNumberOrNull(tr.querySelector('[data-field="fasttrack_share"]').value) ?? 0,
       ] });
     }
     hiddenFilterRows(tableId).forEach((r) => ordered.push({ order: r.id ?? BIG,
-      row: [r.segment, r.pozice, r.service_zone, r.meeting_zone, r.backoffice_zone, r.office_room] }));
+      row: [r.segment, r.pozice, r.service_zone, r.meeting_zone, r.backoffice_zone, r.office_room,
+        r.fasttrack_share ?? 0] }));
     // Zpět do databáze se zapisuje v původním pořadí (podle id), ne v tom
     // zobrazeném — pořadí pozic v checklistu se řídí právě pořadím vložení.
     ordered.sort((a, b) => a.order - b.order);
@@ -9189,17 +9715,20 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
     // Evidence verze u jednotlivých řádků — viz saveAbsenceTable(): nezměněné
     // řádky si ponechají původní stamp, změněné a nové dostanou číslo nové verze.
     const old = {};
-    dbAll(`SELECT segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room, ref_version_id
-      FROM casove_dotace`).forEach((r) => { old[dotaceKey(r.segment, r.pozice)] = r; });
-    const changed = data.filter(([segment, pozice, s, m, b, o]) => {
+    dbAll(`SELECT segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room,
+      fasttrack_share, ref_version_id FROM casove_dotace`)
+      .forEach((r) => { old[dotaceKey(r.segment, r.pozice)] = r; });
+    const changed = data.filter(([segment, pozice, s, m, b, o, ft]) => {
       const prev = old[dotaceKey(segment, pozice)];
       return !prev || prev.service_zone !== s || prev.meeting_zone !== m
-        || prev.backoffice_zone !== b || prev.office_room !== o;
+        || prev.backoffice_zone !== b || prev.office_room !== o
+        || (prev.fasttrack_share || 0) !== (ft || 0);
     }).map(([segment, pozice]) => [segment, pozice]);
 
     dbRun("DELETE FROM casove_dotace");
     const ins = db.prepare(`INSERT INTO casove_dotace
-      (segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room, ref_version_id) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      (segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room, fasttrack_share, ref_version_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
     data.forEach((r) => {
       const prev = old[dotaceKey(r[0], r[1])];
       ins.run([...r, prev ? prev.ref_version_id : null]);
@@ -9216,13 +9745,15 @@ function makeDotaceEditor(tableId, filterId, tbodyId) {
     if (filterInput) filterInput.value = "";
     dotaceEditorMain.render();
     renderRefVersionsList();
+    renderLayoutRulesHelp();   // text pravidla o fast tracku vychází z nastavení pozic
     toast("Tabulka časových dotací byla uložena a zaznamenána nová verze referenčních dat.", "ok");
   }
 
   function addRow() {
     const tbody = document.getElementById(tbodyId);
     if (!tbody) return;
-    tbody.insertAdjacentHTML("beforeend", dotaceRowHtml({ segment: "", pozice: "", service_zone: null, meeting_zone: null, backoffice_zone: null, office_room: null }));
+    tbody.insertAdjacentHTML("beforeend", dotaceRowHtml({ segment: "", pozice: "", service_zone: null,
+      meeting_zone: null, backoffice_zone: null, office_room: null, fasttrack_share: 0 }));
     wireDeleteButtons(tbodyId);
     const tr = tbody.lastElementChild;
     tr.querySelectorAll('input[type="number"]').forEach((inp) => {
@@ -10262,6 +10793,7 @@ function refreshAllTabsAfterDbChange() {
   renderPobockyDatalist();
   renderSegmentsTable();
   renderFurnitureTable();
+  renderLayoutRulesHelp();
   renderVisitorList();
   renderAnalyticsSources();
   renderBranchExportList();
@@ -10430,7 +10962,7 @@ async function init() {
   renderAnalyticsSources();
 
   // Nápověda k pravidlům předvyplnění layoutu — obsah se generuje z LAYOUT_RULES.
-  document.getElementById("layoutRulesHelp").innerHTML = layoutRulesHelpHtml();
+  renderLayoutRulesHelp();
 
   updateStepper();
 

@@ -280,6 +280,27 @@ checklistu“) a **Nábytek** navíc umí:
 
 Heatmapa i pruh se přepočítávají **živě při psaní**, ještě před uložením.
 
+### Sloupec „Fast track %“ u pozice
+
+V tabulce **Pozice a jejich časové dotace** je sloupec **„Fast track %“**:
+kolik procent svého backoffice času daná pozice odsedí na **Fast tracku
+backoffice** místo vlastního kancelářského místa.
+
+- Hodnota je **nastavení u každé pozice** (a u každého segmentu zvlášť) —
+  dřív byla zadrátovaná v kódu.
+- Výchozí stav odpovídá dosavadnímu chování: `osobní bankéř - medior` **20 %**,
+  `osobní bankéř - senior` **10 %**, ostatní pozice **0 %**. Do existujících
+  databází se sloupec doplní automaticky při připojení (a výchozí hodnoty se
+  nastaví jen tehdy, když v databázi ještě žádná nejsou — vynulované hodnoty se
+  nepřepisují).
+- Podíl vstupuje do **předvyplnění layoutu**: potřeba WPL se sníží u „Kancelářské
+  místo“ a přesune na „Fast track backoffice“ (viz „Automatické předvyplnění
+  podle pravidel“). Text pravidla v nápovědě „?“ se generuje z nastavení, takže
+  vždy odpovídá tomu, co je v referenčních datech.
+- Sloupec se **verzuje** společně s časovými dotacemi (je i ve snapshotu verze),
+  takže kalkulace zůstává reprodukovatelná — starší kalkulace se dopočítají
+  podílem z verze, se kterou vznikly.
+
 ### Kopírování vyfiltrovaného nábytku do schránky
 
 V záložce „Data a Excel šablona“ v části **Nábytek** je tlačítko
@@ -654,7 +675,7 @@ obsah budoucího PDF. Vypnutí kterékoli části pořadí ostatních nezmění.
 | --- | --- | --- |
 | 1 | **Kalkulace FTE → WPL** (modrá) | šedý blok s detaily · informace o referenčních datech · přehled pozic z checklistu · souhrnná tabulka (WPL po zónách) · klíčové ukazatele a benchmark · upozornění z výpočtu |
 | 2 | **Kapacita pobočky** (zelená) | roční kapacita · návštěvnost a doporučení prostor (+ srovnání s kalkulací) · otevírací doba a návštěvy na bankéře · Monte Carlo model průměrného dne · distribuce celkové denní FTE poptávky · kapacitní shrnutí · tři kontroly míst pro schůzky |
-| 3 | **Layout pobočky** (fialová) | šedý blok s detaily · kompletní přehled WPL po zónách a segmentech · seznam nábytku po zónách (kompaktní výpis) · analýza segmentů, zón a jejich prvků |
+| 3 | **Layout pobočky** (fialová) | šedý blok s detaily · kompletní přehled WPL po zónách a segmentech · seznam nábytku po zónách (kompaktní výpis) · analýza segmentů, zón a jejich prvků · schéma pobočky (půdorys — volitelně, viz níže) |
 
 ### Záhlaví titulní stránky
 
@@ -885,9 +906,11 @@ Poznámky k chování:
   segment zvlášť s jeho vlastní potřebou WPL.
 - **Při úpravě už uloženého layoutu se předvyplnění neprovádí**, aby nepřepsalo
   hodnoty, které uživatel dříve zadal.
-- **Přesun backoffice času na fast track:** část backoffice času vybraných pozic se odsedí na fast
-  tracku, ne na vlastním kancelářském místě — **osobní bankéř - medior 20 %**, **osobní bankéř -
-  senior 10 %**. Tato část potřeby WPL se odečte od „Kancelářské místo“ a přiřadí se jako fast
+- **Přesun backoffice času na fast track:** část backoffice času pozice se odsedí na fast tracku,
+  ne na vlastním kancelářském místě. Podíl je **nastavení u každé pozice** — sloupec
+  **„Fast track %“** v tabulce „Pozice a jejich časové dotace“ (viz níže). Výchozí hodnoty
+  odpovídají dosavadnímu chování: **osobní bankéř - medior 20 %**, **osobní bankéř - senior 10 %**,
+  ostatní pozice 0 %. Tato část potřeby WPL se odečte od „Kancelářské místo“ a přiřadí se jako fast
   tracky (zaokrouhleno nahoru). Fast track se nevykazuje jako WPL, takže se šetří plocha i náklady.
   Příklad: potřeba backoffice 2,10 WPL, z toho 0,31 WPL na fast track → dřív 2 kancelářská místa
   + 0 fast tracků, nově **1 kancelářské místo + 2 fast tracky**. Přesun se počítá ze stejných
@@ -975,27 +998,49 @@ v historii) je sekce **„Schéma pobočky (půdorys)“**: z počtů kusů se n
 půdorysné schéma pobočky přes **Fabric.js** (`vendor/fabric.min.js`).
 
 - Zóny jsou nakreslené jako **místnosti pod sebou** v pořadí service → meeting →
-  → backoffice → office room, každá s pruhem v barvě zóny, názvem a počtem kusů.
-  U první místnosti (hala) je vyznačený **vstup** včetně otevírání dveří a volné
-  místo, aby na něm nestál nábytek.
+  backoffice → office room, každá s pruhem v barvě zóny, názvem, počtem kusů,
+  součtem WPL a **potřebnou velikostí místnosti v m²**. U první místnosti (hala)
+  je vyznačený **vstup** včetně otevírání dveří a volné místo, aby na něm nestál
+  nábytek.
+- **Potřebná velikost místnosti = 25 m² na 1 WPL.** Do plochy vstupují jen prvky,
+  které se vykazují jako WPL — **fast tracky, čekací zóna a relax zóna plochu
+  nezvětšují** (mají `wpl_counter = 0`). Nad schématem i v legendě je vidět
+  celková potřeba plochy; je to stejné pravidlo jako u ukazatele „Potřebná plocha
+  (WPL × 25 m²)“ v klíčových ukazatelích.
 - V místnostech je **přesný počet zadaných prvků** — každý kus je samostatný
-  symbol, ne jen číslo v tabulce. Prvky se kreslí podle druhu:
+  kreslený symbol v reálných proporcích (měřítko **1 m = 40 px**), takže je
+  poznat, že stůl 160 cm je větší než stůl 120 cm.
 
-  | Prvek v layoutu | Symbol |
+  | Prvek v layoutu | Jak je nakreslený |
   | --- | --- |
-  | Theke (nízká/vysoká), pult | pracovní deska s monitorem, židle bankéře a židle klienta |
-  | Jednací místnost, zasedací místnost | vlastní místnost se stolem, židlemi (6, u „malé“ 4) a otevíráním dveří |
-  | Pokladní ostrov | pult se dvěma pracovními místy, židlemi a místy pro klienty |
-  | Kancelářské místo | stůl s monitorem a židlí |
-  | Fast track (stolek a židle) | kulatý stolek se dvěma židlemi |
-  | Fast track backoffice | úzký stůl s monitorem a židlí |
-  | Lenka (vítací) | zaoblený vítací pult se židlí |
-  | Čekací zóna (obývák) | pohovka pro tři osoby |
-  | Čekací zóna (židle) | jedna židle |
-  | cokoli dalšího | obecný obdélník s barvou segmentu |
+  | **Theke - vysoká / nízká** | kulatý pult s vnitřní pracovní plochou, monitorem a přísedy okolo; vysoká je větší (2,4 m) než nízká (1,9 m) |
+  | **Fast track (stolek a židle)** | kulatý stolek se **třemi zaoblenými přísedy** okolo |
+  | **Lenka** | stůl s počítačem, židle bankéře a **dvě židle klienta** |
+  | **Lenka vítací**, **Recepce** | **půlkruhový pult s přísedem a půlkruhovým paravánem** za ním |
+  | **Martička** | hranatý stůl s počítačem, dvě židle klienta a jedna bankéře |
+  | **Martička s TT** | totéž s **pokladnou (TT)** na stole |
+  | **Pokladna s bezpečnostní nástavbou** | těžký pult s prosklenou nástavbou a trezorovým blokem |
+  | **Pokladní ostrov typu C** | hranatý pult se **dvěma** pracovišti s TT, židle jen pro bankéře |
+  | **Pokladní ostrov typu 1/2C** | hranatý pult s **jedním** pracovištěm s TT, židle jen pro bankéře |
+  | **Čekací zóna (židle)** | obyčejná židle u stěny |
+  | **Čekací zóna (obývák)** | tři židle a stoleček na **dřevěné podlaze 2 × 2 m** |
+  | **Čekací zóna (lounge)** | pohovka, dvě křesla a stolek na dřevěné podlaze |
+  | **Semidescreete room** | menší jednací místnost, **malý půlkruhový stůl**, dvě židle klienta, jedna bankéře |
+  | **Jednací místnost** | větší místnost, **velký půlkruhový stůl**, dvě židle klienta, jedna bankéře, **televize, počítač a nabíječky** |
+  | **Flex box** | **skleněná budka** (přerušovaný obrys), stoleček uprostřed a dvě židle proti sobě |
+  | **Záliv** | polouzavřené místo s paravány, stůl s počítačem, bankéř + dva klienti |
+  | **Kancelářské místo** | stůl **160 cm** s počítačem a židlí |
+  | **Fast track backoffice** | stůl do **120 cm** **bez počítače**, se židlí |
+  | **Interní zasedací místnost - malá** | místnost s velkým hranatým stolem, **12 židlí** |
+  | **Interní zasedací místnost - velká** | místnost s velkým hranatým stolem, **16 židlí** |
+  | **Kancelář** | místnost s pracovním stolem, počítačem a jednou židlí |
+  | **Relax zóna** | místnost s pohovkou, stolkem, **květinou a tapetou** |
+  | cokoli dalšího | obecný obdélník v barvě segmentu |
 
-- Barva výplně je **světlý odstín barvy segmentu**, obrys je barva segmentu —
-  na první pohled je vidět, čí je které pracoviště. Židle jsou šedé.
+- **Barevné označení segmentů:** výplň prvku je světlý odstín barvy segmentu,
+  obrys jeho plná barva a u větších prvků je v levém horním rohu ještě **štítek
+  s klíčem segmentu** (MMMA, PROVOZ, …). Židle a přísedy jsou neutrálně šedé,
+  aby barva segmentu vynikla.
 - **Prvky lze chytit myší a přesunout** (přichytávají se na mřížku 5 px),
   tlačítkem **„↺ Přeskládat“** se schéma vrátí do automatického rozvržení.
   Dále je v liště **zoom** (50–200 %) a **„📷 Uložit jako PNG“**.
@@ -1003,11 +1048,25 @@ půdorysné schéma pobočky přes **Fabric.js** (`vendor/fabric.min.js`).
   (např. „2/4“), segmentem a zónou.
 - Ve formuláři se schéma **překresluje průběžně** (s krátkým zpožděním po
   poslední změně počtu), takže je hned vidět, co přidání dalšího kusu znamená.
-- Pod schématem je **legenda**: prvek, segment, zóna, počet kusů a jakým symbolem
-  se kreslí.
-- Rozměry jsou schematické (1 px ≈ 2 cm) — jde o **návrh rozmístění**, ne
-  o projektovou dokumentaci. Při více než 320 prvcích schéma nakreslí prvních 320
+- Pod schématem je **legenda**: prvek, segment, zóna, počet kusů, WPL a plocha,
+  kterou si vyžádá, a jakým symbolem se kreslí.
+- Jde o **návrh rozmístění**, ne o projektovou dokumentaci — skutečné rozvržení
+  určuje projektant. Při více než 320 prvcích schéma nakreslí prvních 320
   a upozorní na to, aby zůstalo čitelné.
+
+#### Schéma v PDF sestavě
+
+V boxu **„Co se má vygenerovat“** je v kapitole *3 Layout pobočky* volba
+**„Schéma pobočky (půdorys s nakresleným nábytkem)“**. Ve výchozím stavu je
+**vypnutá** (schéma je obrázek na celou šířku stránky) — po zaškrtnutí se vytiskne
+na konec kapitoly layoutu:
+
+- schéma se vykreslí do skrytého canvasu (nezávisle na tom, jak je uživatel
+  právě odzoomovaný nebo jak si prvky poposunul) a vloží se jako **PNG
+  v dvojnásobném rozlišení**,
+- když se na zbytek stránky nevejde, začne na nové stránce a případně se zmenší
+  tak, aby se na stránku vešlo celé,
+- pod obrázkem je poznámka s pravidlem 25 m²/WPL a součtem prvků a plochy.
 
 ### Export layoutu do PDF
 
@@ -1239,9 +1298,13 @@ záznam v tabulce časových dotací, řádek se vynechá a zobrazí se upozorn�
   v HTML reportu.
 - Schéma pobočky (půdorys) kreslí **Fabric.js 5.3** (`vendor/fabric.min.js`,
   MIT licence v `vendor/fabric-LICENSE.txt`) do HTML canvasu. Symboly nábytku jsou
-  skládané z primitiv (obdélníky, kružnice, oblouk dveří) a seskupené do
-  `fabric.Group`, takže se každý kus chová jako jeden posuvný objekt. Každá
-  instance sekce (kalkulace / historie) má vlastní canvas i stav (`floorPlanState`).
+  skládané z primitiv (obdélníky, kružnice, oblouky dveří, cesty půlkruhových stolů)
+  a seskupené do `fabric.Group`, takže se každý kus chová jako jeden posuvný objekt.
+  Rozměry symbolů jsou zadané **v metrech** a přepočítávají se konstantou
+  `PLAN_PX_PER_M` (40 px = 1 m). Každá instance sekce (kalkulace / historie) má
+  vlastní canvas i stav (`floorPlanState`). Pro PDF se stejná scéna vykreslí do
+  odloženého `fabric.StaticCanvas` a exportuje jako PNG, takže tisk nezávisí na
+  aktuálním zoomu ani na ručně posunutých prvcích.
 - Doplňkové datové soubory („Dodatečná analytika“) se hledají dvěma cestami:
   přes `fetch()` (funguje jen při běhu na http/https) a přes **File System Access
   API** — handle složky s daty se ukládá do IndexedDB (`dataDir`) vedle handle

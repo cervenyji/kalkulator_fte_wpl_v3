@@ -39,6 +39,7 @@ def main():
         meeting_zone REAL,
         backoffice_zone REAL,
         office_room REAL,
+        fasttrack_share REAL,
         ref_version_id INTEGER
     )
     """)
@@ -356,6 +357,12 @@ def main():
         INSERT INTO casove_dotace (segment, pozice, service_zone, meeting_zone, backoffice_zone, office_room)
         VALUES (?, ?, ?, ?, ?, ?)
     """, casove_dotace_data)
+
+    # Podíl backoffice času, který pozice odsedí na Fast tracku backoffice místo
+    # vlastního kancelářského místa (v %). Nastavení u pozice, dá se změnit v aplikaci.
+    cur.execute("UPDATE casove_dotace SET fasttrack_share = 0")
+    for pozice, pct in (("osobní bankéř - medior", 20), ("osobní bankéř - senior", 10)):
+        cur.execute("UPDATE casove_dotace SET fasttrack_share = ? WHERE LOWER(pozice) = ?", (pct, pozice))
 
     furniture_data = [
         # (segment, furniture, zone, wpl_counter)
