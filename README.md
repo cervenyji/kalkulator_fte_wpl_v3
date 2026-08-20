@@ -1055,9 +1055,12 @@ půdorysné schéma pobočky přes **Fabric.js** (`vendor/fabric.min.js`).
 - **Pod každým prvkem je jeho celý název** (láme se do dvou i více řádků), takže
   je bez legendy jasné, o co jde.
 - **Prvky bez WPL** (fast tracky, čekací zóna, relax zóna, vybavení pobočky) jsou
-  v každé místnosti **vpravo za čerchovanou čárou** s poznámkou „PRVKY BEZ WPL
+  v každé místnosti **za čerchovanou čárou** s poznámkou „PRVKY BEZ WPL
   (nepočítají se do plochy)“ — na první pohled je vidět, co plochu místnosti
   nezvětšuje.
+- Když jsou zadané **bankomaty**, dělí se service zone **na třetiny**: vlevo prvky
+  s WPL, uprostřed prvky bez WPL za čerchovanou čárou a vpravo **samoobslužná
+  servisní zóna oddělená zdí** (plná černá čára) s nakreslenými bankomaty.
 - **Barevné označení segmentů:** výplň prvku je světlý odstín barvy segmentu,
   obrys jeho plná barva a u větších prvků je v levém horním rohu ještě **štítek
   s klíčem segmentu** (MMMA, PROVOZ, …). Židle a přísedy jsou neutrálně šedé,
@@ -1069,8 +1072,6 @@ půdorysné schéma pobočky přes **Fabric.js** (`vendor/fabric.min.js`).
   (např. „2/4“), segmentem a zónou.
 - Ve formuláři se schéma **překresluje průběžně** (s krátkým zpožděním po
   poslední změně počtu), takže je hned vidět, co přidání dalšího kusu znamená.
-- Pod schématem je **legenda**: prvek, segment, zóna, počet kusů, WPL a plocha,
-  kterou si vyžádá, a jakým symbolem se kreslí.
 - Jde o **návrh rozmístění**, ne o projektovou dokumentaci — skutečné rozvržení
   určuje projektant. Při více než 320 prvcích schéma nakreslí prvních 320
   a upozorní na to, aby zůstalo čitelné.
@@ -1083,7 +1084,7 @@ schématu a uloží ke kalkulaci (tabulka `layout_extras`):
 
 | Nastavení | Co se nakreslí a kam |
 | --- | --- |
-| **Bankomaty** — počet po typech (Výběrový, Vkladový, Recyklační, Transakční, Příprava) | při **jednom a více** se v service zone přikreslí vyznačená **Samoobslužná servisní zóna** s tolika bankomaty, kolik je zadáno; každý má u sebe zkratku a typ |
+| **Bankomaty** — počet po typech (Výběrový, Vkladový, Recyklační, Transakční, Příprava) | při **jednom a více** vznikne v service zone **Samoobslužná servisní zóna oddělená zdí** (pravá třetina boxu servisní zóny) a v ní tolik bankomatů, kolik je zadáno; každý má u sebe zkratku typu a celý název |
 | **Denní místnost** (zaškrtávátko) | do backoffice **místnost s kuchyňkou, mikrovlnkou, jídelním stolem se čtyřmi židlemi, televizí, květinou a koši** |
 | **Frontmatic** (zaškrtávátko) | do service zone **vyvolávací systém** — kiosek s výdejem lístků a tabule s čísly |
 | **Bezpečnostní schránky pro klienty** (zaškrtávátko) | do service zone **stěna schránek**, kam si klienti ukládají věci |

@@ -8290,41 +8290,22 @@ function extrasCount(extras) {
 
 /* --- symboly vybavení (velikost se u samoobslužné zóny počítá z počtu) --- */
 
-// Samoobslužná servisní zóna: vyznačená plocha s bankomaty podle typů.
-function atmZoneSymbol(extras) {
-  const list = ATM_TYPES.map((t) => ({ type: t, n: Number((extras.atm || {})[t]) || 0 })).filter((x) => x.n > 0);
-  const total = list.reduce((s, x) => s + x.n, 0);
-  const perRow = Math.min(Math.max(total, 1), 4);
-  const rows = Math.ceil(total / perRow);
-  const bw = mpx(0.9); const bh = mpx(1.0); const g = 7;
-  const w = perRow * bw + (perRow + 1) * g;
-  const h = rows * (bh + 12) + (rows + 1) * g + 13;
-  return {
-    key: "atmZone", w, h, short: `Samoobslužná servisní zóna (${total} bankomatů)`,
-    draw: (W, H) => {
-      const objs = [
-        planRect(0, 0, W, H, "#eef6ff", { stroke: "#2770f0", strokeWidth: 1.4, dash: [7, 4], rx: 3, ry: 3 }),
-        planText("SAMOOBSLUŽNÁ SERVISNÍ ZÓNA", 6, 4, 7, "#1b4fa8", { bold: true }),
-      ];
-      let i = 0;
-      list.forEach((x) => {
-        for (let k = 0; k < x.n; k++) {
-          const col = i % perRow; const row = Math.floor(i / perRow);
-          const bx = g + col * (bw + g);
-          const by = 13 + g + row * (bh + 12 + g);
-          objs.push(planRect(bx, by, bw, bh, "#dbe6f5", { stroke: "#2770f0", strokeWidth: 1.4, rx: 2, ry: 2 }));
-          objs.push(planRect(bx + 4, by + 4, bw - 8, bh * 0.34, "#22303f", { rx: 1.5, ry: 1.5, strokeWidth: 0 }));
-          objs.push(planRect(bx + 6, by + bh * 0.46, bw - 12, bh * 0.2, "#ffffff", { rx: 1, ry: 1 }));
-          objs.push(planRect(bx + bw * 0.2, by + bh * 0.74, bw * 0.6, 4, "#8a94a6", { strokeWidth: 0 }));
-          objs.push(planText(ATM_SHORT[x.type] || x.type.slice(0, 3).toUpperCase(),
-            bx + 4, by + bh + 1, 6.5, "#1b4fa8", { bold: true }));
-          objs.push(planText(x.type, bx + 4, by + bh + 8, 5.6, "#5b6472"));
-          i++;
-        }
-      });
-      return objs;
-    },
+// Bankomat v samoobslužné zóně. Každý zadaný kus je vlastní prvek, takže se
+// zóna, oddělená zdí, zaplní přesně tolika bankomaty, kolik je zadáno.
+function atmSymbol(type) {
+  const key = `atm_${deacc(type).toLowerCase().replace(/\W+/g, "")}`;
+  const sym = {
+    key, wm: 1.0, hm: 1.1, short: `Bankomat — ${type}`,
+    draw: (w, h) => [
+      planRect(0, 0, w, h, "#dbe6f5", { stroke: "#2770f0", strokeWidth: 1.6, rx: 3, ry: 3 }),
+      planRect(4, 4, w - 8, h * 0.34, "#22303f", { rx: 1.5, ry: 1.5, strokeWidth: 0 }),   // obrazovka
+      planRect(7, h * 0.46, w - 14, h * 0.18, "#ffffff", { rx: 1, ry: 1 }),                // klávesnice
+      planRect(w * 0.2, h * 0.72, w * 0.6, 5, "#8a94a6", { strokeWidth: 0 }),              // výdej
+      planText(ATM_SHORT[type] || String(type).slice(0, 3).toUpperCase(), 5, h * 0.82, 6.5,
+        "#1b4fa8", { bold: true }),
+    ],
   };
+  return extraSymbol(sym);
 }
 
 // Denní místnost pro zaměstnance: kuchyňská linka, mikrovlnka, stůl se židlemi,
@@ -8413,11 +8394,14 @@ function extrasPieces(extras) {
   const piece = (zone, furniture, symbol, pieces = 1) => {
     byZone[zone].push({ segment: "", furniture, pieces, wplPerPiece: 0, symbol, virtual: true });
   };
-  const atms = atmTotal(extras);
-  if (atms > 0) {
-    const sym = atmZoneSymbol(extras);
-    piece("service_zone", `Samoobslužná servisní zóna — ${atms} bankomatů`, sym);
-  }
+  // Bankomaty jdou do samoobslužné zóny — vlastní část servisní zóny oddělená zdí.
+  ATM_TYPES.forEach((type) => {
+    const n = Number((extras.atm || {})[type]) || 0;
+    if (n > 0) {
+      byZone.service_zone.push({ segment: "", furniture: `Bankomat — ${type}`, pieces: n,
+        wplPerPiece: 0, symbol: atmSymbol(type), virtual: true, selfService: true });
+    }
+  });
   if (extras.frontmatic) piece("service_zone", "Frontmatic (vyvolávací systém)", extraSymbol(FRONTMATIC_SYMBOL));
   if (extras.lockers) piece("service_zone", "Bezpečnostní schránky (klientské)", extraSymbol(LOCKERS_SYMBOL));
   if (extras.dayRoom) piece("backoffice_zone", "Denní místnost", extraSymbol(DAY_ROOM_SYMBOL));
@@ -8607,32 +8591,47 @@ function drawFloorPlanScene(canvas, model, width, options = {}) {
     return { placed, height: y + lineH };
   };
 
-  // rozvržení nasucho — nejdřív se spočítají výšky místností
+  // rozvržení nasucho — nejdřív se spočítají výšky místností.
+  // Zóna se dělí až na tři části: prvky s WPL, prvky bez WPL (za čerchovanou
+  // čárou) a samoobslužná zóna s bankomaty (oddělená zdí — černou čárou).
+  // Když je samoobslužná zóna, dostane každá část třetinu šířky.
   const plan = model.zones.map((z, zi) => {
     const inset = zi === 0 ? entranceW : 0;   // u vstupu se nekreslí nábytek
     const roomW = contentW - inset;
     const wplItems = z.items.filter((it) => (it.wplPerPiece || 0) > 0);
-    const freeItems = z.items.filter((it) => (it.wplPerPiece || 0) <= 0);
+    const freeItems = z.items.filter((it) => (it.wplPerPiece || 0) <= 0 && !it.selfService);
+    const selfItems = z.items.filter((it) => it.selfService);
 
-    let divX = null;
-    let left = flow(wplItems, roomW, inset);
-    let right = { placed: [], height: 0 };
-    if (freeItems.length && wplItems.length) {
+    let dashX = null;      // čerchovaná čára před prvky bez WPL
+    let wallX = null;      // zeď před samoobslužnou zónou
+    let cols = [];
+
+    if (selfItems.length) {
+      const third = (roomW - divGap * 2) / 3;
+      cols = [flow(wplItems, third, inset)];
+      if (freeItems.length) {
+        cols.push(flow(freeItems, third, inset + third + divGap));
+        dashX = inset + third + divGap / 2;
+      }
+      cols.push(flow(selfItems, third, inset + (third + divGap) * 2));
+      wallX = inset + (third + divGap) * 2 - divGap / 2;
+    } else if (freeItems.length && wplItems.length) {
       const maxFree = Math.max(...freeItems.map((it) => pieceW(it)));
       const rightW = Math.min(Math.max(maxFree + gap, roomW * 0.3), roomW * 0.5);
       const leftW = roomW - rightW - divGap;
       if (leftW >= 140) {
-        left = flow(wplItems, leftW, inset);
-        right = flow(freeItems, rightW, inset + leftW + divGap);
-        divX = inset + leftW + divGap / 2;
+        cols = [flow(wplItems, leftW, inset), flow(freeItems, rightW, inset + leftW + divGap)];
+        dashX = inset + leftW + divGap / 2;
       } else {
-        left = flow([...wplItems, ...freeItems], roomW, inset);
+        cols = [flow([...wplItems, ...freeItems], roomW, inset)];
       }
-    } else if (freeItems.length) {
-      left = flow(freeItems, roomW, inset);
+    } else {
+      cols = [flow(freeItems.length ? freeItems : wplItems, roomW, inset)];
     }
-    const placed = [...left.placed, ...right.placed];
-    return { zone: z.zone, placed, divX, height: Math.max(left.height, right.height) };
+
+    const placed = cols.flatMap((c) => c.placed);
+    return { zone: z.zone, placed, dashX, wallX,
+      height: Math.max(...cols.map((c) => c.height), 0) };
   });
 
   const totalH = outerPad * 2 + wall * 2
@@ -8677,15 +8676,27 @@ function drawFloorPlanScene(canvas, model, width, options = {}) {
     canvas.add(infoText);
 
     // čerchovaná čára oddělující prvky bez WPL
-    if (room.divX !== null) {
-      canvas.add(new fabric.Line([left + pad + room.divX, top + headerH + 4,
-        left + pad + room.divX, top + roomH - 4], {
+    if (room.dashX !== null) {
+      canvas.add(new fabric.Line([left + pad + room.dashX, top + headerH + 4,
+        left + pad + room.dashX, top + roomH - 4], {
         stroke: "#8a94a6", strokeWidth: 1.2, strokeDashArray: [8, 3, 2, 3],
         selectable: false, evented: false,
       }));
       canvas.add(new fabric.Text("PRVKY BEZ WPL (nepočítají se do plochy)", {
-        left: left + pad + room.divX + 6, top: top + headerH + 4, fontSize: 7,
+        left: left + pad + room.dashX + 6, top: top + headerH + 4, fontSize: 7,
         fontFamily: "Segoe UI, Arial, sans-serif", fill: "#8a94a6",
+        selectable: false, evented: false,
+      }));
+    }
+    // zeď oddělující samoobslužnou zónu (plná černá čára)
+    if (room.wallX !== null) {
+      canvas.add(new fabric.Line([left + pad + room.wallX, top + headerH,
+        left + pad + room.wallX, top + roomH], {
+        stroke: "#111820", strokeWidth: 3.4, selectable: false, evented: false,
+      }));
+      canvas.add(new fabric.Text("SAMOOBSLUŽNÁ SERVISNÍ ZÓNA (oddělená zdí)", {
+        left: left + pad + room.wallX + 8, top: top + headerH + 4, fontSize: 7.4, fontWeight: "bold",
+        fontFamily: "Segoe UI, Arial, sans-serif", fill: "#111820",
         selectable: false, evented: false,
       }));
     }
@@ -8848,21 +8859,6 @@ function furnitureLegendHtml(rows) {
   </details>`;
 }
 
-// Legenda pod schématem: symbol, prvek, segment, zóna a počet kusů.
-function floorPlanLegendHtml(model) {
-  if (!model.legend.length) return "";
-  const rows = model.legend.map((l) => {
-    const meta = getSegmentMeta(l.segment);
-    return `<li><span class="fp-swatch" style="background:${meta.color}33; border-color:${meta.color};"></span>
-      <strong>${esc(l.furniture)}</strong> ${segmentBadgeHtml(l.segment)}
-      <span class="muted">${ZONE_LABELS[l.zone]}</span> — <strong>${fmtPieces(l.pieces)} ks</strong>
-      ${l.wpl > 0 ? `<span class="muted">${fmt1(l.wpl)} WPL → ${fmtArea(l.wpl * PLAN_M2_PER_WPL)}</span>`
-        : `<span class="muted">bez WPL (do plochy se nepočítá)</span>`}
-      ${l.symbol.short ? `<span class="muted">(${esc(l.symbol.short)})</span>` : ""}</li>`;
-  }).join("");
-  return `<ul class="fp-legend">${rows}</ul>`;
-}
-
 // Panel „Vybavení pobočky“ — zaškrtávátka a počty, které se hned promítnou
 // do schématu i do uložení ke kalkulaci.
 function layoutExtrasHtml(extras, suffix) {
@@ -8981,7 +8977,6 @@ function renderFloorPlan(containerId, rows, meta, suffix = "") {
       prvních ${PLAN_MAX_PIECES}, aby zůstalo čitelné.</div>` : ""}
     <div class="fp-wrap" id="fpWrap${suffix}"><canvas id="fpCanvas${suffix}"></canvas>
       <div class="fp-tip" id="fpTip${suffix}"></div></div>
-    ${floorPlanLegendHtml(model)}
     ${layoutStaffHtml(roster, staffMap, suffix, armed)}
     <p class="muted">Schéma je <strong>návrh rozmístění</strong> — zóny jsou nakreslené jako místnosti
       pod sebou v pořadí service → meeting → backoffice → office room a v nich je přesný počet zadaných
