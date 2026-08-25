@@ -183,6 +183,7 @@
   .src-ref{background:#eef1f5; color:#4b5563; border-color:#d3d9e2;}
   .src-hr{background:#fff3e2; color:#8a5206; border-color:#f6d5a6;}
   .src-branch{background:#e6f4f8; color:#0b5f74; border-color:#b6dee9;}
+  .src-catchment{background:#fbe8f7; color:#94157a; border-color:#f0bde5;}
   .src-box-hr{border-left:4px solid #d97706;}
   .cmp-box{margin-top:14px; border:1px solid var(--border); border-left:4px solid #d97706; border-radius:10px;
            padding:10px 14px; background:#fffdf8;}
@@ -588,6 +589,36 @@
   .src-box-visit{border-left:4px solid #0e9f6e;}
   .src-box-mix{border-left:4px solid #8b5cf6;}
   .src-box-branch{border-left:4px solid #0e7490;}
+  .src-box-catchment{border-left:4px solid #c026a3;}
+
+  /* --- Spádové pobočky --- */
+  .cm-box{margin-top:14px; border:1px solid var(--border); border-left:4px solid #c026a3;
+          border-radius:10px; padding:10px 14px; background:#fffbfe;}
+  .cm-box > summary{cursor:pointer; font-weight:600; display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+  .cm-chip{font-size:11px; font-weight:700; color:#94157a; background:#fbe8f7; border:1px solid #f0bde5;
+           border-radius:10px; padding:2px 8px;}
+  .cm-sugs{display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0;}
+  .cm-sug{display:inline-flex; align-items:center; gap:6px; font-size:12px; background:#fff;
+          border:1px solid var(--border); border-radius:14px; padding:4px 10px; cursor:pointer;}
+  .cm-sug:hover{border-color:#c026a3;}
+  .cm-sug.on{border-color:#c026a3; background:#fdf2fa;}
+  .cm-sug .cm-pct{color:#94157a; font-weight:700;}
+  .cm-sug span span{margin-left:6px;}
+  .cm-add-row{margin:8px 0;}
+  .cm-add-row input{min-width:280px; padding:5px 8px; border:1px solid var(--border); border-radius:5px;}
+  .cm-items{display:flex; flex-direction:column; gap:10px; margin-top:8px;}
+  .cm-item{border:1px solid var(--border); border-radius:8px; padding:10px 12px; background:#fff;}
+  .cm-head{display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:13.5px;}
+  .cm-head .cm-del{margin-left:auto;}
+  .cm-grid{display:flex; gap:18px; flex-wrap:wrap; align-items:center; margin:8px 0; font-size:12.5px;}
+  .cm-grid label{display:flex; gap:8px; align-items:center;}
+  .cm-num input{width:70px; text-align:right;}
+  .cm-visits{max-width:640px;}
+  .cm-mode{display:flex; gap:16px; flex-wrap:wrap; font-size:12.5px; margin-bottom:6px;}
+  .cm-mode label{display:flex; gap:6px; align-items:center; cursor:pointer;}
+  .cm-summary{margin-top:10px; padding:8px 11px; border-radius:8px; background:#fdf2fa;
+              border:1px solid #f0bde5; font-size:12.5px; color:#7a1263;}
+  tr.cm-taken-row{background:#fdf2fa;}
 
   /* --- Dodatečná analytika: karty připojených souborů --- */
   .an-cards{display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px; margin-top:14px;}

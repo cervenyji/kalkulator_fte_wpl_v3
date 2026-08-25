@@ -52,6 +52,7 @@ def main():
         pobocka_nazev TEXT,
         oteviraci_doba REAL,
         shift_mode INTEGER,
+        source_branch TEXT,
         segment TEXT,
         pozice TEXT,
         fte REAL,
@@ -93,6 +94,39 @@ def main():
 
     # Vybavení pobočky (bankomaty, denní místnost, …) a přiřazení lidí na místa
     # ve schématu — obojí patří ke konkrétní kalkulaci.
+    # Spádové pobočky (kam by šli klienti) a výběr ke konkrétnímu checklistu.
+    cur.execute("""
+    CREATE TABLE catchment (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id TEXT,
+        source_name TEXT,
+        region TEXT,
+        slot INTEGER,
+        target_name TEXT,
+        visits REAL,
+        share REAL,
+        distance_km REAL,
+        transfer_pct REAL,
+        imported_at TEXT,
+        source TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE catchment_selection (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        load_key TEXT,
+        source_id TEXT,
+        source_name TEXT,
+        transfer_pct REAL,
+        fte_mode TEXT,
+        fte_total REAL,
+        visits_day REAL,
+        visits_total REAL,
+        payload TEXT
+    )
+    """)
+
     cur.execute("""
     CREATE TABLE layout_extras (
         calculation_key TEXT PRIMARY KEY,

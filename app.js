@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS excel_loads (
   pozice TEXT,
   fte REAL,
   wpl_load REAL,
-  created_at TEXT
+  created_at TEXT,
+  source_branch TEXT
 );
 CREATE TABLE IF NOT EXISTS calculations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,6 +120,32 @@ CREATE TABLE IF NOT EXISTS specialist_export (
   branch_name TEXT,
   imported_at TEXT,
   source TEXT,
+  payload TEXT
+);
+CREATE TABLE IF NOT EXISTS catchment (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id TEXT,
+  source_name TEXT,
+  region TEXT,
+  slot INTEGER,
+  target_name TEXT,
+  visits REAL,
+  share REAL,
+  distance_km REAL,
+  transfer_pct REAL,
+  imported_at TEXT,
+  source TEXT
+);
+CREATE TABLE IF NOT EXISTS catchment_selection (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  load_key TEXT,
+  source_id TEXT,
+  source_name TEXT,
+  transfer_pct REAL,
+  fte_mode TEXT,
+  fte_total REAL,
+  visits_day REAL,
+  visits_total REAL,
   payload TEXT
 );
 CREATE TABLE IF NOT EXISTS layout_extras (
@@ -199,6 +226,8 @@ function migrateSchema(dbi) {
   try { dbi.run("ALTER TABLE furniture_to_zone ADD COLUMN ref_version_id INTEGER"); } catch (e) { /* sloupec už existuje */ }
   // Směnový režim pobočky (otevírací doba > doba vytížení pozice).
   try { dbi.run("ALTER TABLE excel_loads ADD COLUMN shift_mode INTEGER"); } catch (e) { /* sloupec už existuje */ }
+  // Řádky, které do checklistu přišly ze spádové pobočky (převzatí zaměstnanci).
+  try { dbi.run("ALTER TABLE excel_loads ADD COLUMN source_branch TEXT"); } catch (e) { /* sloupec už existuje */ }
   try { dbi.run("ALTER TABLE ref_data_versions ADD COLUMN furniture_json TEXT"); } catch (e) { /* sloupec už existuje */ }
   const furnitureCount = dbAll("SELECT COUNT(*) AS n FROM furniture_to_zone", [], dbi)[0].n;
   if (furnitureCount === 0) {
@@ -864,6 +893,8 @@ const DATA_SOURCES = {
     title: "Aktuální obsazenost pobočky z personálního exportu (export_specialiste.xlsx)." },
   branch: { label: "z exportu poboček", color: "#0e7490",
     title: "Rating, výnosy a prodeje pobočky z exportu poboček (pobocky-export.xlsx)." },
+  catchment: { label: "ze spádových poboček", color: "#c026a3",
+    title: "Zaměstnanci a návštěvy převzaté z jiných poboček (spadove_pobocky.xlsx)." },
   ref: { label: "referenční data", color: "#6b7684",
     title: "Nastavení v referenčních datech — nezávisí na konkrétní kalkulaci." },
 };
@@ -1517,11 +1548,16 @@ function renderExcelPreview(parsed) {
   const loadHours = parsed.doba_vytezeni_wpl
     ?? (parsed.rows.find((r) => String(r.segment).trim().toUpperCase() !== "CESTOVNÍ") || {}).wpl_load
     ?? parsed.oteviraci_doba;
-  const cmp = compareFteWithSpecialists(parsed.rows, parsed.pobocka_id, parsed.pobocka_nazev);
+  // Porovnání se skutečným stavem se dělá jen z vlastních pozic pobočky —
+  // převzaté FTE ze spádových poboček by ho zkreslily.
+  const ownRows = parsed.rows.filter((r) => !r.source_branch);
+  const cmp = compareFteWithSpecialists(ownRows, parsed.pobocka_id, parsed.pobocka_nazev);
   const rowsHtml = parsed.rows.map((r) => `
-    <tr>
+    <tr${r.source_branch ? ' class="cm-taken-row"' : ""}>
       <td>${segmentBadgeHtml(r.segment)}</td>
-      <td>${esc(r.pozice)}</td>
+      <td>${esc(r.pozice)}${r.source_branch
+        ? ` <span class="src-badge src-catchment" title="Převzato ze spádové pobočky">${esc(r.source_branch)}</span>`
+        : ""}</td>
       <td>${fmt1(r.fte)}</td>
       <td>${r.wpl_load === null ? '<span class="muted">dle otevírací doby</span>' : fmt1(r.wpl_load)}</td>
       <td>${zoneSplitBarHtml(splits[`${r.segment}||${r.pozice}`])}</td>
@@ -1541,10 +1577,12 @@ function renderExcelPreview(parsed) {
       </table>
     </div>
     ${renderFteComparisonHtml(cmp, { open: true })}
+    <div id="catchmentPanel"></div>
     <div class="row" style="margin-top:14px;">
       <button class="btn" id="btnCalculate">Spočítat kalkulaci WPL</button>
     </div>`;
   document.getElementById("btnCalculate").addEventListener("click", runCalculation);
+  renderCatchmentPanel("catchmentPanel", parsed);
 
   // Směnový režim se dá u načteného checklistu přepnout — hodnota se hned uloží
   // k nahrávce, takže s ní počítá i kalkulace a její PDF.
@@ -2421,7 +2459,10 @@ function runCalculation() {
   const duvod = document.getElementById("calcReason").value;
   if (!duvod) { toast("Vyberte důvod kalkulace.", "err"); return; }
 
-  const rows = dbAll("SELECT segment, pozice, fte, wpl_load FROM excel_loads WHERE load_key = ?", [load_key]);
+  // `source_branch` = řádek převzatý ze spádové pobočky; do výpočtu vstupuje
+  // stejně jako vlastní pozice, jen se dá odlišit ve výpisech.
+  const rows = dbAll(`SELECT segment, pozice, fte, wpl_load, source_branch FROM excel_loads
+    WHERE load_key = ?`, [load_key]);
   if (!rows.length) { toast("Pro tento checklist nejsou žádná data.", "err"); return; }
 
   const absenceRows = dbAll("SELECT segment, nepritomnost, homeoffice FROM absence");
@@ -2512,7 +2553,8 @@ function runCalculation() {
     celkemRow.service_zone, celkemRow.meeting_zone, celkemRow.backoffice_zone, celkemRow.office_room, createdAt, refVersionId, "rozpracovana", duvod]);
   insCalc.free();
 
-  const inputRows = rows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte, wpl_load: r.wpl_load }));
+  const inputRows = rows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte, wpl_load: r.wpl_load,
+    source_branch: r.source_branch || null }));
   const stats = computeCalculationStats({ rows: resultRows, celkem: celkemRow, inputRows });
   persistCalculationStats(calculation_key, load_key, stats, createdAt);
 
@@ -2566,8 +2608,10 @@ function renderResults(result) {
         <tbody>${rowsHtml}</tbody>
       </table>
     </div>
-    ${renderFteComparisonHtml(compareFteWithSpecialists(result.inputRows, result.pobocka_id, result.pobocka_nazev),
+    ${renderFteComparisonHtml(compareFteWithSpecialists(
+      (result.inputRows || []).filter((r) => !r.source_branch), result.pobocka_id, result.pobocka_nazev),
       { quiet: true })}
+    ${catchmentSummaryHtml(result.load_key, result.pobocka_id, result.pobocka_nazev)}
     ${refVersionDetailsHtml(result.refVersionId)}
     ${renderStatsSection(stats)}
     ${renderYearCapacityHtml(computeYearCapacity({ stats, visitor, calcResult: result }))}
@@ -4164,6 +4208,15 @@ function drawCalcChapterPdf(pdf, startY, result, opt, stats, chapter) {
       `Calculation key: ${result.calculation_key}`,
       `Datum vytvoření: ${new Date(result.createdAt).toLocaleString("cs-CZ")}`,
     ];
+    // Spádové pobočky: co se do kalkulace připočetlo (aby to bylo i v tisku).
+    const cm = catchmentSummary(result.load_key, result.pobocka_id, result.pobocka_nazev);
+    if (cm) {
+      detailLines.push(`Spádové pobočky: ${cm.branches.map((b) => `${b.source_name}`
+        + ` (přesun ${fmt1(b.transfer_pct)} %, +${fmt1(b.fte_total)} FTE)`).join(", ")}`);
+      detailLines.push(`Připočteno ze spádových poboček: +${fmt1(cm.fte)} FTE`
+        + `${cm.visitsDay ? `, +${fmt1(cm.visitsDay)} návštěv/den` : ""}`
+        + `${cm.pct ? ` (návštěvnost +${fmt1(cm.pct)} %)` : ""}`);
+    }
     const sf = result.shiftMode ? shiftFactor(result.oteviraci_doba, result.doba_vytezeni_wpl) : null;
     if (sf) {
       detailLines.push(`Směnový režim: jedna pozice pokryje ${Math.round(sf.coverage * 100)} % otevírací doby,`
@@ -4486,6 +4539,592 @@ async function handleVisitorReportFile(file) {
   }
 }
 
+/* --------------- Spádové pobočky (spadove_pobocky.xlsx) -------------------- */
+// Soubor říká, kam by šli klienti z dané pobočky: jeden řádek = jedna pobočka
+// (sloupec „ID Pobočky“) a k ní až tři spádové pobočky se sloupci
+// „Spádová pobočka N“, „Spád. návštěvy N“, „Spád. podíl N“, „Vzdálenost km N“
+// a „Odhad přesunu % N“.
+//
+// V kalkulaci se to používá obráceně: pro počítanou pobočku se hledají řádky,
+// kde je jako spádová pobočka právě ona — to jsou pobočky, ze kterých k ní
+// mohou přejít klienti (a s nimi i zaměstnanci).
+
+const CATCHMENT_SLOTS = [1, 2, 3];
+
+// „2 382“ → 2382, „0.6 %“ → 0.6, „5.1 km“ → 5.1, „—“ → null.
+function catchNum(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  const t = String(v).replace(/[\s ]/g, "").replace(",", ".");
+  if (!t || t === "—" || t === "-" || t === "–") return null;
+  const m = /-?\d+(\.\d+)?/.exec(t);
+  return m ? parseFloat(m[0]) : null;
+}
+
+function catchText(v) {
+  const t = String(v === null || v === undefined ? "" : v).trim();
+  return !t || t === "—" || t === "-" || t === "–" ? "" : t;
+}
+
+// Porovnání názvů poboček — bez diakritiky, bez interpunkce, malými písmeny.
+function branchKey(name) {
+  return normHeader(name);
+}
+
+function parseCatchment(workbook) {
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]],
+    { header: 1, blankrows: false });
+  if (!rows.length) throw new Error("List je prázdný.");
+  const header = (rows[0] || []).map((h) => String(h === null || h === undefined ? "" : h).trim());
+  const norm = header.map(normHeader);
+  const idx = (test) => norm.findIndex(test);
+
+  const cId = idx((n) => n === "id pobocky" || n === "id pobocka" || n === "id");
+  const cName = idx((n) => n.startsWith("nazev pobocky"));
+  const cRegion = idx((n) => n === "region");
+  if (cId < 0) throw new Error(`Chybí sloupec „ID Pobočky“ (nalezeno: ${header.slice(0, 3).join(", ")}).`);
+
+  // Sloupce pro každou ze tří spádových poboček.
+  const slots = CATCHMENT_SLOTS.map((i) => ({
+    slot: i,
+    name: idx((n) => n === `spadova pobocka ${i}`),
+    visits: idx((n) => n.startsWith("spad navstevy") && n.endsWith(String(i))),
+    share: idx((n) => n.startsWith("spad podil") && n.endsWith(String(i))),
+    distance: idx((n) => n.startsWith("vzdalenost km") && n.endsWith(String(i))),
+    transfer: idx((n) => n.includes("odhad presunu") && n.endsWith(String(i))),
+  })).filter((s) => s.name >= 0);
+  if (!slots.length) throw new Error("Nenašel jsem ani jeden sloupec „Spádová pobočka N“.");
+
+  const out = [];
+  let branches = 0;
+  rows.slice(1).forEach((r) => {
+    const sourceId = catchText(r[cId]);
+    const sourceName = cName >= 0 ? catchText(r[cName]) : "";
+    if (!sourceId && !sourceName) return;
+    branches++;
+    slots.forEach((sl) => {
+      const target = catchText(r[sl.name]);
+      if (!target) return;
+      out.push({
+        source_id: sourceId, source_name: sourceName,
+        region: cRegion >= 0 ? catchText(r[cRegion]) : "",
+        slot: sl.slot, target_name: target,
+        visits: sl.visits >= 0 ? catchNum(r[sl.visits]) : null,
+        share: sl.share >= 0 ? catchNum(r[sl.share]) : null,
+        distance_km: sl.distance >= 0 ? catchNum(r[sl.distance]) : null,
+        transfer_pct: sl.transfer >= 0 ? catchNum(r[sl.transfer]) : null,
+      });
+    });
+  });
+  return { rows: out, branches, slots: slots.length };
+}
+
+async function handleCatchmentFile(file) {
+  if (!requireDb()) return null;
+  const data = new Uint8Array(await file.arrayBuffer());
+  const parsed = parseCatchment(XLSX.read(data, { type: "array" }));
+  const importedAt = nowIso();
+  dbRun("DELETE FROM catchment");
+  const ins = db.prepare(`INSERT INTO catchment
+    (source_id, source_name, region, slot, target_name, visits, share, distance_km, transfer_pct,
+     imported_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  parsed.rows.forEach((r) => {
+    ins.run([r.source_id, r.source_name, r.region, r.slot, r.target_name, r.visits, r.share,
+      r.distance_km, r.transfer_pct, importedAt, file.name]);
+  });
+  ins.free();
+  await persistDatabase();
+  return { pairs: parsed.rows.length, branches: parsed.branches };
+}
+
+function catchmentInfo() {
+  if (!db) return null;
+  try {
+    const row = dbAll(`SELECT COUNT(*) AS n, COUNT(DISTINCT source_id) AS branches,
+      MAX(imported_at) AS imported_at, MAX(source) AS source FROM catchment`)[0];
+    return row && row.n ? row : null;
+  } catch (e) { return null; }
+}
+
+// Pobočky, ze kterých mohou klienti přejít na počítanou pobočku (našeptávání).
+// Hledá se podle názvu počítané pobočky ve sloupcích „Spádová pobočka N“.
+function catchmentSuggestions(pobockaNazev) {
+  if (!db || !pobockaNazev) return [];
+  try {
+    const key = branchKey(pobockaNazev);
+    return dbAll("SELECT * FROM catchment").filter((r) => branchKey(r.target_name) === key)
+      .map((r) => ({
+        source_id: r.source_id, source_name: r.source_name, region: r.region,
+        slot: r.slot, visits: r.visits, share: r.share, distance_km: r.distance_km,
+        transfer_pct: r.transfer_pct,
+      }))
+      .sort((a, b) => (b.transfer_pct || 0) - (a.transfer_pct || 0) || (b.visits || 0) - (a.visits || 0));
+  } catch (e) { return []; }
+}
+
+/* --------- FTE spádové pobočky: z databáze, nebo zadané ručně -------------- */
+// „Z databáze“ = obsazenost z exportu specialistů; když pobočka v exportu není,
+// zkusí se poslední načtený checklist té pobočky (tabulka excel_loads).
+
+function catchmentFteFromDb(sourceId, sourceName) {
+  const known = positionSegmentMap();
+  const row = specialistRowFor(sourceId, sourceName);
+  if (row) {
+    const counts = JSON.parse(row.payload || "{}");
+    const rows = Object.entries(counts).map(([pozice, fte]) => {
+      const found = known[normalizePozice(pozice)];
+      return { segment: found ? found.segment : "OSTATNÍ", pozice: found ? found.pozice : pozice,
+        fte: Number(fte) || 0 };
+    }).filter((r) => r.fte > 0);
+    if (rows.length) return { rows, origin: `export specialistů (${row.branch_name || row.branch_id})` };
+  }
+  // záloha: poslední checklist té pobočky
+  try {
+    const load = dbAll(`SELECT load_key FROM excel_loads
+      WHERE (pobocka_id = ? OR LOWER(pobocka_nazev) = ?) AND source_branch IS NULL
+      ORDER BY id DESC LIMIT 1`, [String(sourceId || ""), String(sourceName || "").toLowerCase()])[0];
+    if (load) {
+      const rows = dbAll(`SELECT segment, pozice, fte FROM excel_loads
+        WHERE load_key = ? AND source_branch IS NULL AND fte > 0`, [load.load_key])
+        .map((r) => ({ segment: r.segment, pozice: r.pozice, fte: Number(r.fte) || 0 }));
+      if (rows.length) return { rows, origin: "poslední načtený checklist pobočky" };
+    }
+  } catch (e) { /* starší databáze */ }
+  return { rows: [], origin: null };
+}
+
+// Návštěvy spádové pobočky z reportu návštěvnosti (pokud je naimportovaný).
+function catchmentVisits(sourceId, sourceName) {
+  const v = getVisitorData(sourceId, sourceName);
+  if (!v) return null;
+  const m = computeVisitorMetrics(v);
+  return { visitsTotal: Number(v.d.total) || 0, visitsPerDay: m && m.visitsPerDay ? m.visitsPerDay : null,
+    days: Number(v.d.n_days) || 0, nazev: v.nazev };
+}
+
+/* ------------------- Výběr spádových poboček ke checklistu ------------------ */
+
+function getCatchmentSelection(loadKey) {
+  if (!db || !loadKey) return [];
+  try {
+    return dbAll("SELECT * FROM catchment_selection WHERE load_key = ? ORDER BY id", [loadKey])
+      .map((r) => ({ ...r, rows: r.payload ? JSON.parse(r.payload) : [] }));
+  } catch (e) { return []; }
+}
+
+// Uloží výběr a rovnou zapíše/odepíše převzaté pozice ve vstupních řádcích
+// checklistu (excel_loads se sloupcem source_branch), aby s nimi kalkulace
+// počítala úplně stejně jako s vlastními FTE pobočky.
+async function saveCatchmentSelection(load, selections) {
+  if (!db || !load || !load.load_key) return;
+  const loadKey = load.load_key;
+  dbRun("DELETE FROM catchment_selection WHERE load_key = ?", [loadKey]);
+  dbRun("DELETE FROM excel_loads WHERE load_key = ? AND source_branch IS NOT NULL", [loadKey]);
+
+  const insSel = db.prepare(`INSERT INTO catchment_selection
+    (load_key, source_id, source_name, transfer_pct, fte_mode, fte_total, visits_day, visits_total, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const insRow = db.prepare(`INSERT INTO excel_loads
+    (load_key, pobocka_id, pobocka_nazev, oteviraci_doba, shift_mode, segment, pozice, fte, wpl_load,
+     created_at, source_branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const createdAt = nowIso();
+  selections.forEach((sel) => {
+    const share = (Number(sel.transfer_pct) || 0) / 100;
+    const fteTotal = (sel.rows || []).reduce((sum, r) => sum + (Number(r.fte) || 0), 0);
+    insSel.run([loadKey, sel.source_id || "", sel.source_name, Number(sel.transfer_pct) || 0,
+      sel.fte_mode || "db", round1(fteTotal), sel.visits_day ?? null, sel.visits_total ?? null,
+      JSON.stringify(sel.rows || [])]);
+    // Převzaté pozice se do checklistu zapíšou s vlastní dobou vytížení jako
+    // ostatní řádky (u CESTOVNÍ vlastní hodnota, jinak podle otevírací doby).
+    (sel.rows || []).forEach((r) => {
+      const fte = Number(r.fte) || 0;
+      if (fte <= 0) return;
+      const isCestovni = String(r.segment).trim().toUpperCase().startsWith("CESTOVNÍ");
+      insRow.run([loadKey, load.pobocka_id, load.pobocka_nazev, load.oteviraci_doba,
+        load.shiftMode ? 1 : 0, r.segment, r.pozice, round1(fte),
+        isCestovni ? (Number(r.wpl_load) || load.oteviraci_doba) : load.oteviraci_doba,
+        createdAt, sel.source_name]);
+    });
+  });
+  insSel.free();
+  insRow.free();
+  await persistDatabase();
+
+  // pendingLoad drží řádky, ze kterých se počítá — načtou se znovu z databáze
+  if (pendingLoad && pendingLoad.load_key === loadKey) {
+    pendingLoad.rows = dbAll(`SELECT segment, pozice, fte, wpl_load, source_branch FROM excel_loads
+      WHERE load_key = ? ORDER BY id`, [loadKey])
+      .map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte, wpl_load: r.wpl_load,
+        source_branch: r.source_branch || null }));
+  }
+}
+
+// Souhrn: kolik FTE a kolik návštěv spádové pobočky přidávají.
+function catchmentSummary(loadKey, pobockaId, pobockaNazev) {
+  const sel = getCatchmentSelection(loadKey);
+  if (!sel.length) return null;
+  const own = catchmentVisits(pobockaId, pobockaNazev);
+  const fte = sel.reduce((s, x) => s + (Number(x.fte_total) || 0), 0);
+  const visitsDay = sel.reduce((s, x) => s + (Number(x.visits_day) || 0), 0);
+  const visitsTotal = sel.reduce((s, x) => s + (Number(x.visits_total) || 0), 0);
+  const ownDay = own && own.visitsPerDay ? own.visitsPerDay : null;
+  return {
+    branches: sel,
+    fte: round1(fte),
+    visitsDay: Math.round(visitsDay * 10) / 10,
+    visitsTotal: Math.round(visitsTotal),
+    ownVisitsDay: ownDay,
+    ownVisitsTotal: own ? own.visitsTotal : null,
+    // Poměr, kterým se přiškálují návštěvy z reportu (1 = bez změny).
+    factor: ownDay && ownDay > 0 ? 1 + visitsDay / ownDay : 1,
+    pct: ownDay && ownDay > 0 ? (visitsDay / ownDay) * 100 : null,
+  };
+}
+
+/* --------- Přiškálování návštěvnosti o návštěvy ze spádových poboček ------- */
+// Návštěvy (a poptávka, která z nich lineárně vychází) se vynásobí poměrem.
+// Pravděpodobnost přetížení z reportu se nepřepočítává — není lineární, proto
+// je taková sekce v aplikaci označená štítkem „ze spádových poboček“.
+function scaleVisitorForCatchment(visitor, factor) {
+  if (!visitor || !(factor > 1.0001)) return visitor;
+  const copy = JSON.parse(JSON.stringify(visitor));
+  const d = copy.d || {};
+  const mul = (obj, keys) => keys.forEach((k) => {
+    if (typeof obj[k] === "number") obj[k] *= factor;
+  });
+  mul(d, ["total", "poc_kli"]);
+  if (d.by_type) Object.keys(d.by_type).forEach((k) => {
+    if (typeof d.by_type[k] === "number") d.by_type[k] *= factor;
+  });
+  [d.by_hour, d.by_weekday].forEach((map) => {
+    if (!map) return;
+    Object.keys(map).forEach((k) => {
+      const v = map[k];
+      if (typeof v === "number") map[k] = v * factor;
+      else if (v && typeof v === "object") Object.keys(v).forEach((kk) => {
+        if (typeof v[kk] === "number") v[kk] *= factor;
+      });
+    });
+  });
+  [d.mc, d.mc_boost].forEach((mc) => {
+    if (!mc) return;
+    ["lam_online", "lam_fyzicka", "lam_bezhot", "p50_util", "p95_util", "p95_ob_fte", "p95_svc_fte"]
+      .forEach((k) => { if (Array.isArray(mc[k])) mc[k] = mc[k].map((x) => (Number(x) || 0) * factor); });
+    mul(mc, ["ob_p95_day", "svc_p95_day"]);
+  });
+  // Doporučení prostor z reportu platí pro původní návštěvnost — po přiškálování
+  // se smaže, aby si aplikace doporučení dopočítala z upravených návštěv sama.
+  delete d.rooms;
+  copy.catchmentFactor = factor;
+  return copy;
+}
+
+// Data návštěvnosti pro kalkulaci včetně navýšení ze spádových poboček.
+function visitorWithCatchment(visitor, loadKey, pobockaId, pobockaNazev) {
+  const sum = catchmentSummary(loadKey, pobockaId, pobockaNazev);
+  if (!visitor || !sum || !(sum.factor > 1.0001)) return visitor;
+  return scaleVisitorForCatchment(visitor, sum.factor);
+}
+
+/* ---------- Spádové pobočky: panel u načteného checklistu (UI) ------------- */
+
+const catchmentUi = {};   // load_key -> rozpracovaný výběr (než se uloží)
+
+const CATCHMENT_DEFAULT_DAYS = 250;   // odhad otevíracích dnů, když je neznáme
+
+// Kolik návštěv převezme počítaná pobočka z jedné spádové pobočky.
+function catchmentBranchVisits(sel, suggestion) {
+  const share = (Number(sel.transfer_pct) || 0) / 100;
+  const v = catchmentVisits(sel.source_id, sel.source_name);
+  if (v && (v.visitsPerDay || v.visitsTotal)) {
+    const perDay = v.visitsPerDay || (v.visitsTotal / (v.days || CATCHMENT_DEFAULT_DAYS));
+    return { day: perDay * share, total: (v.visitsTotal || perDay * (v.days || CATCHMENT_DEFAULT_DAYS)) * share,
+      origin: "report návštěvnosti spádové pobočky", baseDay: perDay, baseTotal: v.visitsTotal };
+  }
+  const pair = suggestion && suggestion.visits ? Number(suggestion.visits) : null;
+  if (pair) {
+    return { day: (pair * share) / CATCHMENT_DEFAULT_DAYS, total: pair * share,
+      origin: "sloupec „Spád. návštěvy“ ze souboru", baseDay: pair / CATCHMENT_DEFAULT_DAYS, baseTotal: pair };
+  }
+  return { day: 0, total: 0, origin: null, baseDay: null, baseTotal: null };
+}
+
+function catchmentRowHtml(r, i) {
+  const segments = getKnownSegments();
+  const segOptions = segments.map((sg) =>
+    `<option value="${esc(sg)}"${sg === r.segment ? " selected" : ""}>${esc(sg)}</option>`).join("");
+  const pozOptions = getPositionsForSegment(r.segment || segments[0]).map((pz) =>
+    `<option value="${esc(pz)}"${pz === r.pozice ? " selected" : ""}>${esc(pz)}</option>`).join("");
+  return `<tr class="cm-row" data-idx="${i}">
+    <td><select class="cm-seg">${segOptions}</select></td>
+    <td><select class="cm-poz">${pozOptions}</select></td>
+    <td><input type="number" class="cm-fte" min="0" step="0.1" value="${r.fte ?? ""}"></td>
+    <td><button class="btn secondary small cm-row-del">✕</button></td>
+  </tr>`;
+}
+
+function catchmentItemHtml(sel, i, suggestion) {
+  const vis = catchmentBranchVisits(sel, suggestion);
+  const fteTotal = (sel.rows || []).reduce((s, r) => s + (Number(r.fte) || 0), 0);
+  const dbInfo = sel.db_origin ? `<span class="muted">(${esc(sel.db_origin)})</span>` : "";
+  return `<div class="cm-item" data-idx="${i}">
+    <div class="cm-head">
+      <strong>${esc(sel.source_name)}</strong>
+      ${sel.source_id ? `<span class="muted">ID ${esc(sel.source_id)}</span>` : ""}
+      ${suggestion && suggestion.distance_km ? `<span class="muted">${fmt1(suggestion.distance_km)} km</span>` : ""}
+      ${suggestion && suggestion.region ? `<span class="muted">${esc(suggestion.region)}</span>` : ""}
+      <button class="btn secondary small cm-del" title="Odebrat pobočku">✕</button>
+    </div>
+    <div class="cm-grid">
+      <label>Odhad přesunu klientů
+        <span class="cm-num"><input type="number" class="cm-transfer" min="0" max="100" step="1"
+          value="${sel.transfer_pct ?? 0}"> %</span></label>
+      <div class="cm-visits">
+        ${vis.origin
+          ? `Návštěvy spádové pobočky: <strong>${vis.baseDay ? fmt1(vis.baseDay) : "?"}</strong>/den
+             (${vis.baseTotal ? fmtNum0(vis.baseTotal) : "?"} celkem) → <strong>převezme se
+             ${fmt1(vis.day)}</strong> návštěv/den <span class="muted">(${esc(vis.origin)})</span>`
+          : `<span class="muted">Pro tuto pobočku nejsou data o návštěvnosti — návštěvy se nepřipočítají,
+             přidají se jen FTE.</span>`}
+      </div>
+    </div>
+    <div class="cm-mode">
+      <label><input type="radio" name="cmMode${i}" class="cm-mode-db" value="db"
+        ${sel.fte_mode !== "manual" ? "checked" : ""}> FTE z databáze ${dbInfo}</label>
+      <label><input type="radio" name="cmMode${i}" class="cm-mode-manual" value="manual"
+        ${sel.fte_mode === "manual" ? "checked" : ""}> zadat zaměstnance ručně</label>
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th></th></tr></thead>
+      <tbody class="cm-rows">${(sel.rows || []).map(catchmentRowHtml).join("")}</tbody>
+    </table></div>
+    <div class="row" style="margin-top:6px;">
+      <button class="btn secondary small cm-row-add">+ Přidat pozici</button>
+      <span class="muted">Převzato <strong>${fmt1(fteTotal)} FTE</strong></span>
+    </div>
+  </div>`;
+}
+
+function catchmentPanelHtml(load, state, suggestions) {
+  const info = catchmentInfo();
+  const chosen = new Set(state.map((x) => branchKey(x.source_name)));
+  const sugHtml = suggestions.map((sg) => `<label class="cm-sug${chosen.has(branchKey(sg.source_name))
+    ? " on" : ""}">
+    <input type="checkbox" class="cm-sug-check" data-name="${esc(sg.source_name)}"
+      data-id="${esc(sg.source_id || "")}" data-transfer="${sg.transfer_pct ?? 0}"
+      ${chosen.has(branchKey(sg.source_name)) ? "checked" : ""}>
+    <span><strong>${esc(sg.source_name)}</strong>
+      ${sg.transfer_pct !== null && sg.transfer_pct !== undefined
+        ? `<span class="cm-pct">odhad přesunu ${fmt1(sg.transfer_pct)} %</span>`
+        : `<span class="muted">odhad přesunu neuveden</span>`}
+      ${sg.distance_km ? `<span class="muted">${fmt1(sg.distance_km)} km</span>` : ""}
+      ${sg.visits ? `<span class="muted">${fmtNum0(sg.visits)} spád. návštěv</span>` : ""}
+    </span></label>`).join("");
+
+  const totals = state.reduce((acc, sel, i) => {
+    const vis = catchmentBranchVisits(sel, suggestions.find((sg) => branchKey(sg.source_name) === branchKey(sel.source_name)));
+    acc.fte += (sel.rows || []).reduce((s, r) => s + (Number(r.fte) || 0), 0);
+    acc.day += vis.day;
+    acc.total += vis.total;
+    return acc;
+  }, { fte: 0, day: 0, total: 0 });
+  const own = catchmentVisits(load.pobocka_id, load.pobocka_nazev);
+  const ownDay = own && own.visitsPerDay ? own.visitsPerDay : null;
+
+  // Rozbalené, když je co nabídnout (nebo už je něco vybráno) — ať si uživatel
+  // možnosti všimne; jinak zůstane sbalené, aby náhled checklistu nezaplňovalo.
+  return `<details class="cm-box"${state.length || suggestions.length ? " open" : ""}>
+    <summary>Spádové pobočky — přebírá tato pobočka klienty a zaměstnance odjinud?
+      ${srcBadgeHtml("catchment")}
+      ${state.length ? `<span class="cm-chip">${state.length} pobočky · +${fmt1(totals.fte)} FTE</span>` : ""}
+    </summary>
+    <p class="muted">Vyberte pobočky, ze kterých na <strong>${esc(load.pobocka_nazev)}</strong> přejdou
+      klienti (a případně i zaměstnanci). Našeptávají se podle souboru
+      <code>spadove_pobocky.xlsx</code>${info ? ` (${info.branches} poboček)` : ""}; přidat lze i jakoukoli
+      další pobočku z číselníku. Převzaté FTE se <strong>připočítají do kalkulace</strong> a převzaté
+      návštěvy <strong>navýší návštěvnost</strong> — všechno označené štítkem
+      „ze spádových poboček“.</p>
+    ${info ? "" : `<div class="msg warn">Soubor <code>spadove_pobocky.xlsx</code> není načtený —
+      našeptávání nebude fungovat. Připojte ho v části „Dodatečná analytika“ (hledá se i ve složce
+      <code>zdroje</code>).</div>`}
+    ${suggestions.length ? `<div class="cm-sugs">
+      <span class="muted">Podle souboru na tuto pobočku spáduje:</span>${sugHtml}</div>`
+      : `<p class="muted">Soubor pro pobočku „${esc(load.pobocka_nazev)}“ žádnou spádovou vazbu neuvádí —
+         pobočky přidejte ručně z číselníku.</p>`}
+    <div class="row cm-add-row">
+      <input type="text" id="cmAddName" list="pobockyDatalist" placeholder="Přidat pobočku z číselníku…">
+      <button class="btn secondary small" id="cmAddBtn">+ Přidat pobočku</button>
+    </div>
+    <div class="cm-items">${state.map((sel, i) => catchmentItemHtml(sel, i,
+      suggestions.find((sg) => branchKey(sg.source_name) === branchKey(sel.source_name)))).join("")}</div>
+    ${state.length ? `<div class="cm-summary">
+      Přebírá se celkem <strong>+${fmt1(totals.fte)} FTE</strong> ·
+      <strong>+${fmt1(totals.day)} návštěv/den</strong>
+      (${fmtNum0(totals.total)} za rok)${ownDay
+        ? ` — návštěvnost pobočky roste z ${fmt1(ownDay)} na ${fmt1(ownDay + totals.day)} návštěv/den,
+            tedy o <strong>${fmt1((totals.day / ownDay) * 100)} %</strong>` : ""}.
+    </div>` : ""}
+    <div class="row" style="margin-top:10px;">
+      <button class="btn" id="cmApply">✓ Použít do kalkulace</button>
+      ${state.length ? `<button class="btn secondary" id="cmClear">Zrušit všechny</button>` : ""}
+      <span class="muted">Uložením se převzaté pozice přidají do vstupních dat checklistu.</span>
+    </div>
+  </details>`;
+}
+
+// Vykreslí panel a naváže obsluhu. `load` je aktuální nahrávka checklistu.
+function renderCatchmentPanel(containerId, load) {
+  const container = document.getElementById(containerId);
+  if (!container || !load) return;
+  const loadKey = load.load_key;
+  const suggestions = catchmentSuggestions(load.pobocka_nazev);
+  if (!catchmentUi[loadKey]) {
+    catchmentUi[loadKey] = getCatchmentSelection(loadKey).map((r) => ({
+      source_id: r.source_id, source_name: r.source_name, transfer_pct: r.transfer_pct,
+      fte_mode: r.fte_mode, rows: r.rows || [],
+    }));
+  }
+  const state = catchmentUi[loadKey];
+  container.innerHTML = catchmentPanelHtml(load, state, suggestions);
+
+  const rerender = () => renderCatchmentPanel(containerId, load);
+  const addBranch = (name, id, transfer) => {
+    if (!name) return;
+    if (state.some((x) => branchKey(x.source_name) === branchKey(name))) return;
+    const db = catchmentFteFromDb(id, name);
+    state.push({ source_id: id || (dbAll("SELECT id_pobocky FROM pobocky WHERE LOWER(nazev) = ?",
+      [String(name).toLowerCase()])[0] || {}).id_pobocky || "",
+      source_name: name, transfer_pct: transfer ?? 0, fte_mode: "db",
+      rows: db.rows, db_origin: db.origin });
+    rerender();
+  };
+
+  container.querySelectorAll(".cm-sug-check").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const name = cb.dataset.name;
+      if (cb.checked) addBranch(name, cb.dataset.id, Number(cb.dataset.transfer) || 0);
+      else {
+        const i = state.findIndex((x) => branchKey(x.source_name) === branchKey(name));
+        if (i >= 0) state.splice(i, 1);
+        rerender();
+      }
+    });
+  });
+  const addInput = container.querySelector("#cmAddName");
+  container.querySelector("#cmAddBtn").addEventListener("click", () => {
+    const name = addInput.value.trim();
+    const sug = suggestions.find((sg) => branchKey(sg.source_name) === branchKey(name));
+    addBranch(name, sug ? sug.source_id : "", sug ? sug.transfer_pct : 0);
+    addInput.value = "";
+  });
+
+  container.querySelectorAll(".cm-item").forEach((item) => {
+    const i = Number(item.dataset.idx);
+    const sel = state[i];
+    item.querySelector(".cm-del").addEventListener("click", () => { state.splice(i, 1); rerender(); });
+    item.querySelector(".cm-transfer").addEventListener("input", (e) => {
+      sel.transfer_pct = toNumberOrNull(e.target.value) ?? 0;
+      // souhrn i převzaté návštěvy se přepočítají hned
+      rerender();
+    });
+    item.querySelector(".cm-mode-db").addEventListener("change", () => {
+      const db = catchmentFteFromDb(sel.source_id, sel.source_name);
+      sel.fte_mode = "db";
+      sel.rows = db.rows;
+      sel.db_origin = db.origin;
+      if (!db.rows.length) toast(`Pro pobočku ${sel.source_name} nejsou v databázi data o FTE — zadejte je ručně.`, "warn");
+      rerender();
+    });
+    item.querySelector(".cm-mode-manual").addEventListener("change", () => {
+      sel.fte_mode = "manual";
+      rerender();
+    });
+    item.querySelector(".cm-row-add").addEventListener("click", () => {
+      const segments = getKnownSegments();
+      sel.rows = [...(sel.rows || []), { segment: segments[0] || "", pozice: getPositionsForSegment(segments[0])[0] || "", fte: 1 }];
+      sel.fte_mode = "manual";
+      rerender();
+    });
+    item.querySelectorAll(".cm-row").forEach((tr) => {
+      const ri = Number(tr.dataset.idx);
+      tr.querySelector(".cm-seg").addEventListener("change", (e) => {
+        sel.rows[ri].segment = e.target.value;
+        sel.rows[ri].pozice = getPositionsForSegment(e.target.value)[0] || "";
+        sel.fte_mode = "manual";
+        rerender();
+      });
+      tr.querySelector(".cm-poz").addEventListener("change", (e) => {
+        sel.rows[ri].pozice = e.target.value;
+        sel.fte_mode = "manual";
+      });
+      tr.querySelector(".cm-fte").addEventListener("input", (e) => {
+        sel.rows[ri].fte = toNumberOrNull(e.target.value) ?? 0;
+        sel.fte_mode = "manual";
+      });
+      tr.querySelector(".cm-row-del").addEventListener("click", () => {
+        sel.rows.splice(ri, 1);
+        sel.fte_mode = "manual";
+        rerender();
+      });
+    });
+  });
+
+  container.querySelector("#cmApply").addEventListener("click", async () => {
+    const selections = state.map((sel) => {
+      const sug = suggestions.find((sg) => branchKey(sg.source_name) === branchKey(sel.source_name));
+      const vis = catchmentBranchVisits(sel, sug);
+      return { ...sel, visits_day: vis.day, visits_total: vis.total };
+    });
+    await saveCatchmentSelection(load, selections);
+    toast(selections.length
+      ? `Spádové pobočky použity: ${selections.length} pobočky, +${fmt1(selections
+        .reduce((s, x) => s + (x.rows || []).reduce((a, r) => a + (Number(r.fte) || 0), 0), 0))} FTE.`
+      : "Spádové pobočky odebrány z kalkulace.", "ok");
+    renderExcelPreview(pendingLoad || load);
+  });
+  const clearBtn = container.querySelector("#cmClear");
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => { catchmentUi[loadKey] = []; rerender(); });
+  }
+}
+
+// Souhrnný blok se štítkem — kolik spádové pobočky přidaly (výsledek, historie).
+function catchmentSummaryHtml(loadKey, pobockaId, pobockaNazev, options = {}) {
+  const sum = catchmentSummary(loadKey, pobockaId, pobockaNazev);
+  if (!sum) return "";
+  const rows = sum.branches.map((b) => `<tr>
+    <td><strong>${esc(b.source_name)}</strong>${b.source_id
+      ? ` <span class="muted">ID ${esc(b.source_id)}</span>` : ""}</td>
+    <td class="num">${fmt1(b.transfer_pct)} %</td>
+    <td class="num">${fmt1(b.fte_total)}</td>
+    <td class="num">${b.visits_day ? fmt1(b.visits_day) : "—"}</td>
+    <td class="num">${b.visits_total ? fmtNum0(b.visits_total) : "—"}</td>
+    <td>${b.fte_mode === "manual" ? "ručně" : "z databáze"}</td>
+  </tr>`).join("");
+  return `<details class="cm-box src-box-catchment"${options.open ? " open" : ""}>
+    <summary>Spádové pobočky — převzaté FTE a návštěvy ${srcBadgeHtml("catchment")}
+      <span class="cm-chip">${sum.branches.length} pobočky · +${fmt1(sum.fte)} FTE${sum.pct
+        ? ` · +${fmt1(sum.pct)} % návštěv` : ""}</span></summary>
+    <div class="table-wrap"><table class="visitor-table">
+      <thead><tr><th>Pobočka</th><th>Odhad přesunu</th><th>Převzato FTE</th>
+        <th>Návštěvy/den</th><th>Návštěvy/rok</th><th>Zdroj FTE</th></tr></thead>
+      <tbody>${rows}
+        <tr class="total-row"><td>Celkem</td><td></td>
+          <td class="num"><strong>${fmt1(sum.fte)}</strong></td>
+          <td class="num"><strong>${fmt1(sum.visitsDay)}</strong></td>
+          <td class="num"><strong>${fmtNum0(sum.visitsTotal)}</strong></td><td></td></tr>
+      </tbody></table></div>
+    <p class="muted">${sum.ownVisitsDay
+      ? `Návštěvnost pobočky roste z <strong>${fmt1(sum.ownVisitsDay)}</strong> na
+         <strong>${fmt1(sum.ownVisitsDay + sum.visitsDay)}</strong> návštěv/den, tedy o
+         <strong>${fmt1(sum.pct)} %</strong>. Sekce kapacity pobočky proto počítají s navýšenou
+         návštěvností (poměr ${(Math.round(sum.factor * 1000) / 1000).toString().replace(".", ",")}×).`
+      : "Pro tuto pobočku nejsou naimportovaná data návštěvnosti, proto se navyšují jen FTE."}
+      Převzaté pozice jsou v přehledu pozic označené štítkem „ze spádových poboček“.
+      Pravděpodobnost přetížení z reportu se nepřepočítává (není lineární).</p>
+  </details>`;
+}
+
 /* --------------------------- Dodatečná analytika --------------------------- */
 // Záložka „Dodatečná analytika“ sdružuje všechna doplňková data, která aplikace
 // umí použít vedle vlastní kalkulace:
@@ -4497,7 +5136,7 @@ async function handleVisitorReportFile(file) {
 // v tom případě se dá jednou připojit celá složka (File System Access API,
 // handle se pamatuje v IndexedDB) nebo připojit každý soubor ručně.
 
-const ANALYTICS_DIRS = ["", "data/"];      // kde se soubory hledají
+const ANALYTICS_DIRS = ["", "data/", "zdroje/", "sources/"];   // kde se soubory hledají
 
 const ANALYTICS_SOURCES = [
   {
@@ -4530,6 +5169,19 @@ const ANALYTICS_SOURCES = [
     info: () => specialistExportInfo(),
     detail: (info) => `${info.n} poboček`,
     attach: (file) => handleSpecialistExportFile(file),
+  },
+  {
+    key: "catchment",
+    file: "spadove_pobocky.xlsx",
+    label: "Spádové pobočky",
+    accept: ".xlsx,.xls",
+    src: "catchment",
+    desc: "Kam by šli klienti z jednotlivých poboček (až tři spádové pobočky, jejich návštěvy, "
+      + "vzdálenost a odhad přesunu). Používá se při kalkulaci, když pobočka přebírá klienty "
+      + "a zaměstnance z jiných poboček.",
+    info: () => catchmentInfo(),
+    detail: (info) => `${info.branches} poboček, ${info.n} vazeb`,
+    attach: (file) => handleCatchmentFile(file),
   },
   {
     key: "branches",
@@ -4872,9 +5524,16 @@ function getVisitorForCalculation(calculationKey, pobockaId, pobockaNazev) {
   const snap = calculationKey
     ? decodeVisitorRow(dbAll("SELECT * FROM calculation_visitor WHERE calculation_key = ?", [calculationKey])[0])
     : null;
-  if (snap) return { ...snap, isSnapshot: true };
-  const live = getVisitorData(pobockaId, pobockaNazev);
-  return live ? { ...live, isSnapshot: false } : null;
+  const base = snap ? { ...snap, isSnapshot: true } : (() => {
+    const live = getVisitorData(pobockaId, pobockaNazev);
+    return live ? { ...live, isSnapshot: false } : null;
+  })();
+  if (!base) return null;
+  // Když kalkulace přebírá klienty ze spádových poboček, návštěvnost se navýší
+  // poměrem převzatých návštěv — tady, aby s tím počítaly všechny sekce i PDF.
+  const loadKey = calculationKey ? (dbAll("SELECT load_key FROM calculations WHERE calculation_key = ? LIMIT 1",
+    [calculationKey])[0] || {}).load_key : null;
+  return visitorWithCatchment(base, loadKey, pobockaId, pobockaNazev);
 }
 
 /* --------------------------- Odvozené ukazatele ---------------------------- */
@@ -9504,7 +10163,10 @@ function deleteCalculation(calculationKey, loadKey) {
   dbRun("DELETE FROM calculation_visitor WHERE calculation_key = ?", [calculationKey]);
   dbRun("DELETE FROM layout_extras WHERE calculation_key = ?", [calculationKey]);
   dbRun("DELETE FROM layout_staff WHERE calculation_key = ?", [calculationKey]);
-  if (loadKey && otherCalcs === 0) dbRun("DELETE FROM excel_loads WHERE load_key = ?", [loadKey]);
+  if (loadKey && otherCalcs === 0) {
+    dbRun("DELETE FROM excel_loads WHERE load_key = ?", [loadKey]);
+    dbRun("DELETE FROM catchment_selection WHERE load_key = ?", [loadKey]);
+  }
   persistDatabase(true);
   toast(`Kalkulace ${calculationKey} byla smazána.`, "ok");
   return true;
@@ -9513,7 +10175,8 @@ function deleteCalculation(calculationKey, loadKey) {
 function showHistoryDetail(calculationKey, loadKey) {
   const panel = document.getElementById("historyDetailPanel");
   panel.style.display = "block";
-  const inputRows = dbAll("SELECT segment, pozice, fte, wpl_load, created_at FROM excel_loads WHERE load_key = ? ORDER BY id", [loadKey]);
+  const inputRows = dbAll(`SELECT segment, pozice, fte, wpl_load, created_at, source_branch
+    FROM excel_loads WHERE load_key = ? ORDER BY id`, [loadKey]);
   const resultRows = dbAll(`SELECT segment, total_positions, position_list, service_zone, meeting_zone,
     backoffice_zone, office_room, created_at, ref_version_id, duvod FROM calculations WHERE calculation_key = ?
     ORDER BY (segment = 'Celkem'), id`, [calculationKey]);
@@ -9525,7 +10188,11 @@ function showHistoryDetail(calculationKey, loadKey) {
   const refVersionIdForSplit = dbAll("SELECT ref_version_id FROM calculations WHERE calculation_key = ? LIMIT 1",
     [calculationKey])[0]?.ref_version_id;
   const inputSplits = dotaceSplitMap(refVersionIdForSplit);
-  const inputHtml = inputRows.map((r) => `<tr><td>${segmentBadgeHtml(r.segment)}</td><td>${esc(r.pozice)}</td>
+  const inputHtml = inputRows.map((r) => `<tr${r.source_branch ? ' class="cm-taken-row"' : ""}>
+    <td>${segmentBadgeHtml(r.segment)}</td>
+    <td>${esc(r.pozice)}${r.source_branch
+      ? ` <span class="src-badge src-catchment" title="Převzato ze spádové pobočky">${esc(r.source_branch)}</span>`
+      : ""}</td>
     <td>${fmt1(r.fte)}</td><td>${fmt1(r.wpl_load)}</td>
     <td>${zoneSplitBarHtml(inputSplits[`${r.segment}||${r.pozice}`])}</td></tr>`).join("");
   const resultHtml = resultRows.map((r) => resultRowHtml(r, r.segment === "Celkem")).join("");
@@ -9533,7 +10200,8 @@ function showHistoryDetail(calculationKey, loadKey) {
   const refVersionId = resultRows[0] ? resultRows[0].ref_version_id : null;
   const createdAt = resultRows[0] ? resultRows[0].created_at : nowIso();
   const rowsNoTotal = resultRows.filter((r) => r.segment !== "Celkem");
-  const mappedInputRows = inputRows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte, wpl_load: r.wpl_load }));
+  const mappedInputRows = inputRows.map((r) => ({ segment: r.segment, pozice: r.pozice, fte: r.fte,
+    wpl_load: r.wpl_load, source_branch: r.source_branch || null }));
   const stats = computeCalculationStats({ rows: rowsNoTotal, celkem: found || {}, inputRows: mappedInputRows });
   const status = getCalculationStatus(calculationKey);
   const visitor = getVisitorForCalculation(calculationKey, branch?.pobocka_id, branch?.pobocka_nazev);
@@ -9566,8 +10234,10 @@ function showHistoryDetail(calculationKey, loadKey) {
     <div class="table-wrap"><table><thead><tr><th>Segment</th><th>Pozice</th><th>FTE</th><th>Vytížení WPL</th>
       <th>Vytížení zón</th></tr></thead>
     <tbody>${inputHtml}</tbody></table></div>
-    ${renderFteComparisonHtml(compareFteWithSpecialists(mappedInputRows, branch?.pobocka_id, branch?.pobocka_nazev),
+    ${renderFteComparisonHtml(compareFteWithSpecialists(
+      mappedInputRows.filter((r) => !r.source_branch), branch?.pobocka_id, branch?.pobocka_nazev),
       { quiet: true })}
+    ${catchmentSummaryHtml(loadKey, branch?.pobocka_id, branch?.pobocka_nazev)}
     <h3>Výsledek kalkulace ${srcBadgeHtml("calc")}${calcResultHelpHtml(calcResult)}</h3>
     <div class="table-wrap"><table><thead><tr><th>Segment</th><th>FTE celkem</th><th>Pozice (FTE)</th>
       <th>Service zone</th><th>Meeting zone</th><th>Backoffice zone</th><th>Office room</th></tr></thead>
