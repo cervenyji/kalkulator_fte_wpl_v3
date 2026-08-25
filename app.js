@@ -12,6 +12,30 @@ const ZONES = ["service_zone", "meeting_zone", "backoffice_zone", "office_room"]
 // platí stejně pro Excel i manuální zadání.
 const CALCULATION_REASONS = ["Přechod na cashless", "Modernizace", "Ad-hoc kalkulace", "Optimalizace"];
 
+// Spádové pobočky (zdroj: `top_3_related_branches*.csv`). Jeden řádek = jedna
+// pobočka z checklistu a k ní jedna z jejích až tří „top“ souvisejících poboček.
+// Definice je zvlášť, protože starší databáze mají tabulku v jiném tvaru
+// a `migrateSchema()` ji podle toho přestaví.
+const CATCHMENT_TABLE_SQL = `CREATE TABLE IF NOT EXISTS catchment (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  branch_id TEXT,
+  branch_nazev TEXT,
+  branch_visits REAL,
+  home_zsj_visits REAL,
+  home_zsj_pct REAL,
+  home_district_visits REAL,
+  home_district_pct REAL,
+  slot INTEGER,
+  rel_id TEXT,
+  rel_nazev TEXT,
+  rel_visits REAL,
+  rel_visits_pct REAL,
+  rel_distance_km REAL,
+  transfer_pct REAL,
+  imported_at TEXT,
+  source TEXT
+);`;
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS absence (
   segment TEXT PRIMARY KEY,
@@ -122,20 +146,7 @@ CREATE TABLE IF NOT EXISTS specialist_export (
   source TEXT,
   payload TEXT
 );
-CREATE TABLE IF NOT EXISTS catchment (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  source_id TEXT,
-  source_name TEXT,
-  region TEXT,
-  slot INTEGER,
-  target_name TEXT,
-  visits REAL,
-  share REAL,
-  distance_km REAL,
-  transfer_pct REAL,
-  imported_at TEXT,
-  source TEXT
-);
+${CATCHMENT_TABLE_SQL}
 CREATE TABLE IF NOT EXISTS catchment_selection (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   load_key TEXT,
@@ -228,6 +239,15 @@ function migrateSchema(dbi) {
   try { dbi.run("ALTER TABLE excel_loads ADD COLUMN shift_mode INTEGER"); } catch (e) { /* sloupec už existuje */ }
   // Řádky, které do checklistu přišly ze spádové pobočky (převzatí zaměstnanci).
   try { dbi.run("ALTER TABLE excel_loads ADD COLUMN source_branch TEXT"); } catch (e) { /* sloupec už existuje */ }
+  // Spádové pobočky: dřívější verze měla tabulku v jiném tvaru (jiný zdrojový
+  // soubor) — zahodí se a vytvoří znovu, data se nahrají novým importem.
+  try {
+    const cols = dbAll("PRAGMA table_info(catchment)", [], dbi).map((c) => c.name);
+    if (cols.length && !cols.includes("rel_id")) {
+      dbi.run("DROP TABLE catchment");
+      dbi.run(CATCHMENT_TABLE_SQL);
+    }
+  } catch (e) { /* tabulka ještě není */ }
   try { dbi.run("ALTER TABLE ref_data_versions ADD COLUMN furniture_json TEXT"); } catch (e) { /* sloupec už existuje */ }
   const furnitureCount = dbAll("SELECT COUNT(*) AS n FROM furniture_to_zone", [], dbi)[0].n;
   if (furnitureCount === 0) {
@@ -894,7 +914,7 @@ const DATA_SOURCES = {
   branch: { label: "z exportu poboček", color: "#0e7490",
     title: "Rating, výnosy a prodeje pobočky z exportu poboček (pobocky-export.xlsx)." },
   catchment: { label: "ze spádových poboček", color: "#c026a3",
-    title: "Zaměstnanci a návštěvy převzaté z jiných poboček (spadove_pobocky.xlsx)." },
+    title: "Zaměstnanci a návštěvy převzaté z jiných poboček (top_3_related_branches*.csv)." },
   ref: { label: "referenční data", color: "#6b7684",
     title: "Nastavení v referenčních datech — nezávisí na konkrétní kalkulaci." },
 };
@@ -4539,19 +4559,24 @@ async function handleVisitorReportFile(file) {
   }
 }
 
-/* --------------- Spádové pobočky (spadove_pobocky.xlsx) -------------------- */
-// Soubor říká, kam by šli klienti z dané pobočky: jeden řádek = jedna pobočka
-// (sloupec „ID Pobočky“) a k ní až tři spádové pobočky se sloupci
-// „Spádová pobočka N“, „Spád. návštěvy N“, „Spád. podíl N“, „Vzdálenost km N“
-// a „Odhad přesunu % N“.
+/* ------- Spádové pobočky (top_3_related_branches*.csv) --------------------- */
+// Jeden řádek = jedna pobočka (`branch_id`, `branch_nazev`) a k ní tři
+// nejsouvisejícejší („top“) pobočky:
+//   top_pobocka_id_N / top_pobocka_nazev_N   — spádová pobočka N
+//   top_pobocka_visits_N                     — její návštěvy
+//   top_pobocka_visits_N_pct                 — jaký podíl návštěv to je
+//   top_pobocka_distance_km_N                — vzdálenost
+//   odhadovany_presun_pct_N                  — odhad, kolik % klientů přejde
+// Dále je v řádku celková návštěvnost pobočky (`navstevnost_v_pobocce_celkem`)
+// a návštěvy z domovské ZSJ/okresu.
 //
-// V kalkulaci se to používá obráceně: pro počítanou pobočku se hledají řádky,
-// kde je jako spádová pobočka právě ona — to jsou pobočky, ze kterých k ní
-// mohou přejít klienti (a s nimi i zaměstnanci).
+// V kalkulaci se hledá řádek počítané pobočky (podle branch_id nebo názvu) a
+// jeho tři spádové pobočky se nabídnou jako ty, ze kterých mohou přijít klienti
+// a zaměstnanci. Odhad přesunu se dá u každé přepsat.
 
 const CATCHMENT_SLOTS = [1, 2, 3];
 
-// „2 382“ → 2382, „0.6 %“ → 0.6, „5.1 km“ → 5.1, „—“ → null.
+// „2 382“ → 2382, „0,6 %“ → 0.6, „5.1 km“ → 5.1, „—“ → null.
 function catchNum(v) {
   if (v === null || v === undefined) return null;
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
@@ -4571,47 +4596,74 @@ function branchKey(name) {
   return normHeader(name);
 }
 
-function parseCatchment(workbook) {
-  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]],
-    { header: 1, blankrows: false });
-  if (!rows.length) throw new Error("List je prázdný.");
+// CSV se čte SheetJS; oddělovač se zkouší postupně (auto, „;“, tabulátor, „,“),
+// takže projde export s jakýmkoli z nich.
+function readDelimitedRows(text) {
+  const clean = String(text).replace(/^﻿/, "");
+  const variants = [undefined, ";", "\t", ","];
+  let best = [];
+  for (const FS of variants) {
+    try {
+      const wb = XLSX.read(clean, { type: "string", raw: true, ...(FS ? { FS } : {}) });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, blankrows: false });
+      if ((rows[0] || []).length > (best[0] || []).length) best = rows;
+      if ((rows[0] || []).length >= 10) return rows;
+    } catch (e) { /* zkusí se další oddělovač */ }
+  }
+  return best;
+}
+
+// Přijme řádky (z CSV i z xlsx) a udělá z nich vazby pobočka → spádová pobočka.
+function parseCatchmentRows(rows) {
+  if (!rows.length) throw new Error("Soubor je prázdný.");
   const header = (rows[0] || []).map((h) => String(h === null || h === undefined ? "" : h).trim());
   const norm = header.map(normHeader);
   const idx = (test) => norm.findIndex(test);
 
-  const cId = idx((n) => n === "id pobocky" || n === "id pobocka" || n === "id");
-  const cName = idx((n) => n.startsWith("nazev pobocky"));
-  const cRegion = idx((n) => n === "region");
-  if (cId < 0) throw new Error(`Chybí sloupec „ID Pobočky“ (nalezeno: ${header.slice(0, 3).join(", ")}).`);
+  const cId = idx((n) => n === "branch id" || n === "id pobocky" || n === "id");
+  const cName = idx((n) => n === "branch nazev" || n === "branch name" || n.startsWith("nazev pobocky"));
+  const cVisits = idx((n) => n.startsWith("navstevnost v pobocce"));
+  const cZsj = idx((n) => n === "home zsj visits");
+  const cZsjPct = idx((n) => n === "home zsj visits pct");
+  const cDist = idx((n) => n === "home district visits");
+  const cDistPct = idx((n) => n === "home district visits pct");
+  if (cId < 0 && cName < 0) {
+    throw new Error(`Chybí sloupec „branch_id“ ani „branch_nazev“ (první sloupce: ${header.slice(0, 4).join(", ")}).`);
+  }
 
-  // Sloupce pro každou ze tří spádových poboček.
   const slots = CATCHMENT_SLOTS.map((i) => ({
     slot: i,
-    name: idx((n) => n === `spadova pobocka ${i}`),
-    visits: idx((n) => n.startsWith("spad navstevy") && n.endsWith(String(i))),
-    share: idx((n) => n.startsWith("spad podil") && n.endsWith(String(i))),
-    distance: idx((n) => n.startsWith("vzdalenost km") && n.endsWith(String(i))),
-    transfer: idx((n) => n.includes("odhad presunu") && n.endsWith(String(i))),
-  })).filter((s) => s.name >= 0);
-  if (!slots.length) throw new Error("Nenašel jsem ani jeden sloupec „Spádová pobočka N“.");
+    id: idx((n) => n === `top pobocka id ${i}`),
+    name: idx((n) => n === `top pobocka nazev ${i}` || n === `top pobocka name ${i}`),
+    visits: idx((n) => n === `top pobocka visits ${i}`),
+    visitsPct: idx((n) => n === `top pobocka visits ${i} pct`),
+    distance: idx((n) => n === `top pobocka distance km ${i}`),
+    transfer: idx((n) => n === `odhadovany presun pct ${i}`),
+  })).filter((sl) => sl.id >= 0 || sl.name >= 0);
+  if (!slots.length) throw new Error("Nenašel jsem sloupce „top_pobocka_id_N / top_pobocka_nazev_N“.");
 
   const out = [];
   let branches = 0;
   rows.slice(1).forEach((r) => {
-    const sourceId = catchText(r[cId]);
-    const sourceName = cName >= 0 ? catchText(r[cName]) : "";
-    if (!sourceId && !sourceName) return;
+    const branchId = cId >= 0 ? catchText(r[cId]) : "";
+    const branchName = cName >= 0 ? catchText(r[cName]) : "";
+    if (!branchId && !branchName) return;
     branches++;
     slots.forEach((sl) => {
-      const target = catchText(r[sl.name]);
-      if (!target) return;
+      const relId = sl.id >= 0 ? catchText(r[sl.id]) : "";
+      const relName = sl.name >= 0 ? catchText(r[sl.name]) : "";
+      if (!relId && !relName) return;
       out.push({
-        source_id: sourceId, source_name: sourceName,
-        region: cRegion >= 0 ? catchText(r[cRegion]) : "",
-        slot: sl.slot, target_name: target,
-        visits: sl.visits >= 0 ? catchNum(r[sl.visits]) : null,
-        share: sl.share >= 0 ? catchNum(r[sl.share]) : null,
-        distance_km: sl.distance >= 0 ? catchNum(r[sl.distance]) : null,
+        branch_id: branchId, branch_nazev: branchName,
+        branch_visits: cVisits >= 0 ? catchNum(r[cVisits]) : null,
+        home_zsj_visits: cZsj >= 0 ? catchNum(r[cZsj]) : null,
+        home_zsj_pct: cZsjPct >= 0 ? catchNum(r[cZsjPct]) : null,
+        home_district_visits: cDist >= 0 ? catchNum(r[cDist]) : null,
+        home_district_pct: cDistPct >= 0 ? catchNum(r[cDistPct]) : null,
+        slot: sl.slot, rel_id: relId, rel_nazev: relName,
+        rel_visits: sl.visits >= 0 ? catchNum(r[sl.visits]) : null,
+        rel_visits_pct: sl.visitsPct >= 0 ? catchNum(r[sl.visitsPct]) : null,
+        rel_distance_km: sl.distance >= 0 ? catchNum(r[sl.distance]) : null,
         transfer_pct: sl.transfer >= 0 ? catchNum(r[sl.transfer]) : null,
       });
     });
@@ -4621,16 +4673,27 @@ function parseCatchment(workbook) {
 
 async function handleCatchmentFile(file) {
   if (!requireDb()) return null;
-  const data = new Uint8Array(await file.arrayBuffer());
-  const parsed = parseCatchment(XLSX.read(data, { type: "array" }));
+  // CSV se čte jako text (kvůli oddělovači a diakritice), xlsx jako binárka.
+  const isCsv = /\.(csv|txt|tsv)$/i.test(file.name || "") || /text\/csv/.test(file.type || "");
+  let rows;
+  if (isCsv) {
+    rows = readDelimitedRows(await file.text());
+  } else {
+    const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: "array" });
+    rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, blankrows: false });
+  }
+  const parsed = parseCatchmentRows(rows);
   const importedAt = nowIso();
   dbRun("DELETE FROM catchment");
   const ins = db.prepare(`INSERT INTO catchment
-    (source_id, source_name, region, slot, target_name, visits, share, distance_km, transfer_pct,
-     imported_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    (branch_id, branch_nazev, branch_visits, home_zsj_visits, home_zsj_pct, home_district_visits,
+     home_district_pct, slot, rel_id, rel_nazev, rel_visits, rel_visits_pct, rel_distance_km,
+     transfer_pct, imported_at, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   parsed.rows.forEach((r) => {
-    ins.run([r.source_id, r.source_name, r.region, r.slot, r.target_name, r.visits, r.share,
-      r.distance_km, r.transfer_pct, importedAt, file.name]);
+    ins.run([r.branch_id, r.branch_nazev, r.branch_visits, r.home_zsj_visits, r.home_zsj_pct,
+      r.home_district_visits, r.home_district_pct, r.slot, r.rel_id, r.rel_nazev, r.rel_visits,
+      r.rel_visits_pct, r.rel_distance_km, r.transfer_pct, importedAt, file.name]);
   });
   ins.free();
   await persistDatabase();
@@ -4640,35 +4703,63 @@ async function handleCatchmentFile(file) {
 function catchmentInfo() {
   if (!db) return null;
   try {
-    const row = dbAll(`SELECT COUNT(*) AS n, COUNT(DISTINCT source_id) AS branches,
+    const row = dbAll(`SELECT COUNT(*) AS n, COUNT(DISTINCT branch_id) AS branches,
       MAX(imported_at) AS imported_at, MAX(source) AS source FROM catchment`)[0];
     return row && row.n ? row : null;
   } catch (e) { return null; }
 }
 
-// Pobočky, ze kterých mohou klienti přejít na počítanou pobočku (našeptávání).
-// Hledá se podle názvu počítané pobočky ve sloupcích „Spádová pobočka N“.
-function catchmentSuggestions(pobockaNazev) {
-  if (!db || !pobockaNazev) return [];
+// Spádové pobočky počítané pobočky — hledá se podle branch_id, jako záloha
+// podle názvu. Vrací je i s odhadem přesunu, který se dá v UI přepsat.
+function catchmentSuggestions(pobockaId, pobockaNazev) {
+  if (!db) return [];
   try {
+    const id = String(pobockaId || "").trim();
     const key = branchKey(pobockaNazev);
-    return dbAll("SELECT * FROM catchment").filter((r) => branchKey(r.target_name) === key)
-      .map((r) => ({
-        source_id: r.source_id, source_name: r.source_name, region: r.region,
-        slot: r.slot, visits: r.visits, share: r.share, distance_km: r.distance_km,
-        transfer_pct: r.transfer_pct,
-      }))
-      .sort((a, b) => (b.transfer_pct || 0) - (a.transfer_pct || 0) || (b.visits || 0) - (a.visits || 0));
+    const rows = dbAll("SELECT * FROM catchment ORDER BY slot");
+    const mine = rows.filter((r) => (id && String(r.branch_id).trim() === id)
+      || (key && branchKey(r.branch_nazev) === key));
+    return mine.map((r) => ({
+      source_id: r.rel_id, source_name: r.rel_nazev, slot: r.slot,
+      visits: r.rel_visits, visits_pct: r.rel_visits_pct, distance_km: r.rel_distance_km,
+      transfer_pct: r.transfer_pct, branch_visits: r.branch_visits,
+      home_zsj_pct: r.home_zsj_pct, home_district_pct: r.home_district_pct,
+    })).sort((a, b) => (b.transfer_pct || 0) - (a.transfer_pct || 0) || a.slot - b.slot);
   } catch (e) { return []; }
+}
+
+// Celková návštěvnost počítané pobočky podle zdrojového souboru (sloupec
+// `navstevnost_v_pobocce_celkem`) — z ní se počítá, o kolik % provoz naroste.
+function catchmentBranchVisitsTotal(pobockaId, pobockaNazev) {
+  const sug = catchmentSuggestions(pobockaId, pobockaNazev);
+  const withVisits = sug.find((s) => s.branch_visits);
+  return withVisits ? withVisits.branch_visits : null;
 }
 
 /* --------- FTE spádové pobočky: z databáze, nebo zadané ručně -------------- */
 // „Z databáze“ = obsazenost z exportu specialistů; když pobočka v exportu není,
 // zkusí se poslední načtený checklist té pobočky (tabulka excel_loads).
 
+// Řádek exportu specialistů pro spádovou pobočku. Nejdřív se hledá podle názvu
+// (ten je ve zdroji spádových poboček i v exportu), teprve pak podle ID — a když
+// se u nalezeného ID název neshoduje, je to v popisu vidět.
+function catchmentSpecialistRow(sourceId, sourceName) {
+  if (!db) return { row: null, mismatch: false };
+  const name = String(sourceName || "").trim();
+  if (name) {
+    const byName = dbAll("SELECT * FROM specialist_export WHERE LOWER(branch_name) = ?",
+      [name.toLowerCase()])[0];
+    if (byName) return { row: byName, mismatch: false };
+  }
+  const id = String(sourceId || "").trim();
+  const byId = id ? dbAll("SELECT * FROM specialist_export WHERE branch_id = ?", [id])[0] : null;
+  if (!byId) return { row: null, mismatch: false };
+  return { row: byId, mismatch: !!(name && branchKey(byId.branch_name) !== branchKey(name)) };
+}
+
 function catchmentFteFromDb(sourceId, sourceName) {
   const known = positionSegmentMap();
-  const row = specialistRowFor(sourceId, sourceName);
+  const { row, mismatch } = catchmentSpecialistRow(sourceId, sourceName);
   if (row) {
     const counts = JSON.parse(row.payload || "{}");
     const rows = Object.entries(counts).map(([pozice, fte]) => {
@@ -4676,7 +4767,10 @@ function catchmentFteFromDb(sourceId, sourceName) {
       return { segment: found ? found.segment : "OSTATNÍ", pozice: found ? found.pozice : pozice,
         fte: Number(fte) || 0 };
     }).filter((r) => r.fte > 0);
-    if (rows.length) return { rows, origin: `export specialistů (${row.branch_name || row.branch_id})` };
+    if (rows.length) {
+      return { rows, origin: `export specialistů (${row.branch_name || row.branch_id})`
+        + (mismatch ? ` — pozor, v exportu je pod ID ${row.branch_id} jiný název` : "") };
+    }
   }
   // záloha: poslední checklist té pobočky
   try {
@@ -4767,17 +4861,25 @@ function catchmentSummary(loadKey, pobockaId, pobockaNazev) {
   const fte = sel.reduce((s, x) => s + (Number(x.fte_total) || 0), 0);
   const visitsDay = sel.reduce((s, x) => s + (Number(x.visits_day) || 0), 0);
   const visitsTotal = sel.reduce((s, x) => s + (Number(x.visits_total) || 0), 0);
-  const ownDay = own && own.visitsPerDay ? own.visitsPerDay : null;
+  // Základ pro „o kolik víc“: celková návštěvnost pobočky ze zdrojového souboru
+  // (stejná metrika jako převzaté návštěvy), jinak návštěvy z reportu.
+  const fileTotal = catchmentBranchVisitsTotal(pobockaId, pobockaNazev);
+  const baseTotal = fileTotal || (own ? own.visitsTotal : null);
+  const baseOrigin = fileTotal ? "navstevnost_v_pobocce_celkem ze zdrojového souboru"
+    : (own ? "report návštěvnosti pobočky" : null);
+  const days = (own && own.days) || CATCHMENT_DEFAULT_DAYS;
+  const ownDay = own && own.visitsPerDay ? own.visitsPerDay : (baseTotal ? baseTotal / days : null);
   return {
     branches: sel,
     fte: round1(fte),
     visitsDay: Math.round(visitsDay * 10) / 10,
     visitsTotal: Math.round(visitsTotal),
     ownVisitsDay: ownDay,
-    ownVisitsTotal: own ? own.visitsTotal : null,
+    ownVisitsTotal: baseTotal,
+    baseOrigin,
     // Poměr, kterým se přiškálují návštěvy z reportu (1 = bez změny).
-    factor: ownDay && ownDay > 0 ? 1 + visitsDay / ownDay : 1,
-    pct: ownDay && ownDay > 0 ? (visitsDay / ownDay) * 100 : null,
+    factor: baseTotal && baseTotal > 0 ? 1 + visitsTotal / baseTotal : 1,
+    pct: baseTotal && baseTotal > 0 ? (visitsTotal / baseTotal) * 100 : null,
   };
 }
 
@@ -4832,21 +4934,33 @@ const catchmentUi = {};   // load_key -> rozpracovaný výběr (než se uloží)
 
 const CATCHMENT_DEFAULT_DAYS = 250;   // odhad otevíracích dnů, když je neznáme
 
-// Kolik návštěv převezme počítaná pobočka z jedné spádové pobočky.
-function catchmentBranchVisits(sel, suggestion) {
+// Kolik návštěv převezme počítaná pobočka z jedné spádové pobočky:
+// návštěvy spádové pobočky × odhad přesunu. Návštěvy se berou přednostně
+// ze zdrojového souboru (sloupec `top_pobocka_visits_N`), jako záloha z reportu
+// návštěvnosti té pobočky.
+function catchmentBranchVisits(sel, suggestion, branch) {
   const share = (Number(sel.transfer_pct) || 0) / 100;
+  const days = catchmentDays(branch && branch.pobocka_id, branch && branch.pobocka_nazev);
+  const fromFile = suggestion && suggestion.visits ? Number(suggestion.visits) : null;
+  if (fromFile) {
+    return { day: (fromFile * share) / days, total: fromFile * share,
+      origin: "sloupec top_pobocka_visits ze zdrojového souboru",
+      baseDay: fromFile / days, baseTotal: fromFile };
+  }
   const v = catchmentVisits(sel.source_id, sel.source_name);
   if (v && (v.visitsPerDay || v.visitsTotal)) {
-    const perDay = v.visitsPerDay || (v.visitsTotal / (v.days || CATCHMENT_DEFAULT_DAYS));
-    return { day: perDay * share, total: (v.visitsTotal || perDay * (v.days || CATCHMENT_DEFAULT_DAYS)) * share,
+    const perDay = v.visitsPerDay || (v.visitsTotal / (v.days || days));
+    return { day: perDay * share, total: (v.visitsTotal || perDay * (v.days || days)) * share,
       origin: "report návštěvnosti spádové pobočky", baseDay: perDay, baseTotal: v.visitsTotal };
   }
-  const pair = suggestion && suggestion.visits ? Number(suggestion.visits) : null;
-  if (pair) {
-    return { day: (pair * share) / CATCHMENT_DEFAULT_DAYS, total: pair * share,
-      origin: "sloupec „Spád. návštěvy“ ze souboru", baseDay: pair / CATCHMENT_DEFAULT_DAYS, baseTotal: pair };
-  }
   return { day: 0, total: 0, origin: null, baseDay: null, baseTotal: null };
+}
+
+// Kolik otevíracích dnů odpovídá návštěvám v datech — z reportu pobočky, jinak
+// odhad. Používá se jen pro přepočet „za rok → na den“ v popisech.
+function catchmentDays(pobockaId, pobockaNazev) {
+  const own = catchmentVisits(pobockaId, pobockaNazev);
+  return (own && own.days) || CATCHMENT_DEFAULT_DAYS;
 }
 
 function catchmentRowHtml(r, i) {
@@ -4863,8 +4977,8 @@ function catchmentRowHtml(r, i) {
   </tr>`;
 }
 
-function catchmentItemHtml(sel, i, suggestion) {
-  const vis = catchmentBranchVisits(sel, suggestion);
+function catchmentItemHtml(sel, i, suggestion, branch) {
+  const vis = catchmentBranchVisits(sel, suggestion, branch);
   const fteTotal = (sel.rows || []).reduce((s, r) => s + (Number(r.fte) || 0), 0);
   const dbInfo = sel.db_origin ? `<span class="muted">(${esc(sel.db_origin)})</span>` : "";
   return `<div class="cm-item" data-idx="${i}">
@@ -4872,7 +4986,9 @@ function catchmentItemHtml(sel, i, suggestion) {
       <strong>${esc(sel.source_name)}</strong>
       ${sel.source_id ? `<span class="muted">ID ${esc(sel.source_id)}</span>` : ""}
       ${suggestion && suggestion.distance_km ? `<span class="muted">${fmt1(suggestion.distance_km)} km</span>` : ""}
-      ${suggestion && suggestion.region ? `<span class="muted">${esc(suggestion.region)}</span>` : ""}
+      ${suggestion && suggestion.visits_pct
+        ? `<span class="muted">${fmt1(suggestion.visits_pct)} % návštěv</span>` : ""}
+      ${suggestion && suggestion.slot ? `<span class="muted">top ${suggestion.slot}</span>` : ""}
       <button class="btn secondary small cm-del" title="Odebrat pobočku">✕</button>
     </div>
     <div class="cm-grid">
@@ -4918,18 +5034,23 @@ function catchmentPanelHtml(load, state, suggestions) {
         ? `<span class="cm-pct">odhad přesunu ${fmt1(sg.transfer_pct)} %</span>`
         : `<span class="muted">odhad přesunu neuveden</span>`}
       ${sg.distance_km ? `<span class="muted">${fmt1(sg.distance_km)} km</span>` : ""}
-      ${sg.visits ? `<span class="muted">${fmtNum0(sg.visits)} spád. návštěv</span>` : ""}
+      ${sg.visits ? `<span class="muted">${fmtNum0(sg.visits)} návštěv</span>` : ""}
+      ${sg.visits_pct ? `<span class="muted">${fmt1(sg.visits_pct)} %</span>` : ""}
     </span></label>`).join("");
 
   const totals = state.reduce((acc, sel, i) => {
-    const vis = catchmentBranchVisits(sel, suggestions.find((sg) => branchKey(sg.source_name) === branchKey(sel.source_name)));
+    const vis = catchmentBranchVisits(sel,
+      suggestions.find((sg) => branchKey(sg.source_name) === branchKey(sel.source_name)), load);
     acc.fte += (sel.rows || []).reduce((s, r) => s + (Number(r.fte) || 0), 0);
     acc.day += vis.day;
     acc.total += vis.total;
     return acc;
   }, { fte: 0, day: 0, total: 0 });
   const own = catchmentVisits(load.pobocka_id, load.pobocka_nazev);
-  const ownDay = own && own.visitsPerDay ? own.visitsPerDay : null;
+  const fileTotal = catchmentBranchVisitsTotal(load.pobocka_id, load.pobocka_nazev);
+  const baseTotal = fileTotal || (own ? own.visitsTotal : null);
+  const days = (own && own.days) || CATCHMENT_DEFAULT_DAYS;
+  const ownDay = (own && own.visitsPerDay) || (baseTotal ? baseTotal / days : null);
 
   // Rozbalené, když je co nabídnout (nebo už je něco vybráno) — ať si uživatel
   // možnosti všimne; jinak zůstane sbalené, aby náhled checklistu nezaplňovalo.
@@ -4938,31 +5059,34 @@ function catchmentPanelHtml(load, state, suggestions) {
       ${srcBadgeHtml("catchment")}
       ${state.length ? `<span class="cm-chip">${state.length} pobočky · +${fmt1(totals.fte)} FTE</span>` : ""}
     </summary>
-    <p class="muted">Vyberte pobočky, ze kterých na <strong>${esc(load.pobocka_nazev)}</strong> přejdou
-      klienti (a případně i zaměstnanci). Našeptávají se podle souboru
-      <code>spadove_pobocky.xlsx</code>${info ? ` (${info.branches} poboček)` : ""}; přidat lze i jakoukoli
-      další pobočku z číselníku. Převzaté FTE se <strong>připočítají do kalkulace</strong> a převzaté
-      návštěvy <strong>navýší návštěvnost</strong> — všechno označené štítkem
-      „ze spádových poboček“.</p>
-    ${info ? "" : `<div class="msg warn">Soubor <code>spadove_pobocky.xlsx</code> není načtený —
-      našeptávání nebude fungovat. Připojte ho v části „Dodatečná analytika“ (hledá se i ve složce
-      <code>zdroje</code>).</div>`}
+    <p class="muted">Vyberte pobočky, ze kterých na <strong>${esc(load.pobocka_nazev)}</strong>
+      ${load.pobocka_id ? `(ID ${esc(load.pobocka_id)})` : ""} přejdou klienti (a případně i zaměstnanci).
+      Našeptávají se ze zdrojového souboru <code>top_3_related_branches*.csv</code>${info
+        ? ` (${info.branches} poboček)` : ""} — pobočka se v něm najde podle <code>branch_id</code>,
+      jinak podle názvu, a nabídnou se její tři <em>top</em> spádové pobočky s návštěvami a odhadem
+      přesunu klientů. <strong>Odhad přesunu lze u každé přepsat.</strong> Přidat lze i jakoukoli další
+      pobočku z číselníku. Převzaté FTE se <strong>připočítají do kalkulace</strong> a převzaté návštěvy
+      <strong>navýší návštěvnost</strong> — všechno označené štítkem „ze spádových poboček“.</p>
+    ${info ? "" : `<div class="msg warn">Zdrojový soubor spádových poboček
+      (<code>top_3_related_branches15.csv</code>) není načtený — našeptávání nebude fungovat.
+      Připojte ho v části „Dodatečná analytika“ (hledá se i ve složce <code>zdroje</code>).</div>`}
     ${suggestions.length ? `<div class="cm-sugs">
-      <span class="muted">Podle souboru na tuto pobočku spáduje:</span>${sugHtml}</div>`
-      : `<p class="muted">Soubor pro pobočku „${esc(load.pobocka_nazev)}“ žádnou spádovou vazbu neuvádí —
+      <span class="muted">Spádové pobočky podle souboru${suggestions[0].branch_visits
+        ? ` (pobočka má ${fmtNum0(suggestions[0].branch_visits)} návštěv)` : ""}:</span>${sugHtml}</div>`
+      : `<p class="muted">Pro pobočku „${esc(load.pobocka_nazev)}“ soubor žádnou spádovou vazbu neuvádí —
          pobočky přidejte ručně z číselníku.</p>`}
     <div class="row cm-add-row">
       <input type="text" id="cmAddName" list="pobockyDatalist" placeholder="Přidat pobočku z číselníku…">
       <button class="btn secondary small" id="cmAddBtn">+ Přidat pobočku</button>
     </div>
     <div class="cm-items">${state.map((sel, i) => catchmentItemHtml(sel, i,
-      suggestions.find((sg) => branchKey(sg.source_name) === branchKey(sel.source_name)))).join("")}</div>
+      suggestions.find((sg) => branchKey(sg.source_name) === branchKey(sel.source_name)), load)).join("")}</div>
     ${state.length ? `<div class="cm-summary">
       Přebírá se celkem <strong>+${fmt1(totals.fte)} FTE</strong> ·
-      <strong>+${fmt1(totals.day)} návštěv/den</strong>
-      (${fmtNum0(totals.total)} za rok)${ownDay
-        ? ` — návštěvnost pobočky roste z ${fmt1(ownDay)} na ${fmt1(ownDay + totals.day)} návštěv/den,
-            tedy o <strong>${fmt1((totals.day / ownDay) * 100)} %</strong>` : ""}.
+      <strong>+${fmtNum0(totals.total)} návštěv</strong>
+      (${fmt1(totals.day)}/den)${baseTotal
+        ? ` — návštěvnost pobočky roste z ${fmtNum0(baseTotal)} na ${fmtNum0(baseTotal + totals.total)},
+            tedy o <strong>${fmt1((totals.total / baseTotal) * 100)} %</strong>` : ""}.
     </div>` : ""}
     <div class="row" style="margin-top:10px;">
       <button class="btn" id="cmApply">✓ Použít do kalkulace</button>
@@ -4977,7 +5101,7 @@ function renderCatchmentPanel(containerId, load) {
   const container = document.getElementById(containerId);
   if (!container || !load) return;
   const loadKey = load.load_key;
-  const suggestions = catchmentSuggestions(load.pobocka_nazev);
+  const suggestions = catchmentSuggestions(load.pobocka_id, load.pobocka_nazev);
   if (!catchmentUi[loadKey]) {
     catchmentUi[loadKey] = getCatchmentSelection(loadKey).map((r) => ({
       source_id: r.source_id, source_name: r.source_name, transfer_pct: r.transfer_pct,
@@ -5072,7 +5196,7 @@ function renderCatchmentPanel(containerId, load) {
   container.querySelector("#cmApply").addEventListener("click", async () => {
     const selections = state.map((sel) => {
       const sug = suggestions.find((sg) => branchKey(sg.source_name) === branchKey(sel.source_name));
-      const vis = catchmentBranchVisits(sel, sug);
+      const vis = catchmentBranchVisits(sel, sug, load);
       return { ...sel, visits_day: vis.day, visits_total: vis.total };
     });
     await saveCatchmentSelection(load, selections);
@@ -5106,20 +5230,23 @@ function catchmentSummaryHtml(loadKey, pobockaId, pobockaNazev, options = {}) {
       <span class="cm-chip">${sum.branches.length} pobočky · +${fmt1(sum.fte)} FTE${sum.pct
         ? ` · +${fmt1(sum.pct)} % návštěv` : ""}</span></summary>
     <div class="table-wrap"><table class="visitor-table">
-      <thead><tr><th>Pobočka</th><th>Odhad přesunu</th><th>Převzato FTE</th>
-        <th>Návštěvy/den</th><th>Návštěvy/rok</th><th>Zdroj FTE</th></tr></thead>
+      <thead><tr><th>Spádová pobočka</th><th>Odhad přesunu</th><th>Převzato FTE</th>
+        <th>Převzaté návštěvy/den</th><th>Převzaté návštěvy celkem</th><th>Zdroj FTE</th></tr></thead>
       <tbody>${rows}
         <tr class="total-row"><td>Celkem</td><td></td>
           <td class="num"><strong>${fmt1(sum.fte)}</strong></td>
           <td class="num"><strong>${fmt1(sum.visitsDay)}</strong></td>
           <td class="num"><strong>${fmtNum0(sum.visitsTotal)}</strong></td><td></td></tr>
       </tbody></table></div>
-    <p class="muted">${sum.ownVisitsDay
-      ? `Návštěvnost pobočky roste z <strong>${fmt1(sum.ownVisitsDay)}</strong> na
-         <strong>${fmt1(sum.ownVisitsDay + sum.visitsDay)}</strong> návštěv/den, tedy o
-         <strong>${fmt1(sum.pct)} %</strong>. Sekce kapacity pobočky proto počítají s navýšenou
-         návštěvností (poměr ${(Math.round(sum.factor * 1000) / 1000).toString().replace(".", ",")}×).`
-      : "Pro tuto pobočku nejsou naimportovaná data návštěvnosti, proto se navyšují jen FTE."}
+    <p class="muted">${sum.ownVisitsTotal
+      ? `Návštěvnost pobočky roste z <strong>${fmtNum0(sum.ownVisitsTotal)}</strong> na
+         <strong>${fmtNum0(sum.ownVisitsTotal + sum.visitsTotal)}</strong> návštěv, tedy o
+         <strong>${fmt1(sum.pct)} %</strong>${sum.ownVisitsDay
+           ? ` (${fmt1(sum.ownVisitsDay)} → ${fmt1(sum.ownVisitsDay + sum.visitsDay)} návštěv/den)` : ""}.
+         Sekce kapacity pobočky proto počítají s navýšenou návštěvností (poměr
+         ${(Math.round(sum.factor * 1000) / 1000).toString().replace(".", ",")}×);
+         základ návštěvnosti: ${esc(sum.baseOrigin || "—")}.`
+      : "Pro tuto pobočku nejsou data o návštěvnosti, proto se navyšují jen FTE."}
       Převzaté pozice jsou v přehledu pozic označené štítkem „ze spádových poboček“.
       Pravděpodobnost přetížení z reportu se nepřepočítává (není lineární).</p>
   </details>`;
@@ -5172,13 +5299,13 @@ const ANALYTICS_SOURCES = [
   },
   {
     key: "catchment",
-    file: "spadove_pobocky.xlsx",
-    label: "Spádové pobočky",
-    accept: ".xlsx,.xls",
+    file: "top_3_related_branches15.csv",
+    label: "Spádové pobočky (top 3)",
+    accept: ".csv,.txt,.xlsx,.xls",
     src: "catchment",
-    desc: "Kam by šli klienti z jednotlivých poboček (až tři spádové pobočky, jejich návštěvy, "
-      + "vzdálenost a odhad přesunu). Používá se při kalkulaci, když pobočka přebírá klienty "
-      + "a zaměstnance z jiných poboček.",
+    desc: "Ke každé pobočce tři nejsouvisejícejší (spádové) pobočky — jejich návštěvy, podíl, "
+      + "vzdálenost a odhadovaný přesun klientů v %. Používá se při kalkulaci, když pobočka "
+      + "přebírá klienty a zaměstnance z jiných poboček.",
     info: () => catchmentInfo(),
     detail: (info) => `${info.branches} poboček, ${info.n} vazeb`,
     attach: (file) => handleCatchmentFile(file),

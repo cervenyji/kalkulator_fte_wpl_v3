@@ -24,7 +24,7 @@ Volitelně se sem dají přidat další datové soubory, které si aplikace najd
 ```
 report_navstevnost.html     – HTML report návštěvnosti
 pobocky-export.xlsx         – rating, výnosy a prodeje poboček
-spadove_pobocky.xlsx        – spádové pobočky (odkud přijdou klienti)
+top_3_related_branches15.csv – spádové pobočky (odkud přijdou klienti)
 ```
 
 Soubory se hledají ve složce s aplikací i v podsložkách `data`, `zdroje`
@@ -472,7 +472,7 @@ aplikace použít vedle vlastní kalkulace:
 | `report_navstevnost.html` | návštěvy po hodinách, doporučení prostor, Monte Carlo model | kapitola „Kapacita pobočky“ |
 | `export_specialiste.xlsx` | aktuální obsazenost pozic po pobočkách | předvyplnění manuálního zadání, porovnání zadaných FTE se skutečností |
 | `pobocky-export.xlsx` | rating pobočky 23–25 a jeho trend, výnosy a nové výnosy, prodeje po produktech | hlavička titulní stránky PDF, karta pobočky v aplikaci |
-| `spadove_pobocky.xlsx` | kam by šli klienti z jednotlivých poboček (až 3 spádové pobočky, návštěvy, vzdálenost, odhad přesunu) | našeptávání spádových poboček u checklistu (viz „Spádové pobočky“) |
+| `top_3_related_branches15.csv` | ke každé pobočce tři nejsouvisejícejší (spádové) pobočky — návštěvy, podíl, vzdálenost a odhadovaný přesun klientů | našeptávání spádových poboček u checklistu (viz „Spádové pobočky“) |
 
 Každý zdroj má na záložce **kartu se stavem** (připojeno / nepřipojeno, kolik
 poboček, z jakého souboru a kdy se importoval) a tlačítko pro připojení souboru.
@@ -658,36 +658,48 @@ blok **„Spádové pobočky — přebírá tato pobočka klienty a zaměstnance
 
 ### Odkud se berou návrhy
 
-Ze souboru **`spadove_pobocky.xlsx`** (viz „Dodatečná analytika“). Jeden řádek =
-jedna pobočka (`ID Pobočky`) a k ní až tři spádové pobočky:
+Ze souboru **`top_3_related_branches15.csv`** (viz „Dodatečná analytika“; hledá
+se i ve složce `zdroje`). Jeden řádek = **jedna pobočka** a k ní její tři
+nejsouvisejícejší („top“) pobočky:
 
 | Sloupce | Význam |
 | --- | --- |
-| `Spádová pobočka 1..3` | název pobočky, kam klienti z dané pobočky chodí |
-| `Spád. návštěvy 1..3` | počet návštěv, které k té pobočce směřují |
-| `Spád. podíl 1..3` | jaký podíl návštěv to je |
-| `Vzdálenost km 1..3` | vzdálenost mezi pobočkami |
-| `Odhad přesunu % 1..3` | odhad, kolik klientů by na tu pobočku přešlo |
+| `branch_id`, `branch_nazev` | pobočka, pro kterou se kalkulace dělá |
+| `navstevnost_v_pobocce_celkem` | celková návštěvnost té pobočky (základ pro „o kolik víc“) |
+| `home_zsj_visits(_pct)`, `home_district_visits(_pct)` | návštěvy z domovské ZSJ / okresu |
+| `top_pobocka_id_1..3`, `top_pobocka_nazev_1..3` | spádová pobočka 1–3 |
+| `top_pobocka_visits_1..3` | návštěvy té spádové pobočky |
+| `top_pobocka_visits_1..3_pct` | jaký podíl návštěv to je |
+| `top_pobocka_distance_km_1..3` | vzdálenost |
+| `odhadovany_presun_pct_1..3` | **odhad, kolik % klientů přejde** na počítanou pobočku |
 
-Aplikace čte soubor **obráceně**: pro počítanou pobočku najde všechny řádky,
-kde je uvedená jako spádová, a nabídne je jako pobočky, ze kterých k ní klienti
-mohou přejít (řazené podle odhadu přesunu). Hodnoty jako `2 382`, `6,7 %`,
-`4.0 km` i prázdné `—` se přečtou správně, chybějící odhad přesunu se dá doplnit
-ručně. Přidat lze i **jakoukoli další pobočku z číselníku** (našeptávač nad
-tabulkou `pobocky`), i když ji soubor neuvádí.
+Pobočka z checklistu (nebo z manuálního zadání) se v souboru najde podle
+**`branch_id`**, jako záloha podle **`branch_nazev`**, a nabídnou se její tři
+spádové pobočky — řazené podle odhadu přesunu. **Odhad přesunu se dá u každé
+přepsat**, převzaté návštěvy se hned přepočítají. Přidat lze i **jakoukoli další
+pobočku z číselníku** (našeptávač nad tabulkou `pobocky`), i když ji soubor
+neuvádí.
+
+Soubor se čte jako CSV (oddělovač se pozná sám — `;`, `,` nebo tabulátor;
+zvládne i BOM), stejně dobře ale projde i stejně pojmenovaný `.xlsx`. Hodnoty
+jako `35 420`, `3,5`, `12.4` i prázdné buňky se přečtou správně; chybějící odhad
+přesunu se doplní ručně.
 
 ### Co se u vybrané pobočky nastavuje
 
 - **Odhad přesunu klientů (%)** — předplní se ze souboru, dá se přepsat.
 - **FTE z databáze** — obsazenost pobočky z **exportu specialistů**; když v něm
   pobočka není, zkusí se **poslední načtený checklist** té pobočky. U každé
-  pozice je vidět segment, název a FTE a dá se ještě upravit.
+  pozice je vidět segment, název a FTE a dá se ještě upravit. Hledá se nejdřív
+  podle **názvu** pobočky a teprve pak podle ID — kdyby v exportu bylo pod
+  stejným ID něco jiného, je u zdroje napsané „pozor, v exportu je pod ID …
+  jiný název“, aby se nepřevzali lidé z cizí pobočky.
 - **Zadat zaměstnance ručně** — vlastní řádky (segment, pozice, FTE), když
   v databázi data nejsou nebo se přebírá jen část lidí.
 - **Převzaté návštěvy** se počítají jako *návštěvy spádové pobočky × odhad
-  přesunu*. Návštěvy se berou z **reportu návštěvnosti** té pobočky; když ho
-  nemáme, použije se sloupec `Spád. návštěvy` ze souboru (v UI je vždy napsané,
-  z čeho se počítá).
+  přesunu* — návštěvy se berou ze sloupce `top_pobocka_visits_N`; když v souboru
+  nejsou (pobočka přidaná ručně z číselníku), použije se **report návštěvnosti**
+  té pobočky. V UI je vždy napsané, z čeho se počítá.
 
 ### Co to udělá s kalkulací
 
@@ -697,7 +709,8 @@ Tlačítkem **„✓ Použít do kalkulace“** se:
    `excel_loads.source_branch`), takže se z nich počítá WPL úplně stejně jako
    z vlastních FTE pobočky — v přehledu pozic jsou označené štítkem s názvem
    pobočky, odkud přišly, a podbarveným řádkem;
-2. **návštěvnost se navýší** poměrem převzatých návštěv (`1 + převzaté ÷ vlastní`)
+2. **návštěvnost se navýší** poměrem převzatých návštěv
+   (`1 + převzaté ÷ navstevnost_v_pobocce_celkem`)
    — přiškálují se návštěvy celkem, po hodinách, po dnech i vstupy Monte Carla,
    takže s vyšším provozem počítá roční kapacita, špička, kapacitní shrnutí
    i doporučení míst. Doporučení prostor z reportu se zahodí a dopočítá se
@@ -1436,8 +1449,8 @@ záznam v tabulce časových dotací, řádek se vynechá a zobrazí se upozorn�
   vlastní canvas i stav (`floorPlanState`). Pro PDF se stejná scéna vykreslí do
   odloženého `fabric.StaticCanvas` a exportuje jako PNG, takže tisk nezávisí na
   aktuálním zoomu ani na ručně posunutých prvcích.
-- Spádové pobočky žijí v tabulkách `catchment` (dvojice pobočka → spádová
-  pobočka ze souboru) a `catchment_selection` (výběr ke konkrétnímu checklistu
+- Spádové pobočky žijí v tabulkách `catchment` (jeden řádek = pobočka a jedna
+  její top spádová pobočka ze zdrojového CSV) a `catchment_selection` (výběr ke konkrétnímu checklistu
   včetně odhadu přesunu, režimu FTE a spočítaných návštěv). Navýšení návštěvnosti
   se aplikuje na jednom místě — v `getVisitorForCalculation()` — takže s ním
   počítají všechny sekce i PDF.

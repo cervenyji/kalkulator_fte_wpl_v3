@@ -94,18 +94,25 @@ def main():
 
     # Vybavení pobočky (bankomaty, denní místnost, …) a přiřazení lidí na místa
     # ve schématu — obojí patří ke konkrétní kalkulaci.
-    # Spádové pobočky (kam by šli klienti) a výběr ke konkrétnímu checklistu.
+    # Spádové pobočky (odkud by přišli klienti) a výběr ke konkrétnímu
+    # checklistu. Jeden řádek = pobočka + jedna její spádová („top“) pobočka,
+    # tak jak to je ve zdrojovém top_3_related_branches*.csv.
     cur.execute("""
     CREATE TABLE catchment (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_id TEXT,
-        source_name TEXT,
-        region TEXT,
+        branch_id TEXT,
+        branch_nazev TEXT,
+        branch_visits REAL,
+        home_zsj_visits REAL,
+        home_zsj_pct REAL,
+        home_district_visits REAL,
+        home_district_pct REAL,
         slot INTEGER,
-        target_name TEXT,
-        visits REAL,
-        share REAL,
-        distance_km REAL,
+        rel_id TEXT,
+        rel_nazev TEXT,
+        rel_visits REAL,
+        rel_visits_pct REAL,
+        rel_distance_km REAL,
         transfer_pct REAL,
         imported_at TEXT,
         source TEXT
