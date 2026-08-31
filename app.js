@@ -21,6 +21,8 @@ const CATCHMENT_TABLE_SQL = `CREATE TABLE IF NOT EXISTS catchment (
   branch_id TEXT,
   branch_nazev TEXT,
   branch_visits REAL,
+  branch_lon REAL,
+  branch_lat REAL,
   home_zsj_visits REAL,
   home_zsj_pct REAL,
   home_district_visits REAL,
@@ -246,6 +248,11 @@ function migrateSchema(dbi) {
     if (cols.length && !cols.includes("rel_id")) {
       dbi.run("DROP TABLE catchment");
       dbi.run(CATCHMENT_TABLE_SQL);
+    } else if (cols.length && !cols.includes("branch_lat")) {
+      // Souřadnice pobočky (ze sloupce `branch_geom`) — kvůli hledání blízkých
+      // poboček. Doplní se novým importem zdrojového souboru.
+      try { dbi.run("ALTER TABLE catchment ADD COLUMN branch_lon REAL"); } catch (e) { /* už je */ }
+      try { dbi.run("ALTER TABLE catchment ADD COLUMN branch_lat REAL"); } catch (e) { /* už je */ }
     }
   } catch (e) { /* tabulka ještě není */ }
   try { dbi.run("ALTER TABLE ref_data_versions ADD COLUMN furniture_json TEXT"); } catch (e) { /* sloupec už existuje */ }
@@ -2049,8 +2056,103 @@ function branchFields(payload) {
     salesTotal: number(pick((n) => n.includes("prodeje celkem"))),
     salesTotalHeader: pick((n) => n.includes("prodeje celkem")) || null,
     sales,
+    bns: bnsFromPayload(payload, { keys, norm, pick, text, number }),
     raw: payload,
   };
+}
+
+/* ------------- Strategie BNS (keep / close) -------------------------------- */
+// Export poboček nese kromě ratingu i to, co se má s pobočkou stát:
+//   „Strategie BNS“            — keep / close tak, jak to vyšlo z workshopů
+//   „Rok uzavření“             — rok, od kterého platí close
+//   „Strategie BNS dle IR 25“  — keep / close dopočítané z interního ratingu
+//   „Simulace 250“, „Simulace 280“ — varianty sítě o 250 resp. 280 pobočkách
+// Pobočka označená „close“ je kandidát na to, že se její klienti a zaměstnanci
+// rozdělí mezi okolní pobočky — proto se nabízí ve „Spádových pobočkách“.
+
+// Normalizovaný stav: "close" / "keep" / "" (neznámé). Export může mít
+// „CLOSE“, „Close 2027“, „zavřít“ i „ponechat“.
+function bnsState(value) {
+  const t = normHeader(value);
+  if (!t) return "";
+  if (/\bclose\b|zavr|zrus|slouc/.test(t)) return "close";
+  if (/\bkeep\b|ponech|zachov|zustav/.test(t)) return "keep";
+  return "";
+}
+
+const BNS_COLORS = { close: "#e02424", keep: "#0e9f6e", "": "#6b7482" };
+
+function bnsLabel(value) {
+  const state = bnsState(value);
+  const raw = value === null || value === undefined || String(value).trim() === "" ? "—" : String(value).trim();
+  return { state, color: BNS_COLORS[state], text: raw };
+}
+
+// Vytáhne sloupce strategie z payloadu jedné pobočky. Pomocné funkce se dají
+// předat (branchFields je už má spočítané), jinak se vytvoří.
+function bnsFromPayload(payload, helpers) {
+  const keys = (helpers && helpers.keys) || Object.keys(payload || {});
+  let norm = helpers && helpers.norm;
+  if (!norm) { norm = {}; keys.forEach((k) => { norm[k] = normHeader(k); }); }
+  const pick = (helpers && helpers.pick) || ((fn) => keys.find((k) => fn(norm[k])));
+  const text = (helpers && helpers.text)
+    || ((k) => (k && payload[k] !== undefined ? String(payload[k]).trim() : null));
+  const number = (helpers && helpers.number) || ((k) => (k ? branchNum(payload[k]) : null));
+
+  // „Strategie BNS dle IR 25“ obsahuje i „strategie bns“, proto se nejdřív hledá
+  // přesná shoda a teprve pak varianta „dle IR“.
+  const strategy = text(pick((n) => n === "strategie bns"))
+    ?? text(pick((n) => n.startsWith("strategie bns") && !n.includes(" dle ")));
+  return {
+    strategy,
+    state: bnsState(strategy),
+    closeYear: number(pick((n) => n.startsWith("rok uzavreni") || n === "rok uzavrení")),
+    strategyIr: text(pick((n) => n.startsWith("strategie bns dle ir"))),
+    sim250: text(pick((n) => n === "simulace 250" || n.startsWith("simulace 250"))),
+    sim280: text(pick((n) => n === "simulace 280" || n.startsWith("simulace 280"))),
+  };
+}
+
+// Strategie všech poboček z exportu, aby se dala hledat podle ID i názvu.
+// Cachuje se podle času importu — přeimportováním se mapa přepočítá.
+let bnsMapCache = null;
+function branchBnsMap() {
+  if (!db) return null;
+  const info = branchExportInfo();
+  if (!info) { bnsMapCache = null; return null; }
+  const stamp = `${info.imported_at}|${info.n}`;
+  if (bnsMapCache && bnsMapCache.stamp === stamp) return bnsMapCache;
+  const byId = {}; const byName = {};
+  try {
+    dbAll("SELECT branch_id, branch_name, payload FROM branch_export").forEach((r) => {
+      let payload = {};
+      try { payload = JSON.parse(r.payload || "{}"); } catch (e) { return; }
+      const rec = { branch_id: r.branch_id, branch_name: r.branch_name, ...bnsFromPayload(payload) };
+      if (r.branch_id) byId[String(r.branch_id).trim()] = rec;
+      const key = branchKey(r.branch_name);
+      if (key && !byName[key]) byName[key] = rec;
+    });
+  } catch (e) { return null; }
+  bnsMapCache = { stamp, byId, byName };
+  return bnsMapCache;
+}
+
+// Kolik poboček je v exportu označených jako `close` — do karty zdroje.
+function bnsCloseCount() {
+  const map = branchBnsMap();
+  if (!map) return 0;
+  return Object.values(map.byId).filter((r) => r.state === "close").length;
+}
+
+// Strategie jedné pobočky — hledá se nejdřív podle názvu (ID se mezi zdroji
+// občas rozchází) a teprve pak podle ID.
+function branchBns(branchId, branchName) {
+  const map = branchBnsMap();
+  if (!map) return null;
+  const byName = map.byName[branchKey(branchName)];
+  if (byName) return byName;
+  const id = String(branchId === null || branchId === undefined ? "" : branchId).trim();
+  return (id && map.byId[id]) || null;
 }
 
 // Nejlepší prodejní kategorie pobočky — podle počtu prodejů, při shodě podle
@@ -2075,8 +2177,10 @@ async function handleBranchExportFile(file) {
     ins.run([b.branch_id, b.branch_name, importedAt, file.name, JSON.stringify(b.payload)]);
   });
   ins.free();
+  bnsMapCache = null;   // strategie se přepočítá z nových dat
   await persistDatabase();
-  return { branches: parsed.branches.length, columns: parsed.columns.length };
+  const closes = parsed.branches.filter((b) => bnsFromPayload(b.payload).state === "close").length;
+  return { branches: parsed.branches.length, columns: parsed.columns.length, closes };
 }
 
 function branchExportInfo() {
@@ -4231,8 +4335,16 @@ function drawCalcChapterPdf(pdf, startY, result, opt, stats, chapter) {
     // Spádové pobočky: co se do kalkulace připočetlo (aby to bylo i v tisku).
     const cm = catchmentSummary(result.load_key, result.pobocka_id, result.pobocka_nazev);
     if (cm) {
-      detailLines.push(`Spádové pobočky: ${cm.branches.map((b) => `${b.source_name}`
-        + ` (přesun ${fmt1(b.transfer_pct)} %, +${fmt1(b.fte_total)} FTE)`).join(", ")}`);
+      detailLines.push(`Spádové pobočky: ${cm.branches.map((b) => {
+        const bns = branchBns(b.source_id, b.source_name);
+        const strategy = bns && bns.strategy
+          ? `, BNS ${bns.strategy}${bns.closeYear ? ` ${fmtPieces(bns.closeYear)}` : ""}`
+            + `${bns.strategyIr ? `, dle IR 25 ${bns.strategyIr}` : ""}`
+            + `${bns.sim250 ? `, Sim 250 ${bns.sim250}` : ""}`
+            + `${bns.sim280 ? `, Sim 280 ${bns.sim280}` : ""}`
+          : "";
+        return `${b.source_name} (přesun ${fmt1(b.transfer_pct)} %, +${fmt1(b.fte_total)} FTE${strategy})`;
+      }).join("; ")}`);
       detailLines.push(`Připočteno ze spádových poboček: +${fmt1(cm.fte)} FTE`
         + `${cm.visitsDay ? `, +${fmt1(cm.visitsDay)} návštěv/den` : ""}`
         + `${cm.pct ? ` (návštěvnost +${fmt1(cm.pct)} %)` : ""}`);
@@ -4596,6 +4708,92 @@ function branchKey(name) {
   return normHeader(name);
 }
 
+/* ------- Souřadnice pobočky ze sloupce `branch_geom` ----------------------- */
+// Sloupec může přijít v několika podobách podle toho, jak se export dělal:
+//   WKT            „POINT(14.4378 50.0755)“, „SRID=4326;POINT(...)“
+//   GeoJSON        {"type":"Point","coordinates":[14.43,50.07]}
+//   hex (E)WKB     „0101000020E6100000...“ (výchozí textový výstup PostGIS)
+//   dvojice čísel  „50.0755, 14.4378“
+// Pořadí zeměpisné šířky a délky se pozná podle hodnot: v ČR je šířka 48–52
+// a délka 12–19, takže se nemohou zaměnit.
+
+function geomOrient(a, b) {
+  const isLat = (x) => x >= 47 && x <= 53;
+  const isLon = (x) => x >= 11 && x <= 20;
+  if (isLat(b) && isLon(a)) return { lon: a, lat: b };
+  if (isLat(a) && isLon(b)) return { lon: b, lat: a };
+  return null;   // mimo ČR / nesmysl — souřadnice se nepoužijí
+}
+
+// Little-endian double z hex stringu (2 znaky = 1 bajt).
+function hexDoubleLE(hex, byteOffset) {
+  const buf = new ArrayBuffer(8);
+  const view = new DataView(buf);
+  for (let i = 0; i < 8; i++) {
+    view.setUint8(i, parseInt(hex.substr((byteOffset + i) * 2, 2), 16));
+  }
+  return view.getFloat64(0, true);
+}
+
+function parseBranchGeom(value) {
+  const raw = String(value === null || value === undefined ? "" : value).trim();
+  if (!raw) return null;
+
+  // WKT / „SRID=…;POINT(x y)“
+  const wkt = /point[^-\d]*(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)/i.exec(raw);
+  if (wkt) {
+    const a = parseFloat(String(wkt[1]).replace(",", "."));
+    const b = parseFloat(String(wkt[2]).replace(",", "."));
+    if (Number.isFinite(a) && Number.isFinite(b)) return geomOrient(a, b);
+  }
+
+  // GeoJSON
+  if (raw.includes("coordinates")) {
+    try {
+      const g = JSON.parse(raw);
+      const c = (g.coordinates || (g.geometry || {}).coordinates || []);
+      if (Number.isFinite(c[0]) && Number.isFinite(c[1])) return geomOrient(c[0], c[1]);
+    } catch (e) { /* není to JSON, zkusí se dál */ }
+  }
+
+  // hex (E)WKB — 01 = little endian, pak typ (4 B, případně s příznakem SRID),
+  // volitelně SRID (4 B) a dvě souřadnice po 8 bajtech.
+  const hex = raw.replace(/^0x/i, "");
+  if (/^[0-9a-fA-F]{42,}$/.test(hex) && hex.slice(0, 2) === "01") {
+    try {
+      const typeFlags = parseInt(hex.substr(8, 2) + hex.substr(6, 2) + hex.substr(4, 2)
+        + hex.substr(2, 2), 16);
+      const hasSrid = (typeFlags & 0x20000000) !== 0;
+      const offset = 5 + (hasSrid ? 4 : 0);
+      const a = hexDoubleLE(hex, offset);
+      const b = hexDoubleLE(hex, offset + 8);
+      if (Number.isFinite(a) && Number.isFinite(b)) return geomOrient(a, b);
+    } catch (e) { /* nepoužitelná geometrie */ }
+  }
+
+  // Dvojice čísel bez dalšího balastu
+  const pair = /^\(?\s*(-?\d+(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d+(?:[.,]\d+)?)\s*\)?$/.exec(raw);
+  if (pair) {
+    const a = parseFloat(String(pair[1]).replace(",", "."));
+    const b = parseFloat(String(pair[2]).replace(",", "."));
+    if (Number.isFinite(a) && Number.isFinite(b)) return geomOrient(a, b);
+  }
+  return null;
+}
+
+// Vzdušná vzdálenost dvou bodů v km (haversine) — na hledání blízkých poboček
+// je to dost přesné, nejde o dojezd po silnici.
+function geoDistanceKm(aLat, aLon, bLat, bLon) {
+  if (![aLat, aLon, bLat, bLon].every((x) => Number.isFinite(Number(x)))) return null;
+  const R = 6371;
+  const rad = (d) => (Number(d) * Math.PI) / 180;
+  const dLat = rad(bLat - aLat);
+  const dLon = rad(bLon - aLon);
+  const h = Math.sin(dLat / 2) ** 2
+    + Math.cos(rad(aLat)) * Math.cos(rad(bLat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
 // CSV se čte SheetJS; oddělovač se zkouší postupně (auto, „;“, tabulátor, „,“),
 // takže projde export s jakýmkoli z nich.
 function readDelimitedRows(text) {
@@ -4627,6 +4825,7 @@ function parseCatchmentRows(rows) {
   const cZsjPct = idx((n) => n === "home zsj visits pct");
   const cDist = idx((n) => n === "home district visits");
   const cDistPct = idx((n) => n === "home district visits pct");
+  const cGeom = idx((n) => n === "branch geom" || n.startsWith("branch geom"));
   if (cId < 0 && cName < 0) {
     throw new Error(`Chybí sloupec „branch_id“ ani „branch_nazev“ (první sloupce: ${header.slice(0, 4).join(", ")}).`);
   }
@@ -4644,11 +4843,15 @@ function parseCatchmentRows(rows) {
 
   const out = [];
   let branches = 0;
+  let geoms = 0;
   rows.slice(1).forEach((r) => {
     const branchId = cId >= 0 ? catchText(r[cId]) : "";
     const branchName = cName >= 0 ? catchText(r[cName]) : "";
     if (!branchId && !branchName) return;
     branches++;
+    const geom = cGeom >= 0 ? parseBranchGeom(r[cGeom]) : null;
+    if (geom) geoms++;
+    const before = out.length;
     slots.forEach((sl) => {
       const relId = sl.id >= 0 ? catchText(r[sl.id]) : "";
       const relName = sl.name >= 0 ? catchText(r[sl.name]) : "";
@@ -4656,6 +4859,8 @@ function parseCatchmentRows(rows) {
       out.push({
         branch_id: branchId, branch_nazev: branchName,
         branch_visits: cVisits >= 0 ? catchNum(r[cVisits]) : null,
+        branch_lon: geom ? geom.lon : null,
+        branch_lat: geom ? geom.lat : null,
         home_zsj_visits: cZsj >= 0 ? catchNum(r[cZsj]) : null,
         home_zsj_pct: cZsjPct >= 0 ? catchNum(r[cZsjPct]) : null,
         home_district_visits: cDist >= 0 ? catchNum(r[cDist]) : null,
@@ -4667,8 +4872,25 @@ function parseCatchmentRows(rows) {
         transfer_pct: sl.transfer >= 0 ? catchNum(r[sl.transfer]) : null,
       });
     });
+    // Pobočka bez jediné „top“ vazby se uloží taky — jinak by o ní aplikace
+    // nevěděla a nemohla ji nabídnout jako blízkou pobočku ke zavření.
+    if (out.length === before) {
+      out.push({
+        branch_id: branchId, branch_nazev: branchName,
+        branch_visits: cVisits >= 0 ? catchNum(r[cVisits]) : null,
+        branch_lon: geom ? geom.lon : null,
+        branch_lat: geom ? geom.lat : null,
+        home_zsj_visits: cZsj >= 0 ? catchNum(r[cZsj]) : null,
+        home_zsj_pct: cZsjPct >= 0 ? catchNum(r[cZsjPct]) : null,
+        home_district_visits: cDist >= 0 ? catchNum(r[cDist]) : null,
+        home_district_pct: cDistPct >= 0 ? catchNum(r[cDistPct]) : null,
+        slot: null, rel_id: "", rel_nazev: "", rel_visits: null, rel_visits_pct: null,
+        rel_distance_km: null, transfer_pct: null,
+      });
+    }
   });
-  return { rows: out, branches, slots: slots.length };
+  const pairs = out.filter((r) => r.rel_id || r.rel_nazev).length;
+  return { rows: out, pairs, branches, slots: slots.length, geoms };
 }
 
 async function handleCatchmentFile(file) {
@@ -4686,54 +4908,168 @@ async function handleCatchmentFile(file) {
   const importedAt = nowIso();
   dbRun("DELETE FROM catchment");
   const ins = db.prepare(`INSERT INTO catchment
-    (branch_id, branch_nazev, branch_visits, home_zsj_visits, home_zsj_pct, home_district_visits,
-     home_district_pct, slot, rel_id, rel_nazev, rel_visits, rel_visits_pct, rel_distance_km,
-     transfer_pct, imported_at, source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    (branch_id, branch_nazev, branch_visits, branch_lon, branch_lat, home_zsj_visits, home_zsj_pct,
+     home_district_visits, home_district_pct, slot, rel_id, rel_nazev, rel_visits, rel_visits_pct,
+     rel_distance_km, transfer_pct, imported_at, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   parsed.rows.forEach((r) => {
-    ins.run([r.branch_id, r.branch_nazev, r.branch_visits, r.home_zsj_visits, r.home_zsj_pct,
-      r.home_district_visits, r.home_district_pct, r.slot, r.rel_id, r.rel_nazev, r.rel_visits,
-      r.rel_visits_pct, r.rel_distance_km, r.transfer_pct, importedAt, file.name]);
+    ins.run([r.branch_id, r.branch_nazev, r.branch_visits, r.branch_lon, r.branch_lat,
+      r.home_zsj_visits, r.home_zsj_pct, r.home_district_visits, r.home_district_pct, r.slot,
+      r.rel_id, r.rel_nazev, r.rel_visits, r.rel_visits_pct, r.rel_distance_km, r.transfer_pct,
+      importedAt, file.name]);
   });
   ins.free();
   await persistDatabase();
-  return { pairs: parsed.rows.length, branches: parsed.branches };
+  return { pairs: parsed.pairs, branches: parsed.branches, geoms: parsed.geoms };
 }
 
 function catchmentInfo() {
   if (!db) return null;
   try {
-    const row = dbAll(`SELECT COUNT(*) AS n, COUNT(DISTINCT branch_id) AS branches,
+    const row = dbAll(`SELECT
+      SUM(CASE WHEN COALESCE(rel_id, '') <> '' OR COALESCE(rel_nazev, '') <> '' THEN 1 ELSE 0 END) AS n,
+      COUNT(DISTINCT branch_id) AS branches,
       MAX(imported_at) AS imported_at, MAX(source) AS source FROM catchment`)[0];
     return row && row.n ? row : null;
   } catch (e) { return null; }
 }
 
-// Spádové pobočky počítané pobočky — hledá se podle branch_id, jako záloha
+// Spádové pobočky ze zdrojového souboru — hledá se podle branch_id, jako záloha
 // podle názvu. Vrací je i s odhadem přesunu, který se dá v UI přepsat.
-function catchmentSuggestions(pobockaId, pobockaNazev) {
+function catchmentFileSuggestions(pobockaId, pobockaNazev) {
   if (!db) return [];
   try {
     const id = String(pobockaId || "").trim();
     const key = branchKey(pobockaNazev);
     const rows = dbAll("SELECT * FROM catchment ORDER BY slot");
-    const mine = rows.filter((r) => (id && String(r.branch_id).trim() === id)
-      || (key && branchKey(r.branch_nazev) === key));
+    const mine = rows.filter((r) => ((id && String(r.branch_id).trim() === id)
+      || (key && branchKey(r.branch_nazev) === key))
+      && (r.rel_id || r.rel_nazev));   // řádky bez vazby jsou jen kvůli souřadnicím
     return mine.map((r) => ({
       source_id: r.rel_id, source_name: r.rel_nazev, slot: r.slot,
       visits: r.rel_visits, visits_pct: r.rel_visits_pct, distance_km: r.rel_distance_km,
       transfer_pct: r.transfer_pct, branch_visits: r.branch_visits,
       home_zsj_pct: r.home_zsj_pct, home_district_pct: r.home_district_pct,
+      origin: "file",
     })).sort((a, b) => (b.transfer_pct || 0) - (a.transfer_pct || 0) || a.slot - b.slot);
   } catch (e) { return []; }
 }
 
-// Celková návštěvnost počítané pobočky podle zdrojového souboru (sloupec
-// `navstevnost_v_pobocce_celkem`) — z ní se počítá, o kolik % provoz naroste.
+/* ------- Pobočky ke zavření v okolí --------------------------------------- */
+// Pobočka označená ve „Strategii BNS“ jako `close` své klienty a zaměstnance
+// někam přesune. Pokud je to spádová pobočka počítané pobočky, nebo prostě
+// pobočka blízko v okolí, nabídne se v panelu spádových poboček.
+//
+// „Blízko“ se měří ze souřadnic (`branch_geom` ve zdrojovém souboru). Když
+// geometrie chybí, použije se zařazení z exportu poboček — stejné ORP, nebo
+// stejná oblast a město.
+
+const CATCHMENT_NEARBY_KM = 15;   // dosah, ve kterém se hledají pobočky ke zavření
+
+// Souřadnice pobočky ze zdroje spádových poboček.
+function catchmentBranchCoords(pobockaId, pobockaNazev) {
+  if (!db) return null;
+  try {
+    const id = String(pobockaId || "").trim();
+    const key = branchKey(pobockaNazev);
+    const row = dbAll(`SELECT branch_id, branch_nazev, branch_lon, branch_lat FROM catchment
+      WHERE branch_lat IS NOT NULL`)
+      .find((r) => (id && String(r.branch_id).trim() === id)
+        || (key && branchKey(r.branch_nazev) === key));
+    return row ? { lat: row.branch_lat, lon: row.branch_lon } : null;
+  } catch (e) { return null; }
+}
+
+// Zařazení pobočky (ORP, oblast, město) z exportu poboček — záloha, když nejsou
+// souřadnice.
+function branchAreaOf(branchId, branchName) {
+  const profile = branchProfile(branchId, branchName);
+  if (!profile) return null;
+  const f = profile.fields;
+  return { orp: normHeader(f.orp), oblast: normHeader(f.oblast), mesto: normHeader(f.mesto) };
+}
+
+// Všechny pobočky, které zdroj spádových poboček zná (i ty, které nejsou
+// v top 3 nikde) — každá jednou, se souřadnicemi.
+function catchmentAllBranches() {
+  if (!db) return [];
+  try {
+    return dbAll(`SELECT branch_id, branch_nazev, MAX(branch_lon) AS lon, MAX(branch_lat) AS lat
+      FROM catchment GROUP BY branch_id, branch_nazev`);
+  } catch (e) { return []; }
+}
+
+// Pobočky ke zavření, které jsou blízko počítané pobočky. `exclude` jsou názvy,
+// které už v nabídce jsou (spádové ze souboru), aby se neduplikovaly.
+function catchmentNearbyCloseBranches(pobockaId, pobockaNazev, exclude) {
+  if (!db || !branchExportInfo()) return [];
+  const skip = new Set([...(exclude || []), branchKey(pobockaNazev)].filter(Boolean));
+  const coords = catchmentBranchCoords(pobockaId, pobockaNazev);
+  const area = coords ? null : branchAreaOf(pobockaId, pobockaNazev);
+  if (!coords && !(area && (area.orp || area.oblast))) return [];
+
+  const out = [];
+  catchmentAllBranches().forEach((b) => {
+    const key = branchKey(b.branch_nazev);
+    if (!key || skip.has(key)) return;
+    const bns = branchBns(b.branch_id, b.branch_nazev);
+    if (!bns || bns.state !== "close") return;
+    let distance = null;
+    let near = false;
+    let reason = "";
+    if (coords && b.lat !== null && b.lat !== undefined) {
+      distance = geoDistanceKm(coords.lat, coords.lon, b.lat, b.lon);
+      near = distance !== null && distance <= CATCHMENT_NEARBY_KM;
+      reason = distance === null ? "" : `${fmt1(distance)} km od pobočky`;
+    } else if (area) {
+      const other = branchAreaOf(b.branch_id, b.branch_nazev);
+      if (other && area.orp && other.orp === area.orp) { near = true; reason = "stejné ORP"; }
+      else if (other && area.oblast && other.oblast === area.oblast
+        && area.mesto && other.mesto === area.mesto) { near = true; reason = "stejné město a oblast"; }
+    }
+    if (!near) return;
+    out.push({
+      source_id: b.branch_id, source_name: b.branch_nazev, slot: null,
+      visits: null, visits_pct: null, distance_km: distance, transfer_pct: null,
+      branch_visits: null, origin: "nearby", nearbyReason: reason,
+    });
+    skip.add(key);
+  });
+  return out.sort((a, b) => (a.distance_km ?? 999) - (b.distance_km ?? 999)
+    || String(a.source_name).localeCompare(String(b.source_name), "cs"));
+}
+
+// Celá nabídka pro panel: spádové pobočky ze souboru (ty ke zavření první)
+// a k nim pobočky ke zavření z okolí. U každé je doplněná strategie BNS.
+function catchmentSuggestions(pobockaId, pobockaNazev) {
+  const fromFile = catchmentFileSuggestions(pobockaId, pobockaNazev);
+  const nearby = catchmentNearbyCloseBranches(pobockaId, pobockaNazev,
+    fromFile.map((s) => branchKey(s.source_name)));
+  const withBns = (s) => {
+    const bns = branchBns(s.source_id, s.source_name);
+    return { ...s, bns, close: !!(bns && bns.state === "close") };
+  };
+  // Ve skupině „ze souboru“ jdou pobočky ke zavření nahoru — je to ten případ,
+  // kdy se přesun klientů opravdu chystá.
+  const file = fromFile.map(withBns).sort((a, b) => (b.close ? 1 : 0) - (a.close ? 1 : 0)
+    || (b.transfer_pct || 0) - (a.transfer_pct || 0) || (a.slot || 0) - (b.slot || 0));
+  return [...file, ...nearby.map(withBns)];
+}
+
+// Celková návštěvnost pobočky podle zdrojového souboru (sloupec
+// `navstevnost_v_pobocce_celkem`). U počítané pobočky je to základ, ze kterého
+// se počítá, o kolik % provoz naroste; u spádové pobočky záloha pro převzaté
+// návštěvy, když u ní není `top_pobocka_visits` ani report návštěvnosti.
 function catchmentBranchVisitsTotal(pobockaId, pobockaNazev) {
-  const sug = catchmentSuggestions(pobockaId, pobockaNazev);
-  const withVisits = sug.find((s) => s.branch_visits);
-  return withVisits ? withVisits.branch_visits : null;
+  if (!db) return null;
+  try {
+    const id = String(pobockaId || "").trim();
+    const key = branchKey(pobockaNazev);
+    const row = dbAll("SELECT branch_id, branch_nazev, branch_visits FROM catchment WHERE branch_visits > 0")
+      .find((r) => (id && String(r.branch_id).trim() === id)
+        || (key && branchKey(r.branch_nazev) === key));
+    return row ? row.branch_visits : null;
+  } catch (e) { return null; }
 }
 
 /* --------- FTE spádové pobočky: z databáze, nebo zadané ručně -------------- */
@@ -4953,6 +5289,14 @@ function catchmentBranchVisits(sel, suggestion, branch) {
     return { day: perDay * share, total: (v.visitsTotal || perDay * (v.days || days)) * share,
       origin: "report návštěvnosti spádové pobočky", baseDay: perDay, baseTotal: v.visitsTotal };
   }
+  // Pobočka, která není v top 3 (typicky nabídnutá jako blízká pobočka ke
+  // zavření), má ve zdrojovém souboru vlastní celkovou návštěvnost.
+  const ownTotal = catchmentBranchVisitsTotal(sel.source_id, sel.source_name);
+  if (ownTotal) {
+    return { day: (ownTotal * share) / days, total: ownTotal * share,
+      origin: "sloupec navstevnost_v_pobocce_celkem ze zdrojového souboru",
+      baseDay: ownTotal / days, baseTotal: ownTotal };
+  }
   return { day: 0, total: 0, origin: null, baseDay: null, baseTotal: null };
 }
 
@@ -4961,6 +5305,51 @@ function catchmentBranchVisits(sel, suggestion, branch) {
 function catchmentDays(pobockaId, pobockaNazev) {
   const own = catchmentVisits(pobockaId, pobockaNazev);
   return (own && own.days) || CATCHMENT_DEFAULT_DAYS;
+}
+
+/* ------- Strategie BNS v panelu spádových poboček -------------------------- */
+// Malé pilulky do nabídky (keep / close / simulace) a podrobnější výpis
+// u vybrané pobočky. Když export poboček není načtený, nic se nevykreslí.
+
+function bnsPillHtml(label, value) {
+  const l = bnsLabel(value);
+  return `<span class="cm-bns-pill" style="background:${l.color};">${esc(label)}: ${esc(l.text)}</span>`;
+}
+
+// Kompaktní pilulky k jedné nabízené pobočce.
+function bnsChipsHtml(bns) {
+  if (!bns) return "";
+  const parts = [];
+  if (bns.strategy) {
+    parts.push(bnsPillHtml("BNS", bns.strategy
+      + (bns.closeYear ? ` ${fmtPieces(bns.closeYear)}` : "")));
+  }
+  if (bns.strategyIr) parts.push(bnsPillHtml("IR 25", bns.strategyIr));
+  if (bns.sim250) parts.push(bnsPillHtml("Sim 250", bns.sim250));
+  if (bns.sim280) parts.push(bnsPillHtml("Sim 280", bns.sim280));
+  return parts.join("");
+}
+
+// Podrobný výpis u vybrané pobočky — plné názvy sloupců, aby bylo jasné, co je
+// rozhodnutí z workshopů a co dopočet z ratingu.
+function bnsDetailHtml(bns) {
+  if (!bns) {
+    return `<div class="cm-bns muted">Strategie BNS pro tuto pobočku není v exportu poboček
+      (<code>pobocky-export.xlsx</code>).</div>`;
+  }
+  const cell = (label, value, note) => {
+    const l = bnsLabel(value);
+    return `<div><span class="muted">${esc(label)}</span>
+      <strong style="color:${l.color};">${esc(l.text)}</strong>
+      ${note ? `<span class="muted">${esc(note)}</span>` : ""}</div>`;
+  };
+  return `<div class="cm-bns">
+    ${cell("Strategie BNS (workshopy)", bns.strategy,
+      bns.closeYear ? `rok uzavření ${fmtPieces(bns.closeYear)}` : null)}
+    ${cell("Strategie BNS dle IR 25", bns.strategyIr)}
+    ${cell("Simulace 250", bns.sim250)}
+    ${cell("Simulace 280", bns.sim280)}
+  </div>`;
 }
 
 function catchmentRowHtml(r, i) {
@@ -4981,20 +5370,32 @@ function catchmentItemHtml(sel, i, suggestion, branch) {
   const vis = catchmentBranchVisits(sel, suggestion, branch);
   const fteTotal = (sel.rows || []).reduce((s, r) => s + (Number(r.fte) || 0), 0);
   const dbInfo = sel.db_origin ? `<span class="muted">(${esc(sel.db_origin)})</span>` : "";
-  return `<div class="cm-item" data-idx="${i}">
+  const bns = branchBns(sel.source_id, sel.source_name);
+  // Odhad přesunu bez hodnoty ze souboru se musí zadat ručně — je to vidět
+  // na rámečku i v popisce, aby si toho nikdo nevšiml až podle nulových návštěv.
+  const needTransfer = sel.transfer_pct === null || sel.transfer_pct === undefined
+    || Number(sel.transfer_pct) === 0;
+  return `<div class="cm-item${bns && bns.state === "close" ? " cm-close" : ""}" data-idx="${i}">
     <div class="cm-head">
       <strong>${esc(sel.source_name)}</strong>
       ${sel.source_id ? `<span class="muted">ID ${esc(sel.source_id)}</span>` : ""}
-      ${suggestion && suggestion.distance_km ? `<span class="muted">${fmt1(suggestion.distance_km)} km</span>` : ""}
+      ${bns && bns.state === "close" ? `<span class="cm-close-tag">ke zavření${
+        bns.closeYear ? ` ${fmtPieces(bns.closeYear)}` : ""}</span>` : ""}
+      ${suggestion && suggestion.distance_km && suggestion.origin !== "nearby"
+        ? `<span class="muted">${fmt1(suggestion.distance_km)} km</span>` : ""}
       ${suggestion && suggestion.visits_pct
         ? `<span class="muted">${fmt1(suggestion.visits_pct)} % návštěv</span>` : ""}
       ${suggestion && suggestion.slot ? `<span class="muted">top ${suggestion.slot}</span>` : ""}
+      ${suggestion && suggestion.origin === "nearby"
+        ? `<span class="muted">v okolí${suggestion.nearbyReason ? ` — ${esc(suggestion.nearbyReason)}` : ""}</span>` : ""}
       <button class="btn secondary small cm-del" title="Odebrat pobočku">✕</button>
     </div>
+    ${bnsDetailHtml(bns)}
     <div class="cm-grid">
       <label>Odhad přesunu klientů
-        <span class="cm-num"><input type="number" class="cm-transfer" min="0" max="100" step="1"
-          value="${sel.transfer_pct ?? 0}"> %</span></label>
+        <span class="cm-num"><input type="number" class="cm-transfer${needTransfer ? " cm-need" : ""}"
+          min="0" max="100" step="1" value="${sel.transfer_pct ?? ""}"> %</span>
+        ${needTransfer ? `<span class="cm-need-note">zdroj odhad neuvádí — zadejte ho</span>` : ""}</label>
       <div class="cm-visits">
         ${vis.origin
           ? `Návštěvy spádové pobočky: <strong>${vis.baseDay ? fmt1(vis.baseDay) : "?"}</strong>/den
@@ -5024,19 +5425,29 @@ function catchmentItemHtml(sel, i, suggestion, branch) {
 function catchmentPanelHtml(load, state, suggestions) {
   const info = catchmentInfo();
   const chosen = new Set(state.map((x) => branchKey(x.source_name)));
-  const sugHtml = suggestions.map((sg) => `<label class="cm-sug${chosen.has(branchKey(sg.source_name))
-    ? " on" : ""}">
+  const sugItem = (sg) => `<label class="cm-sug${chosen.has(branchKey(sg.source_name))
+    ? " on" : ""}${sg.close ? " cm-sug-close" : ""}">
     <input type="checkbox" class="cm-sug-check" data-name="${esc(sg.source_name)}"
-      data-id="${esc(sg.source_id || "")}" data-transfer="${sg.transfer_pct ?? 0}"
+      data-id="${esc(sg.source_id || "")}" data-transfer="${sg.transfer_pct ?? ""}"
       ${chosen.has(branchKey(sg.source_name)) ? "checked" : ""}>
     <span><strong>${esc(sg.source_name)}</strong>
+      ${sg.close ? `<span class="cm-close-tag">ke zavření${
+        sg.bns && sg.bns.closeYear ? ` ${fmtPieces(sg.bns.closeYear)}` : ""}</span>` : ""}
       ${sg.transfer_pct !== null && sg.transfer_pct !== undefined
         ? `<span class="cm-pct">odhad přesunu ${fmt1(sg.transfer_pct)} %</span>`
         : `<span class="muted">odhad přesunu neuveden</span>`}
-      ${sg.distance_km ? `<span class="muted">${fmt1(sg.distance_km)} km</span>` : ""}
+      ${sg.distance_km && sg.origin !== "nearby"
+        ? `<span class="muted">${fmt1(sg.distance_km)} km</span>` : ""}
       ${sg.visits ? `<span class="muted">${fmtNum0(sg.visits)} návštěv</span>` : ""}
       ${sg.visits_pct ? `<span class="muted">${fmt1(sg.visits_pct)} %</span>` : ""}
-    </span></label>`).join("");
+      ${sg.origin === "nearby" && sg.nearbyReason ? `<span class="muted">${esc(sg.nearbyReason)}</span>` : ""}
+      ${bnsChipsHtml(sg.bns)}
+    </span></label>`;
+  const fromFile = suggestions.filter((sg) => sg.origin !== "nearby");
+  const nearby = suggestions.filter((sg) => sg.origin === "nearby");
+  const sugHtml = fromFile.map(sugItem).join("");
+  const nearbyHtml = nearby.map(sugItem).join("");
+  const closeCount = suggestions.filter((sg) => sg.close).length;
 
   const totals = state.reduce((acc, sel, i) => {
     const vis = catchmentBranchVisits(sel,
@@ -5058,6 +5469,8 @@ function catchmentPanelHtml(load, state, suggestions) {
     <summary>Spádové pobočky — přebírá tato pobočka klienty a zaměstnance odjinud?
       ${srcBadgeHtml("catchment")}
       ${state.length ? `<span class="cm-chip">${state.length} pobočky · +${fmt1(totals.fte)} FTE</span>` : ""}
+      ${closeCount ? `<span class="cm-chip cm-chip-close">${fmtPieces(closeCount)}
+        ${closeCount === 1 ? "pobočka" : "pobočky"} ke zavření</span>` : ""}
     </summary>
     <p class="muted">Vyberte pobočky, ze kterých na <strong>${esc(load.pobocka_nazev)}</strong>
       ${load.pobocka_id ? `(ID ${esc(load.pobocka_id)})` : ""} přejdou klienti (a případně i zaměstnanci).
@@ -5067,14 +5480,26 @@ function catchmentPanelHtml(load, state, suggestions) {
       přesunu klientů. <strong>Odhad přesunu lze u každé přepsat.</strong> Přidat lze i jakoukoli další
       pobočku z číselníku. Převzaté FTE se <strong>připočítají do kalkulace</strong> a převzaté návštěvy
       <strong>navýší návštěvnost</strong> — všechno označené štítkem „ze spádových poboček“.</p>
+    <p class="muted">Pobočky, které mají v exportu poboček ve <strong>Strategii BNS</strong> hodnotu
+      <code>close</code>, se nabízejí přednostně — jak ty spádové, tak ty
+      <strong>blízko v okolí</strong> (do ${fmtPieces(CATCHMENT_NEARBY_KM)} km podle souřadnic
+      ze sloupce <code>branch_geom</code>; bez souřadnic se bere stejné ORP). U každé je vidět
+      strategie z workshopů (<em>Strategie BNS</em> + <em>Rok uzavření</em>), dopočet
+      <em>Strategie BNS dle IR 25</em> a varianty <em>Simulace 250</em> a <em>Simulace 280</em>.</p>
     ${info ? "" : `<div class="msg warn">Zdrojový soubor spádových poboček
       (<code>top_3_related_branches15.csv</code>) není načtený — našeptávání nebude fungovat.
       Připojte ho v části „Dodatečná analytika“ (hledá se i ve složce <code>zdroje</code>).</div>`}
-    ${suggestions.length ? `<div class="cm-sugs">
-      <span class="muted">Spádové pobočky podle souboru${suggestions[0].branch_visits
-        ? ` (pobočka má ${fmtNum0(suggestions[0].branch_visits)} návštěv)` : ""}:</span>${sugHtml}</div>`
+    ${branchExportInfo() ? "" : `<div class="msg warn">Export poboček
+      (<code>pobocky-export.xlsx</code>) není načtený — strategie BNS se nezobrazí a pobočky
+      ke zavření se nemají podle čeho navrhnout.</div>`}
+    ${fromFile.length ? `<div class="cm-sugs">
+      <span class="muted">Spádové pobočky podle souboru${fromFile[0].branch_visits
+        ? ` (pobočka má ${fmtNum0(fromFile[0].branch_visits)} návštěv)` : ""}:</span>${sugHtml}</div>`
       : `<p class="muted">Pro pobočku „${esc(load.pobocka_nazev)}“ soubor žádnou spádovou vazbu neuvádí —
          pobočky přidejte ručně z číselníku.</p>`}
+    ${nearbyHtml ? `<div class="cm-sugs cm-sugs-close">
+      <span class="muted">Pobočky ke zavření v okolí (do ${fmtPieces(CATCHMENT_NEARBY_KM)} km,
+        nejsou mezi <em>top 3</em>):</span>${nearbyHtml}</div>` : ""}
     <div class="row cm-add-row">
       <input type="text" id="cmAddName" list="pobockyDatalist" placeholder="Přidat pobočku z číselníku…">
       <button class="btn secondary small" id="cmAddBtn">+ Přidat pobočku</button>
@@ -5118,7 +5543,7 @@ function renderCatchmentPanel(containerId, load) {
     const db = catchmentFteFromDb(id, name);
     state.push({ source_id: id || (dbAll("SELECT id_pobocky FROM pobocky WHERE LOWER(nazev) = ?",
       [String(name).toLowerCase()])[0] || {}).id_pobocky || "",
-      source_name: name, transfer_pct: transfer ?? 0, fte_mode: "db",
+      source_name: name, transfer_pct: transfer ?? null, fte_mode: "db",
       rows: db.rows, db_origin: db.origin });
     rerender();
   };
@@ -5126,7 +5551,7 @@ function renderCatchmentPanel(containerId, load) {
   container.querySelectorAll(".cm-sug-check").forEach((cb) => {
     cb.addEventListener("change", () => {
       const name = cb.dataset.name;
-      if (cb.checked) addBranch(name, cb.dataset.id, Number(cb.dataset.transfer) || 0);
+      if (cb.checked) addBranch(name, cb.dataset.id, toNumberOrNull(cb.dataset.transfer));
       else {
         const i = state.findIndex((x) => branchKey(x.source_name) === branchKey(name));
         if (i >= 0) state.splice(i, 1);
@@ -5138,7 +5563,7 @@ function renderCatchmentPanel(containerId, load) {
   container.querySelector("#cmAddBtn").addEventListener("click", () => {
     const name = addInput.value.trim();
     const sug = suggestions.find((sg) => branchKey(sg.source_name) === branchKey(name));
-    addBranch(name, sug ? sug.source_id : "", sug ? sug.transfer_pct : 0);
+    addBranch(name, sug ? sug.source_id : "", sug ? sug.transfer_pct : null);
     addInput.value = "";
   });
 
@@ -5147,7 +5572,7 @@ function renderCatchmentPanel(containerId, load) {
     const sel = state[i];
     item.querySelector(".cm-del").addEventListener("click", () => { state.splice(i, 1); rerender(); });
     item.querySelector(".cm-transfer").addEventListener("input", (e) => {
-      sel.transfer_pct = toNumberOrNull(e.target.value) ?? 0;
+      sel.transfer_pct = toNumberOrNull(e.target.value);
       // souhrn i převzaté návštěvy se přepočítají hned
       rerender();
     });
@@ -5216,24 +5641,33 @@ function renderCatchmentPanel(containerId, load) {
 function catchmentSummaryHtml(loadKey, pobockaId, pobockaNazev, options = {}) {
   const sum = catchmentSummary(loadKey, pobockaId, pobockaNazev);
   if (!sum) return "";
-  const rows = sum.branches.map((b) => `<tr>
+  const rows = sum.branches.map((b) => {
+    const bns = branchBns(b.source_id, b.source_name);
+    return `<tr>
     <td><strong>${esc(b.source_name)}</strong>${b.source_id
       ? ` <span class="muted">ID ${esc(b.source_id)}</span>` : ""}</td>
+    <td>${bns ? `<span style="color:${BNS_COLORS[bns.state]};">${esc(bnsLabel(bns.strategy).text)}</span>${
+      bns.closeYear ? ` <span class="muted">${fmtPieces(bns.closeYear)}</span>` : ""}${
+      bns.strategyIr ? `<br><span class="muted">IR 25: ${esc(bns.strategyIr)}</span>` : ""}${
+      bns.sim250 ? `<br><span class="muted">Sim 250: ${esc(bnsLabel(bns.sim250).text)}</span>` : ""}${
+      bns.sim280 ? `<br><span class="muted">Sim 280: ${esc(bnsLabel(bns.sim280).text)}</span>` : ""}`
+      : "—"}</td>
     <td class="num">${fmt1(b.transfer_pct)} %</td>
     <td class="num">${fmt1(b.fte_total)}</td>
     <td class="num">${b.visits_day ? fmt1(b.visits_day) : "—"}</td>
     <td class="num">${b.visits_total ? fmtNum0(b.visits_total) : "—"}</td>
     <td>${b.fte_mode === "manual" ? "ručně" : "z databáze"}</td>
-  </tr>`).join("");
+  </tr>`;
+  }).join("");
   return `<details class="cm-box src-box-catchment"${options.open ? " open" : ""}>
     <summary>Spádové pobočky — převzaté FTE a návštěvy ${srcBadgeHtml("catchment")}
       <span class="cm-chip">${sum.branches.length} pobočky · +${fmt1(sum.fte)} FTE${sum.pct
         ? ` · +${fmt1(sum.pct)} % návštěv` : ""}</span></summary>
     <div class="table-wrap"><table class="visitor-table">
-      <thead><tr><th>Spádová pobočka</th><th>Odhad přesunu</th><th>Převzato FTE</th>
+      <thead><tr><th>Spádová pobočka</th><th>Strategie BNS</th><th>Odhad přesunu</th><th>Převzato FTE</th>
         <th>Převzaté návštěvy/den</th><th>Převzaté návštěvy celkem</th><th>Zdroj FTE</th></tr></thead>
       <tbody>${rows}
-        <tr class="total-row"><td>Celkem</td><td></td>
+        <tr class="total-row"><td>Celkem</td><td></td><td></td>
           <td class="num"><strong>${fmt1(sum.fte)}</strong></td>
           <td class="num"><strong>${fmt1(sum.visitsDay)}</strong></td>
           <td class="num"><strong>${fmtNum0(sum.visitsTotal)}</strong></td><td></td></tr>
@@ -5316,10 +5750,13 @@ const ANALYTICS_SOURCES = [
     label: "Export poboček",
     accept: ".xlsx,.xls",
     src: "branch",
-    desc: "Rating pobočky 23–25 včetně trendu a kvintilu, výnosy a nové výnosy, prodeje po produktech. "
-      + "Tiskne se do hlavičky titulní stránky PDF sestavy.",
+    desc: "Rating pobočky 23–25 včetně trendu a kvintilu, výnosy a nové výnosy, prodeje po produktech "
+      + "a strategie BNS (keep / close, rok uzavření, dopočet dle IR 25, simulace 250 a 280). "
+      + "Tiskne se do hlavičky titulní stránky PDF sestavy; podle strategie BNS se navrhují "
+      + "spádové pobočky ke zavření.",
     info: () => branchExportInfo(),
-    detail: (info) => `${info.n} poboček`,
+    detail: (info) => `${info.n} poboček${bnsCloseCount()
+      ? ` · ${bnsCloseCount()} ke zavření (BNS close)` : ""}`,
     attach: async (file) => {
       const res = await handleBranchExportFile(file);
       renderBranchExportList();

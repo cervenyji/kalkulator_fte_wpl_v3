@@ -471,8 +471,8 @@ aplikace použít vedle vlastní kalkulace:
 | --- | --- | --- |
 | `report_navstevnost.html` | návštěvy po hodinách, doporučení prostor, Monte Carlo model | kapitola „Kapacita pobočky“ |
 | `export_specialiste.xlsx` | aktuální obsazenost pozic po pobočkách | předvyplnění manuálního zadání, porovnání zadaných FTE se skutečností |
-| `pobocky-export.xlsx` | rating pobočky 23–25 a jeho trend, výnosy a nové výnosy, prodeje po produktech | hlavička titulní stránky PDF, karta pobočky v aplikaci |
-| `top_3_related_branches15.csv` | ke každé pobočce tři nejsouvisejícejší (spádové) pobočky — návštěvy, podíl, vzdálenost a odhadovaný přesun klientů | našeptávání spádových poboček u checklistu (viz „Spádové pobočky“) |
+| `pobocky-export.xlsx` | rating pobočky 23–25 a jeho trend, výnosy a nové výnosy, prodeje po produktech, **strategie BNS** (keep / close, rok uzavření, dopočet dle IR 25, simulace 250 a 280) | hlavička titulní stránky PDF, karta pobočky v aplikaci, návrh spádových poboček ke zavření |
+| `top_3_related_branches15.csv` | ke každé pobočce tři nejsouvisejícejší (spádové) pobočky — návštěvy, podíl, vzdálenost a odhadovaný přesun klientů, plus **souřadnice pobočky** (`branch_geom`) | našeptávání spádových poboček u checklistu (viz „Spádové pobočky“) |
 
 Každý zdroj má na záložce **kartu se stavem** (připojeno / nepřipojeno, kolik
 poboček, z jakého souboru a kdy se importoval) a tlačítko pro připojení souboru.
@@ -665,7 +665,8 @@ nejsouvisejícejší („top“) pobočky:
 | Sloupce | Význam |
 | --- | --- |
 | `branch_id`, `branch_nazev` | pobočka, pro kterou se kalkulace dělá |
-| `navstevnost_v_pobocce_celkem` | celková návštěvnost té pobočky (základ pro „o kolik víc“) |
+| `branch_geom` | souřadnice pobočky — z nich se hledají **pobočky ke zavření v okolí** |
+| `navstevnost_v_pobocce_celkem` | celková návštěvnost té pobočky (základ pro „o kolik víc“; u spádové pobočky mimo *top 3* i základ převzatých návštěv) |
 | `home_zsj_visits(_pct)`, `home_district_visits(_pct)` | návštěvy z domovské ZSJ / okresu |
 | `top_pobocka_id_1..3`, `top_pobocka_nazev_1..3` | spádová pobočka 1–3 |
 | `top_pobocka_visits_1..3` | návštěvy té spádové pobočky |
@@ -683,7 +684,50 @@ neuvádí.
 Soubor se čte jako CSV (oddělovač se pozná sám — `;`, `,` nebo tabulátor;
 zvládne i BOM), stejně dobře ale projde i stejně pojmenovaný `.xlsx`. Hodnoty
 jako `35 420`, `3,5`, `12.4` i prázdné buňky se přečtou správně; chybějící odhad
-přesunu se doplní ručně.
+přesunu se doplní ručně. Pobočka, která v souboru nemá ani jednu *top* vazbu, se
+uloží taky — kvůli souřadnicím, aby se dala najít jako blízká pobočka.
+
+### Pobočky ke zavření (Strategie BNS)
+
+Export poboček (`pobocky-export.xlsx`) nese kromě ratingu i to, co se má
+s pobočkou stát. Pobočka označená jako `close` své klienty a zaměstnance někam
+přesune — proto se **nabízí přednostně** ve spádových pobočkách:
+
+| Sloupec | Význam |
+| --- | --- |
+| `Strategie BNS` | `keep` / `close` tak, jak to vyšlo **z workshopů** |
+| `Rok uzavření` | rok, od kterého `close` platí |
+| `Strategie BNS dle IR 25` | `keep` / `close` **dopočítané z interního ratingu** |
+| `Simulace 250` | varianta sítě o 250 pobočkách |
+| `Simulace 280` | varianta sítě o 280 pobočkách |
+
+Hodnoty se čtou tolerantně — `CLOSE`, `Close 2027`, `zavřít` i `ponechat`
+aplikace pochopí; co nerozpozná, vypíše, ale nebarví.
+
+**Kdy se pobočka ke zavření navrhne.** Ve dvou případech:
+
+1. **je mezi spádovými pobočkami** ze souboru `top_3_related_branches15.csv` —
+   pak se v nabídce posune **nahoru**, před pobočky, které zůstávají;
+2. **je blízko sousedící** — do **15 km** vzdušnou čarou, spočítáno ze souřadnic
+   ve sloupci `branch_geom` (podporované podoby: WKT `POINT(…)` i s prefixem
+   `SRID=…`, GeoJSON, hex EWKB z PostGIS, i pouhá dvojice čísel; zeměpisná šířka
+   a délka se poznají podle hodnot, takže se nemohou zaměnit). Když souřadnice
+   chybí, bere se **stejné ORP** z exportu poboček, případně stejné město
+   a oblast. Tyhle pobočky jsou v panelu ve vlastní skupině
+   **„Pobočky ke zavření v okolí“** — pobočky, které už jsou mezi *top 3*, se
+   nedublují.
+
+U každé nabízené i vybrané pobočky je vidět **Strategie BNS** (s rokem
+uzavření), **Strategie BNS dle IR 25** a **Simulace 250** i **280** — u pobočky
+ke zavření navíc červený štítek `KE ZAVŘENÍ <rok>`. Do souhrnu u výsledku
+kalkulace a do historie se strategie tiskne jako samostatný sloupec, do PDF jde
+na řádek s převzatými pobočkami.
+
+**Odhad přesunu u pobočky z okolí** soubor neuvádí (není v *top 3*), takže
+zůstane **prázdný a oranžově zvýrazněný** s poznámkou „zdroj odhad neuvádí —
+zadejte ho“. Návštěvy se u ní počítají z **její vlastní celkové návštěvnosti**
+(`navstevnost_v_pobocce_celkem`), případně z reportu návštěvnosti, pokud je pro
+ni načtený.
 
 ### Co se u vybrané pobočky nastavuje
 
@@ -697,9 +741,11 @@ přesunu se doplní ručně.
 - **Zadat zaměstnance ručně** — vlastní řádky (segment, pozice, FTE), když
   v databázi data nejsou nebo se přebírá jen část lidí.
 - **Převzaté návštěvy** se počítají jako *návštěvy spádové pobočky × odhad
-  přesunu* — návštěvy se berou ze sloupce `top_pobocka_visits_N`; když v souboru
-  nejsou (pobočka přidaná ručně z číselníku), použije se **report návštěvnosti**
-  té pobočky. V UI je vždy napsané, z čeho se počítá.
+  přesunu*. Návštěvy se berou v tomto pořadí: sloupec `top_pobocka_visits_N`
+  → **report návštěvnosti** té pobočky → její vlastní
+  `navstevnost_v_pobocce_celkem` ze zdrojového souboru (to je případ pobočky,
+  která není v *top 3* — typicky pobočky ke zavření z okolí). V UI je vždy
+  napsané, z čeho se počítá.
 
 ### Co to udělá s kalkulací
 
@@ -1450,10 +1496,19 @@ záznam v tabulce časových dotací, řádek se vynechá a zobrazí se upozorn�
   odloženého `fabric.StaticCanvas` a exportuje jako PNG, takže tisk nezávisí na
   aktuálním zoomu ani na ručně posunutých prvcích.
 - Spádové pobočky žijí v tabulkách `catchment` (jeden řádek = pobočka a jedna
-  její top spádová pobočka ze zdrojového CSV) a `catchment_selection` (výběr ke konkrétnímu checklistu
+  její top spádová pobočka ze zdrojového CSV; pobočka bez vazby má řádek
+  s prázdným `rel_*` jen kvůli souřadnicím `branch_lon`/`branch_lat`)
+  a `catchment_selection` (výběr ke konkrétnímu checklistu
   včetně odhadu přesunu, režimu FTE a spočítaných návštěv). Navýšení návštěvnosti
   se aplikuje na jednom místě — v `getVisitorForCalculation()` — takže s ním
   počítají všechny sekce i PDF.
+- Strategie BNS se čte z payloadu exportu poboček (`bnsFromPayload()`), stavy se
+  normalizují na `keep` / `close` / neznámé (`bnsState()`) a celá mapa poboček se
+  cachuje podle času importu (`branchBnsMap()`), aby hledání blízkých poboček
+  nemuselo pokaždé parsovat všechny řádky. Souřadnice ze `branch_geom` řeší
+  `parseBranchGeom()` (WKT, GeoJSON, hex EWKB, dvojice čísel), vzdálenost
+  `geoDistanceKm()` (haversine, vzdušná čára — ne dojezd po silnici); dosah je
+  konstanta `CATCHMENT_NEARBY_KM`.
 - Doplňkové datové soubory („Dodatečná analytika“) se hledají dvěma cestami:
   přes `fetch()` (funguje jen při běhu na http/https) a přes **File System Access
   API** — handle složky s daty se ukládá do IndexedDB (`dataDir`) vedle handle

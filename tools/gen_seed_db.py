@@ -103,6 +103,8 @@ def main():
         branch_id TEXT,
         branch_nazev TEXT,
         branch_visits REAL,
+        branch_lon REAL,
+        branch_lat REAL,
         home_zsj_visits REAL,
         home_zsj_pct REAL,
         home_district_visits REAL,
