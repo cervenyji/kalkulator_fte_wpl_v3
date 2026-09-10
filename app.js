@@ -277,6 +277,12 @@ function migrateSchema(dbi) {
       WHERE NOT EXISTS (SELECT 1 FROM furniture_to_zone
         WHERE segment = ? AND zone = 'meeting_zone' AND furniture = 'Jednací místnost')`, [segment, segment]);
   });
+  // Oprava dat: dřívější verze měly v číselnících vedle segmentu „CESTOVNÍ“ ještě
+  // „CESTOVNÍ POZICE“. To je ale jen nadpis bloku v listu CHL — segment, který
+  // VSTUPY z těch řádků vypíše, se jmenuje „CESTOVNÍ“, takže časové dotace ani
+  // nepřítomnost pod „CESTOVNÍ POZICE“ nikdy nic nemělo. Zůstávaly tak dva
+  // segmenty pro jednu věc. Data se slijí do „CESTOVNÍ“.
+  mergeCestovniPozice(dbi);
   const pobockyCount = dbAll("SELECT COUNT(*) AS n FROM pobocky", [], dbi)[0].n;
   if (pobockyCount === 0) {
     const ins = dbi.prepare("INSERT INTO pobocky (id_pobocky, nazev, region) VALUES (?, ?, ?)");
@@ -442,11 +448,6 @@ const SEED_FURNITURE = [
   ["CESTOVNÍ", "Fast track backoffice", "backoffice_zone", 0],
   ["CESTOVNÍ", "Kancelář", "office_room", 1],
   ["CESTOVNÍ", "Jednací místnost", "meeting_zone", 1],
-
-  ["CESTOVNÍ POZICE", "Kancelářské místo", "backoffice_zone", 1],
-  ["CESTOVNÍ POZICE", "Kancelář", "backoffice_zone", 1],
-  ["CESTOVNÍ POZICE", "Flex box", "backoffice_zone", 1],
-  ["CESTOVNÍ POZICE", "Fast track backoffice", "backoffice_zone", 0],
 
   ["EPB", "Kancelářské místo", "backoffice_zone", 1],
   ["EPB", "Flex box", "backoffice_zone", 1],
@@ -852,8 +853,7 @@ const SEED_SEGMENTS = [
   ["PROVOZ", "PROVOZ", 6, "#0e7490", "⚙️"],
   ["RKC", "RKC", 7, "#b45309", "🏭"],
   ["CESTOVNÍ", "CESTOVNÍ", 8, "#64748b", "🚗"],
-  ["CESTOVNÍ POZICE", "CESTOVNÍ POZICE", 9, "#94a3b8", "🚙"],
-  ["OSTATNÍ", "OSTATNÍ", 10, "#6b7684", "📋"],
+  ["OSTATNÍ", "OSTATNÍ", 9, "#6b7684", "📋"],
 ];
 
 // segment_key -> {segment_key, nazev, sort_order, color, icon}, načteno z tabulky
@@ -1628,6 +1628,31 @@ function renderExcelPreview(parsed) {
 }
 
 /* ------------------------- Manuální zadání pozic --------------------------- */
+
+// Slije segment „CESTOVNÍ POZICE“ do „CESTOVNÍ“ ve všech tabulkách, kde se
+// segment ukládá. U nábytku se duplicity (stejný prvek už pod „CESTOVNÍ“ je)
+// zahodí, zbytek se přejmenuje — a to i tehdy, když je prvek pod „CESTOVNÍ“
+// v jiné zóně (to je právě ten případ „Kancelář“, která patří do office room).
+function mergeCestovniPozice(dbi) {
+  const OLD = "CESTOVNÍ POZICE";
+  const NEW = "CESTOVNÍ";
+  const has = (table) => {
+    try { return dbAll(`PRAGMA table_info(${table})`, [], dbi).some((c) => c.name === "segment"); }
+    catch (e) { return false; }
+  };
+  try {
+    if (has("furniture_to_zone")) {
+      dbi.run(`DELETE FROM furniture_to_zone WHERE segment = ? AND furniture IN
+        (SELECT furniture FROM furniture_to_zone WHERE segment = ?)`, [OLD, NEW]);
+      dbi.run("UPDATE furniture_to_zone SET segment = ? WHERE segment = ?", [NEW, OLD]);
+    }
+    ["casove_dotace", "absence", "excel_loads", "layouts", "calculations", "layout_staff"]
+      .forEach((table) => {
+        if (has(table)) dbi.run(`UPDATE ${table} SET segment = ? WHERE segment = ?`, [NEW, OLD]);
+      });
+    dbi.run("DELETE FROM segments WHERE segment_key = ?", [OLD]);
+  } catch (e) { /* starší databáze některé tabulky nemá */ }
+}
 
 function getKnownSegments() {
   return dbAll("SELECT DISTINCT segment FROM casove_dotace ORDER BY segment").map((r) => r.segment);
@@ -2784,8 +2809,11 @@ function renderOutputSection(containerId, suffix, ctx, keep) {
   const status = getCalculationStatus(result.calculation_key);
   const layoutRows = getExistingLayout(result.calculation_key);
 
+  // Spádové pobočky se do PDF nabízejí jen tehdy, když ke kalkulaci nějaké jsou.
+  const catchment = catchmentSummary(result.load_key, result.pobocka_id, result.pobocka_nazev);
   container.innerHTML = pdfOptionsBoxHtml(suffix, {
     hasVisitor: !!visitor, hasLayout: layoutRows.length > 0, status,
+    hasCatchment: !!(catchment && catchment.branches.length),
   });
 
   if (keep) {
@@ -3781,6 +3809,9 @@ const PDF_OPTION_DEFS = [
     label: "Informace o použitých referenčních datech (v šedém bloku)" },
   { key: "inputPositions", id: "pdfIncPositions", group: "calc", def: true,
     label: "Přehled pozic z checklistu (s pruhy vytížení zón)" },
+  // Tiskne se jen tehdy, když ke kalkulaci nějaké spádové pobočky jsou.
+  { key: "catchment", id: "pdfIncCatchment", group: "calc", def: true, needsCatchment: true,
+    label: "Spádové pobočky — převzaté FTE a návštěvy" },
   { key: "summaryTable", id: "pdfIncSummary", group: "calc", def: true,
     label: "Souhrnná tabulka (WPL po zónách) a doporučení (fasttracky, židle, plocha)" },
   // Ponecháno původní id — používá ho i starší uložené nastavení a testy.
@@ -3853,21 +3884,26 @@ function pdfScopeGroups(scope) {
 
 // Vrátí HTML boxu s nastavením PDF. `hasVisitor` vypne skupinu návštěvnosti,
 // pokud pro pobočku žádná data z reportu nejsou.
-function pdfOptionsBoxHtml(suffix, { hasVisitor = false, hasLayout = false, status = "rozpracovana" } = {}) {
+function pdfOptionsBoxHtml(suffix, { hasVisitor = false, hasLayout = false, hasCatchment = false,
+  status = "rozpracovana" } = {}) {
   // Zaškrtávátka jsou seskupená po kapitolách a ve stejném pořadí, v jakém se
   // části tisknou — box tak zároveň slouží jako obsah budoucího PDF.
   const groupHtml = PDF_CHAPTERS.map((chapter, ci) => {
     const defs = PDF_OPTION_DEFS.filter((d) => d.group === chapter.key);
     const items = defs.map((d, i) => {
-      const disabled = !!d.needsVisitor && !hasVisitor;
+      const disabled = (!!d.needsVisitor && !hasVisitor) || (!!d.needsCatchment && !hasCatchment);
+      const why = d.needsCatchment && !hasCatchment
+        ? "Ke kalkulaci nejsou vybrané žádné spádové pobočky."
+        : "Pro tuto pobočku nejsou naimportovaná data návštěvnosti.";
       return `
       <label class="pdf-opt${disabled ? " pdf-opt-off" : ""}"${disabled
-        ? ' title="Pro tuto pobočku nejsou naimportovaná data návštěvnosti."' : ""}>
+        ? ` title="${esc(why)}"` : ""}>
         <input type="checkbox" id="${d.id}${suffix}" data-pdf-opt="${d.key}"
           ${pdfOptionChecked(d) && !disabled ? "checked" : ""}${disabled ? " disabled" : ""}>
         <span><span class="pdf-opt-order">${i + 1}.</span> ${esc(d.label)}</span></label>`;
     }).join("");
     const noVisitor = defs.some((d) => d.needsVisitor) && !hasVisitor;
+    const noCatchment = defs.some((d) => d.needsCatchment) && !hasCatchment;
     return `<fieldset class="pdf-opt-group" style="--chapter-color:${chapter.color};">
       <legend><span class="pdf-chapter-num" style="background:${chapter.color};">${ci + 1}</span>
         ${esc(chapter.title)}</legend>
@@ -3875,6 +3911,8 @@ function pdfOptionsBoxHtml(suffix, { hasVisitor = false, hasLayout = false, stat
       ${items}
       ${noVisitor ? `<p class="muted" style="margin:6px 0 0;">Části z reportu návštěvnosti jsou nedostupné —
         pro tuto pobočku nejsou naimportovaná data návštěvnosti.</p>` : ""}
+      ${noCatchment ? `<p class="muted" style="margin:6px 0 0;">Souhrn spádových poboček se netiskne —
+        ke kalkulaci nejsou žádné vybrané.</p>` : ""}
       ${chapter.key === "layout" && !hasLayout ? `<p class="muted" style="margin:6px 0 0;">Layout ještě není
         uložený — kapitola se do PDF netiskne.</p>` : ""}
     </fieldset>`;
@@ -4373,6 +4411,10 @@ function drawCalcChapterPdf(pdf, startY, result, opt, stats, chapter) {
 
   if (opt.inputPositions && (result.inputRows || []).length) {
     y = drawInputPositionsPdf(pdf, y, result, marginX, pageBottom, color);
+  }
+
+  if (opt.catchment) {
+    y = drawCatchmentPdf(pdf, y, result, marginX, pageBottom, color);
   }
 
   if (opt.summaryTable) {
@@ -7454,6 +7496,8 @@ const PDF_TABLE_STYLE = {
   highlight: { fill: [224, 236, 255], bold: true },
   subtotal: { fill: [238, 243, 251], bold: true },
   total: { fill: [234, 252, 239], bold: true },
+  // pobočka ke zavření (Strategie BNS = close)
+  close: { fill: [253, 234, 234], bold: true },
   border: [214, 222, 232],
 };
 
@@ -7514,6 +7558,72 @@ function drawPdfSimpleTable(pdf, { x, y, headers, colW, rows, fontSize = 7.4, ro
     drawCells(vals, style, Array.isArray(r) ? null : r.cellFills);
   });
   return cy;
+}
+
+// Spádové pobočky — převzaté FTE a návštěvy. Tiskne se jen tehdy, když ke
+// kalkulaci nějaké spádové pobočky opravdu jsou; jinak se sekce přeskočí.
+// Obsah je stejný jako blok v aplikaci: tabulka poboček (strategie BNS, odhad
+// přesunu, převzaté FTE a návštěvy) a věta, o kolik roste návštěvnost.
+function drawCatchmentPdf(pdf, startY, result, marginX, pageBottom, color) {
+  const sum = catchmentSummary(result.load_key, result.pobocka_id, result.pobocka_nazev);
+  if (!sum || !sum.branches.length) return startY;
+
+  let y = drawPdfSectionTitle(pdf, startY, "Spádové pobočky — převzaté FTE a návštěvy", color,
+    { need: 46, marginX, pageBottom });
+
+  const headers = ["Spádová pobočka", "Strategie BNS", "Odhad přesunu", "Převzato FTE",
+    "Návštěv/den", "Návštěv celkem", "Zdroj FTE"];
+  const colW = [37, 33, 20, 20, 22, 24, 26];
+  const align = [null, null, "right", "right", "right", "right", null];
+
+  const rows = sum.branches.map((b) => {
+    const bns = branchBns(b.source_id, b.source_name);
+    const strategy = bns && bns.strategy
+      ? [`${bns.strategy}${bns.closeYear ? ` ${fmtPieces(bns.closeYear)}` : ""}`,
+        bns.strategyIr ? `IR 25: ${bns.strategyIr}` : null,
+        bns.sim250 ? `Sim 250: ${bns.sim250}` : null,
+        bns.sim280 ? `Sim 280: ${bns.sim280}` : null].filter(Boolean).join(", ")
+      : "—";
+    return {
+      vals: [
+        `${b.source_name}${b.source_id ? ` (ID ${b.source_id})` : ""}`,
+        strategy,
+        `${fmt1(b.transfer_pct)} %`,
+        fmt1(b.fte_total),
+        b.visits_day ? fmt1(b.visits_day) : "—",
+        b.visits_total ? fmtNum0(b.visits_total) : "—",
+        b.fte_mode === "manual" ? "ručně" : "z databáze",
+      ],
+      // pobočku ke zavření je vidět na první pohled
+      variant: bns && bns.state === "close" ? "close" : null,
+    };
+  });
+  rows.push({ vals: ["Celkem", "", "", fmt1(sum.fte), fmt1(sum.visitsDay),
+    fmtNum0(sum.visitsTotal), ""], variant: "total" });
+
+  y = drawPdfSimpleTable(pdf, { x: marginX, y, headers, colW, rows, align, pageBottom });
+
+  const note = sum.ownVisitsTotal
+    ? `Návštěvnost pobočky roste z ${fmtNum0(sum.ownVisitsTotal)} na `
+      + `${fmtNum0(sum.ownVisitsTotal + sum.visitsTotal)} návštěv, tedy o ${fmt1(sum.pct)} %`
+      + `${sum.ownVisitsDay
+        ? ` (${fmt1(sum.ownVisitsDay)} → ${fmt1(sum.ownVisitsDay + sum.visitsDay)} návštěv/den)` : ""}. `
+      + `Sekce kapacity pobočky proto počítají s navýšenou návštěvností (poměr `
+      + `${(Math.round(sum.factor * 1000) / 1000).toString().replace(".", ",")}×); základ návštěvnosti: `
+      + `${sum.baseOrigin || "—"}. Pravděpodobnost přetížení z reportu se nepřepočítává (není lineární).`
+    : "Pro tuto pobočku nejsou data o návštěvnosti, proto se navyšují jen FTE.";
+  const lines = pdf.splitTextToSize(
+    `${note} Převzaté pozice jsou v přehledu pozic označené jako převzaté ze spádové pobočky.`,
+    PDF_CONTENT_W);
+  pdf.setFont("DejaVuSans", "normal"); pdf.setFontSize(7.6);
+  pdf.setTextColor(90, 98, 112);
+  lines.forEach((line) => {
+    if (y + 4 > pageBottom) { pdf.addPage(); y = 18; }
+    y += 4;
+    pdf.text(line, marginX, y);
+  });
+  pdf.setTextColor(0, 0, 0);
+  return y + 2;
 }
 
 // Otevírací doba pobočky z reportu a denní návštěvy na bankéře — do PDF se
@@ -12295,7 +12405,9 @@ function generateChecklistTemplate() {
   const cestFirst = row;
   for (let i = 0; i < CESTOVNI_ROWS; i++) {
     rowHeights[row] = 17.1;
-    put("A", row, str(row === cestFirst ? "CESTOVNÍ POZICE" : "", st.segmentOf("CESTOVNÍ POZICE")));
+    // „CESTOVNÍ POZICE“ je jen nadpis bloku v CHL; segment, který VSTUPY z těchto
+    // řádků vypíše, se jmenuje „CESTOVNÍ“ — proto se bere jeho barva.
+    put("A", row, str(row === cestFirst ? "CESTOVNÍ POZICE" : "", st.segmentOf("CESTOVNÍ")));
     fillRange("B", "F", row, st.itemInput);
     put("G", row, num("", st.input));
     put("H", row, num("", st.input));

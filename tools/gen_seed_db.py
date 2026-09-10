@@ -440,11 +440,6 @@ def main():
         ("CESTOVNÍ", "Kancelář", "office_room", 1),
         ("CESTOVNÍ", "Jednací místnost", "meeting_zone", 1),
 
-        ("CESTOVNÍ POZICE", "Kancelářské místo", "backoffice_zone", 1),
-        ("CESTOVNÍ POZICE", "Kancelář", "backoffice_zone", 1),
-        ("CESTOVNÍ POZICE", "Flex box", "backoffice_zone", 1),
-        ("CESTOVNÍ POZICE", "Fast track backoffice", "backoffice_zone", 0),
-
         ("EPB", "Kancelářské místo", "backoffice_zone", 1),
         ("EPB", "Flex box", "backoffice_zone", 1),
         ("EPB", "Fast track backoffice", "backoffice_zone", 0),
@@ -855,8 +850,7 @@ def main():
         ("PROVOZ", "PROVOZ", 6, "#0e7490", "⚙️"),
         ("RKC", "RKC", 7, "#b45309", "🏭"),
         ("CESTOVNÍ", "CESTOVNÍ", 8, "#64748b", "🚗"),
-        ("CESTOVNÍ POZICE", "CESTOVNÍ POZICE", 9, "#94a3b8", "🚙"),
-        ("OSTATNÍ", "OSTATNÍ", 10, "#6b7684", "📋"),
+        ("OSTATNÍ", "OSTATNÍ", 9, "#6b7684", "📋"),
     ]
     cur.executemany("""
         INSERT INTO segments (segment_key, nazev, sort_order, color, icon)

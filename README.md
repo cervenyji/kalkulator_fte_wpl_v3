@@ -766,8 +766,14 @@ Tlačítkem **„✓ Použít do kalkulace“** se:
    pobočky — převzaté FTE a návštěvy“** s tabulkou (pobočka, odhad přesunu,
    převzaté FTE, návštěvy/den, návštěvy/rok, zdroj FTE) a s větou, **o kolik**
    návštěvnost roste (z X na Y návštěv/den, tedy o Z %);
-4. do PDF (šedý blok kapitoly 1) se vytisknou vybrané pobočky s odhadem přesunu
-   a celkové navýšení FTE i návštěv.
+4. do PDF se vytiskne **vlastní sekce „Spádové pobočky — převzaté FTE a návštěvy“**
+   (kapitola 1, hned za přehledem pozic): tabulka s pobočkami — strategie BNS
+   včetně roku uzavření, dopočtu dle IR 25 a obou simulací, odhad přesunu,
+   převzaté FTE, návštěvy za den i celkem a zdroj FTE — se součtovým řádkem
+   a větou, o kolik roste návštěvnost. Řádek pobočky ke zavření je červeně
+   podbarvený. Sekce se nabízí jen tehdy, když nějaké spádové pobočky vybrané
+   jsou; totéž platí pro export z detailu v historii. Zkrácený výpis zůstává
+   i v šedém bloku s detaily kapitoly 1.
 
 **Porovnání zadaných FTE se skutečným stavem** se počítá jen z **vlastních**
 pozic pobočky — převzaté FTE ho nezkreslují.
@@ -802,7 +808,9 @@ Rozsahy PDF:
 | **Jen layout pobočky** | 3 — Layout pobočky | `layout_<…>.pdf` |
 
 Rozsah, pro který nejsou data (návštěvnost bez naimportovaného reportu, layout
-bez uložení), je nedostupný a nelze ho zvolit. Skupiny zaškrtávátek, které do
+bez uložení), je nedostupný a nelze ho zvolit. Stejně tak zaškrtávátko **„Spádové
+pobočky — převzaté FTE a návštěvy“** je dostupné jen tehdy, když ke kalkulaci
+nějaké spádové pobočky opravdu jsou; jinak se sekce do PDF netiskne. Skupiny zaškrtávátek, které do
 zvoleného rozsahu nepatří, se při exportu ignorují — není tedy potřeba nic
 odškrtávat. Nastavení i poznámku si aplikace pamatuje, takže zůstanou i po
 překreslení výsledku nebo po uložení layoutu.
@@ -818,7 +826,7 @@ obsah budoucího PDF. Vypnutí kterékoli části pořadí ostatních nezmění.
 
 | # | Kapitola (barva) | Části v pořadí |
 | --- | --- | --- |
-| 1 | **Kalkulace FTE → WPL** (modrá) | šedý blok s detaily · informace o referenčních datech · přehled pozic z checklistu · souhrnná tabulka (WPL po zónách) · klíčové ukazatele a benchmark · upozornění z výpočtu |
+| 1 | **Kalkulace FTE → WPL** (modrá) | šedý blok s detaily · informace o referenčních datech · přehled pozic z checklistu · **spádové pobočky — převzaté FTE a návštěvy** · souhrnná tabulka (WPL po zónách) · klíčové ukazatele a benchmark · upozornění z výpočtu |
 | 2 | **Kapacita pobočky** (zelená) | roční kapacita · návštěvnost a doporučení prostor (+ srovnání s kalkulací) · otevírací doba a návštěvy na bankéře · Monte Carlo model průměrného dne · distribuce celkové denní FTE poptávky · kapacitní shrnutí · tři kontroly míst pro schůzky |
 | 3 | **Layout pobočky** (fialová) | šedý blok s detaily · kompletní přehled WPL po zónách a segmentech · seznam nábytku po zónách (kompaktní výpis) · analýza segmentů, zón a jejich prvků · schéma pobočky (půdorys — volitelně, viz níže) |
 
@@ -1265,7 +1273,7 @@ součást celé sestavy společně s kalkulací a návštěvností. Podrobně vi
 
 ## Barevné schéma a ikony segmentů
 
-Každý segment (MMMA, SBC, HC, EPC, EPB, PROVOZ, RKC, CESTOVNÍ, CESTOVNÍ POZICE, OSTATNÍ) má
+Každý segment (MMMA, SBC, HC, EPC, EPB, PROVOZ, RKC, CESTOVNÍ, OSTATNÍ) má
 přiřazenou barvu a ikonu — používají se jednotně v tabulce výsledků a v sestavení layoutu i v PDF
 exportech (barevný čtvereček před názvem segmentu; ikony jako emoji se v PDF nevykreslují, protože
 je vložený font DejaVu Sans neobsahuje). Barvy, ikony i pořadí segmentů lze upravit v novém modulu
@@ -1357,6 +1365,9 @@ do aplikace; případné odkrytí je v Excelu na pravé tlačítko na oušku lis
     „POČET FTE VÝHLED“ a „POZNÁMKA“, s součtovým řádkem „Suma FTE:“ za každým segmentem
     a řádkem „Suma FTE bez CEST:“,
   - volný blok **CESTOVNÍ POZICE** (9 řádků) se sloupcem „DOBA VYUŽITÍ WPL V HODINÁCH TÝDNĚ“
+    — „CESTOVNÍ POZICE“ je jen **nadpis bloku** v listu CHL; segment, který z těchto
+    řádků vypíše list VSTUPY (a se kterým dál pracuje celá aplikace), se jmenuje
+    **CESTOVNÍ**
     a řádkem „Suma FTE s CEST:“,
   - sekce **SAZO**, **BUSINESS ZONE** (FRONT OFFICE — service a meeting zone) a **BACK OFFICE**
     s nábytkem po segmentech a zónách, sloupci „POČET“ / „WPL“ / „POZNÁMKA“,
@@ -1502,6 +1513,14 @@ záznam v tabulce časových dotací, řádek se vynechá a zobrazí se upozorn�
   včetně odhadu přesunu, režimu FTE a spočítaných návštěv). Navýšení návštěvnosti
   se aplikuje na jednom místě — v `getVisitorForCalculation()` — takže s ním
   počítají všechny sekce i PDF.
+- Segment **CESTOVNÍ** je jen jeden. Dřív byl v číselnících vedle něj ještě
+  „CESTOVNÍ POZICE“ — to je ale jen **nadpis bloku v listu CHL**, ne segment:
+  list VSTUPY z těch řádků vypisuje segment `CESTOVNÍ` a časové dotace ani
+  nepřítomnost pod „CESTOVNÍ POZICE“ nikdy nic neměly, jen tam visely duplicitní
+  nábytkové prvky (navíc s „Kanceláří“ ve špatné zóně). Starší databáze
+  `migrateSchema()` slije funkcí `mergeCestovniPozice()`: duplicitní nábytek
+  zahodí, ostatní řádky (nábytek, uložené layouty, kalkulace) přejmenuje na
+  `CESTOVNÍ` a segment z číselníku smaže — nic se tím neztratí.
 - Strategie BNS se čte z payloadu exportu poboček (`bnsFromPayload()`), stavy se
   normalizují na `keep` / `close` / neznámé (`bnsState()`) a celá mapa poboček se
   cachuje podle času importu (`branchBnsMap()`), aby hledání blízkých poboček
